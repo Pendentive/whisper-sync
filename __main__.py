@@ -19,6 +19,7 @@ from .paths import get_install_root
 from .transcribe import transcribe, transcribe_fast, preload
 from . import dictation_log
 from .streaming_wav import fix_orphan
+from .crash_diagnostics import install_excepthook, check_previous_crash
 
 HOTKEY_OPTIONS = [
     "ctrl+shift+space",
@@ -754,6 +755,8 @@ class WhisperSync:
 def main():
     try:
         logger.info("=== WhisperSync starting ===")
+        install_excepthook(logger)
+        check_previous_crash(logger)
         app = WhisperSync()
         app.run()
     except Exception:
