@@ -18,6 +18,7 @@ from .paste import paste
 from .paths import get_install_root
 from .transcribe import transcribe, transcribe_fast, preload
 from . import dictation_log
+from .streaming_wav import fix_orphan
 
 HOTKEY_OPTIONS = [
     "ctrl+shift+space",
@@ -204,6 +205,10 @@ class WhisperSync:
             defaults = get_default_devices()
             speaker = defaults["output"]
         self.recorder.start(mic_device=mic, speaker_device=speaker)
+        temp = self._meeting_temp_dir()
+        mic_temp = temp / "mic-temp.wav"
+        speaker_temp = temp / "speaker-temp.wav" if speaker is not None else None
+        self.recorder.start_streaming(mic_temp, speaker_temp)
 
     _ABORT = object()  # Sentinel for abort
 
@@ -279,10 +284,12 @@ class WhisperSync:
 
             if meeting_name is self._ABORT:
                 logger.info("Recording discarded")
+                self.recorder.discard_streaming()
                 self.mode = None
                 self._update_icon()
                 return
 
+            self.recorder.stop_streaming()
             try:
                 now = datetime.now()
                 date_str = now.strftime("%Y-%m-%d")
@@ -298,6 +305,8 @@ class WhisperSync:
                     save_wav(str(wav_path), audio["mic"], self.cfg["sample_rate"])
 
                 logger.info(f"WAV saved: {wav_path}")
+                from .streaming_wav import cleanup_temp_files
+                cleanup_temp_files(self._meeting_temp_dir())
                 self.mode = "transcribing"
                 self._update_icon()
 
@@ -324,6 +333,9 @@ class WhisperSync:
         if not p.is_absolute():
             p = get_install_root() / p
         return p
+
+    def _meeting_temp_dir(self) -> Path:
+        return Path(__file__).parent / "logs" / "data" / "meeting"
 
     # --- Menu ---
 
@@ -682,6 +694,20 @@ class WhisperSync:
         return result[0]
 
     def run(self):
+        # Check for orphaned temp WAV files from a previous crash
+        temp_dir = self._meeting_temp_dir()
+        for name in ("mic-temp.wav", "speaker-temp.wav"):
+            temp_path = temp_dir / name
+            if temp_path.exists():
+                dur = fix_orphan(temp_path)
+                if dur is not None:
+                    logger.warning(
+                        f"Recovered {dur:.0f}s of {name.split('-')[0]} audio "
+                        f"from previous crash — saved to {temp_dir}"
+                    )
+                else:
+                    logger.info(f"Cleaned up stale temp file: {name}")
+
         # Bootstrap: ensure base models are cached, prompt for large ones
         bootstrap_models(self.cfg, on_large_model=self._prompt_large_download)
 
