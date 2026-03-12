@@ -15,7 +15,7 @@ from .icons import idle_icon, recording_icon, dictation_icon, saving_icon, trans
 from .logger import logger, get_log_path
 from .model_status import get_model_status, download_model, bootstrap_models
 from .paste import paste
-from .paths import get_install_root
+from .paths import get_install_root, get_default_output_dir, is_standalone
 from .transcribe import transcribe, transcribe_fast, preload
 from . import dictation_log
 from .streaming_wav import fix_orphan
@@ -315,6 +315,18 @@ class WhisperSync:
                 logger.info(f"Transcript saved: {result.get('json_path', wav_path)}")
                 self.mode = "done"
                 self._update_icon()
+            except PermissionError as e:
+                # Gated model access — show user the acceptance URLs
+                logger.error(str(e))
+                self._show_error_popup("Diarization Model Access", str(e))
+                self.mode = "error"
+                self._update_icon()
+            except FileNotFoundError as e:
+                # Missing HF token
+                logger.error(str(e))
+                self._show_error_popup("Hugging Face Token Missing", str(e))
+                self.mode = "error"
+                self._update_icon()
             except Exception as e:
                 logger.error(f"Meeting transcription error: {e}")
                 import traceback
@@ -332,7 +344,12 @@ class WhisperSync:
     def _output_dir(self) -> Path:
         p = Path(self.cfg["output_dir"])
         if not p.is_absolute():
-            p = get_install_root() / p
+            if is_standalone():
+                # Standalone: relative paths resolve under ~/Documents/WhisperSync/
+                p = get_default_output_dir().parent / p
+            else:
+                # Repo mode: relative paths resolve from repo root
+                p = get_install_root() / p
         return p
 
     def _meeting_temp_dir(self) -> Path:
@@ -528,6 +545,17 @@ class WhisperSync:
     def _save_and_refresh(self):
         config.save(self.cfg)
         self._refresh_menu()
+
+    def _show_error_popup(self, title: str, message: str):
+        """Show a tkinter error dialog with the given message."""
+        def _show():
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror(f"WhisperSync: {title}", message)
+            root.destroy()
+        threading.Thread(target=_show, daemon=True).start()
 
     def _open_output_folder(self):
         import subprocess
