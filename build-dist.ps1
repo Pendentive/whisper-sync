@@ -71,12 +71,9 @@ Write-Host "  + install.ps1" -ForegroundColor Gray
 Copy-Item "$PkgSource\start.ps1" "$StageRoot\start.ps1"
 Write-Host "  + start.ps1" -ForegroundColor Gray
 
-# README + Transcription Guide
+# README
 Copy-Item "$PkgSource\README.md" "$StageRoot\README.md"
 Write-Host "  + README.md" -ForegroundColor Gray
-
-Copy-Item "$PkgSource\TRANSCRIPTION-GUIDE.md" "$StageRoot\TRANSCRIPTION-GUIDE.md"
-Write-Host "  + TRANSCRIPTION-GUIDE.md" -ForegroundColor Gray
 
 # ── Create zip ──
 

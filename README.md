@@ -257,67 +257,72 @@ You can also open the current output folder at any time via right-click tray men
 
 ---
 
-## Advanced: AI-Powered Speaker Identification & Meeting Minutes
+## AI-Powered Speaker Identification & Meeting Minutes
 
-> **Full guide**: See `TRANSCRIPTION-GUIDE.md` (included in this package) for detailed step-by-step instructions, Claude Code prompts, and speaker config setup.
+Out of the box, WhisperSync labels speakers as `SPEAKER_00`, `SPEAKER_01`, etc. With [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (Anthropic's AI coding assistant) or any AI tool that can read files, you can get:
 
-Out of the box, WhisperSync labels speakers as `SPEAKER_00`, `SPEAKER_01`, etc. With an additional setup using [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (Anthropic's AI coding assistant), you can get:
-
-- **Automatic speaker name resolution** — Claude analyzes the transcript for name callouts ("Hey David", "Thanks Sarah") and maps generic speaker IDs to real names
-- **Meeting minutes generation** — structured summary with action items, decisions, ticket candidates, and key topics
+- **Automatic speaker name resolution** — AI analyzes the transcript for name callouts ("Hey David", "Thanks Sarah") and maps generic speaker IDs to real names
+- **Readable transcript** — compact text format (~90% smaller than raw JSON)
+- **Meeting minutes** — action items, decisions, key topics
 - **Persistent speaker memory** — once identified, speakers are remembered across future meetings
 
-### How It Works
+### Quick Start (Claude Code)
 
-1. WhisperSync records and transcribes the meeting (you already have this)
-2. You run a Claude Code command that reads the transcript and:
-   - Scans the first ~20 segments for name mentions
-   - Cross-references against a known speakers config file
-   - Presents a speaker mapping for your confirmation (e.g., `SPEAKER_00 → David`)
-   - Saves the confirmed mapping back into `transcript.json` as a `speaker_map`
-   - Generates a `minutes.md` with structured meeting notes
+After a meeting recording, open a terminal in your WhisperSync directory and run:
 
-### Setup
+```
+claude
+```
 
-1. **Install Claude Code** — follow the [official docs](https://docs.anthropic.com/en/docs/claude-code)
+Then paste this prompt (replace the path with your actual transcript):
 
-2. **Create a speaker config file** at `.claude/workflows/transcription-config.md` in your project:
+```
+Read the transcript at Documents\WhisperSync\transcriptions\2026\2026-03-11_standup\transcript.json.
 
-   ```markdown
-   # Transcription Config
+1. Scan the first ~20 segments for name callouts (e.g., "Hey David", "Thanks Sarah")
+2. Present a speaker mapping for my confirmation (e.g., SPEAKER_00 -> David)
+3. Save the confirmed mapping as a "speaker_map" key in transcript.json
+4. Run: python -m whisper_sync.flatten [path/to/transcript.json]
+5. Read the resulting transcript-readable.txt
+6. Generate a minutes.md file next to the transcript with:
+   - Action Items (with assignee)
+   - Decisions Made
+   - Key Topics (1-2 sentence summaries)
+```
 
-   ## Known Speakers
+That's it. Claude identifies speakers, saves the mapping, flattens the transcript, and generates structured minutes — all in one shot.
 
-   | ID | Name | Voice Notes |
-   |----|------|-------------|
-   | alice | Alice | Team lead, American accent |
-   | bob | Bob | Engineer, often discusses backend |
+### Step-by-Step (Manual)
 
-   ## Meeting-to-Speaker Map
+If you prefer to do it without Claude Code:
 
-   | Meeting Pattern | Likely Speakers | Typical Count |
-   |-----------------|-----------------|---------------|
-   | standup | Alice, Bob | 2-3 |
-   ```
+**1. Find your transcript** — meeting recordings are in your transcriptions folder (default: `Documents\WhisperSync\transcriptions\`):
+```
+transcriptions/2026/2026-03-11_standup/
+  recording.wav
+  transcript.json     <-- this is what you need
+```
 
-3. **Use this prompt** in Claude Code after a meeting recording:
+**2. Flatten the transcript** — the raw JSON is large (~850KB for a 30-min meeting). Convert it:
+```powershell
+.\whisper-env\Scripts\python.exe -m whisper_sync.flatten "path\to\transcript.json"
+```
+This creates `transcript-readable.txt` next to the JSON:
+```
+Duration: 12:34 | Speakers: SPEAKER_00, SPEAKER_01
 
-   ```
-   Read the transcript at [path/to/transcript.json]. Identify speakers by scanning
-   for name callouts in the conversation. Cross-reference against the known speakers
-   in .claude/workflows/transcription-config.md. Present the speaker mapping for my
-   confirmation, then:
-   1. Save the confirmed mapping as a "speaker_map" key in transcript.json
-   2. Generate minutes.md with: Action Items, Decisions Made, Ticket Candidates, Key Topics
-   ```
+[SPEAKER_00] Let's start with the status update.
 
-   Or if you're using this within the ic-product-mgmt repo, just say:
-   `transcribe recording` — the full workflow is automated as a skill.
+[SPEAKER_01] Sure. The API integration is done, we're waiting on QA.
+We should have results by Thursday.
+```
 
-### Speaker Map Format
+**3. Identify speakers** — scan the readable transcript for name mentions:
+- "Hey David, can you..."
+- "Thanks, Sarah"
+- "Dinesh is joining now"
 
-After identification, `transcript.json` gets an added `speaker_map` field:
-
+**4. Save speaker map** — add a `speaker_map` to your `transcript.json`:
 ```json
 {
   "speaker_map": {
@@ -328,24 +333,177 @@ After identification, `transcript.json` gets an added `speaker_map` field:
 }
 ```
 
-The `flatten.py` utility (included) converts this into a readable text format:
+Then re-run flatten to get named speakers:
+```powershell
+.\whisper-env\Scripts\python.exe -m whisper_sync.flatten "path\to\transcript.json"
 ```
-python -m whisper_sync.flatten path/to/transcript.json
+Now the output shows real names:
 ```
-
-Output (`transcript-readable.txt`):
-```
-Duration: 12:34 | Speakers: Alice, Bob
-
 [Alice] Let's start with the status update.
 
-[Bob] Sure. The API integration is done, we're waiting on QA.
-We should have results by Thursday.
-
-[Alice] Great. What about the dashboard?
+[Bob] Sure. The API integration is done...
 ```
 
-This readable format is ~90% smaller than the raw JSON — useful for feeding into any AI tool for summarization.
+### Speaker Config (Recurring Meetings)
+
+For recurring meetings with the same people, create a `transcription-config.md` file in your WhisperSync folder:
+
+```markdown
+# Transcription Config
+
+## Known Speakers
+
+| ID | Name | Voice Notes |
+|----|------|-------------|
+| alice | Alice Johnson | Team lead, American accent |
+| bob | Bob Smith | Engineer, discusses backend |
+
+## Meeting-to-Speaker Map
+
+| Meeting Pattern | Likely Speakers | Typical Count |
+|-----------------|-----------------|---------------|
+| standup | Alice, Bob, Carol | 3 |
+| sprint-planning | Alice, Bob, Carol, Dave | 4 |
+```
+
+When using Claude Code, add to your prompt:
+```
+Cross-reference against the known speakers in transcription-config.md
+```
+
+This helps narrow down speaker candidates, especially when name callouts are ambiguous.
+
+### Claude Code Skill (Copy-Paste Ready)
+
+If you use Claude Code regularly, you can install this as a reusable skill so you just say `transcribe recording` and the entire workflow runs automatically — speaker identification, transcript flattening, and structured minutes generation.
+
+**Setup:**
+1. Create the file `.claude/skills/transcribe-recording/SKILL.md` in any project directory
+2. Paste the full skill content below
+3. From then on, just say `transcribe recording` in Claude Code
+
+**Full skill file** — copy everything below into `.claude/skills/transcribe-recording/SKILL.md`:
+
+````markdown
+---
+name: transcribe-recording
+description: Transcribe a WhisperSync meeting recording with speaker diarization, generate meeting minutes with action items and decisions. Use when hearing "transcribe recording", "process the recording", "transcribe the meeting", or "what did we say in the recording?".
+---
+
+# Transcribe Recording
+
+Transcribes a WhisperSync meeting recording with speaker diarization, identifies speakers by name, and generates structured meeting minutes.
+
+## Arguments
+$ARGUMENTS
+(Optional: path to a specific transcript.json or recording.wav. If blank, scans the transcriptions folder for the most recent recording.)
+
+## Prerequisites
+
+1. **WhisperSync venv** — `whisper-env\Scripts\python.exe -c "import whisperx; print('OK')"`
+2. **Hugging Face token** — required for speaker diarization. Check `~/.huggingface/token`.
+
+## Steps
+
+1. **Find the recording**:
+   - If argument provided, use that path.
+   - If argument is a `.json` file, use its parent folder as the meeting folder. Skip to Step 3.
+   - When scanning without argument, find the most recent `transcript.json` in the transcriptions folder:
+     ```bash
+     find ~/Documents/WhisperSync/transcriptions -name "transcript.json" -printf '%T@ %p\n' | sort -rn | head -1
+     ```
+   - Show the filename and ask user to confirm: "Found `{filename}` ({date}). Process this?"
+
+2. **Transcribe** (if only recording.wav exists, no transcript.json yet):
+   ```bash
+   whisper-env/Scripts/python.exe -c "
+   from whisper_sync.transcribe import transcribe
+   transcribe('{wav_path}', diarize=True)
+   "
+   ```
+
+3. **Auto-identify speakers**:
+   - If `transcription-config.md` exists in the WhisperSync directory, load it for known speakers and meeting-to-speaker mappings.
+   - Parse the diarized transcript for name callouts in the first ~20 segments: patterns like "Hey {Name}", "{Name}, can you", "Thanks {Name}", "{Name} is joining".
+   - Match callouts against known speakers from the config before falling back to generic labels.
+   - Present the auto-mapping for user confirmation:
+     ```
+     Speaker mapping:
+       SPEAKER_00 → Alice (matched: "Hey Alice" spoken by different speaker)
+       SPEAKER_01 → Bob (matched: called by name 3x)
+     Confirm or adjust?
+     ```
+   - Apply confirmed names to the transcript.
+   - **Update speaker config**: After confirmation, update `transcription-config.md`:
+     - Add any new speakers to the Known Speakers table.
+     - Update Meeting-to-Speaker Map if new participants appeared.
+
+4. **Persist speaker map to transcript.json**:
+   - Add a top-level `speaker_map` key with the confirmed mapping:
+     ```json
+     {
+       "speaker_map": {
+         "SPEAKER_00": "Alice",
+         "SPEAKER_01": "Bob"
+       },
+       "segments": [...]
+     }
+     ```
+   - Write back to the same file. Do NOT modify segment data — the map is additive only.
+
+5. **Flatten transcript** (token optimization):
+   ```bash
+   whisper-env/Scripts/python.exe -m whisper_sync.flatten "{meeting_folder}/transcript.json"
+   ```
+   - Produces `transcript-readable.txt` (~15KB vs ~850KB JSON) with speaker names resolved.
+
+6. **Generate minutes.md**:
+   - Read `transcript-readable.txt` (NOT the full JSON — saves ~98% tokens).
+   - Generate minutes.md using this template:
+
+     ```markdown
+     # Meeting Minutes — {meeting name from folder}
+     > Date: {YYYY-MM-DD} | Duration: {MM:SS} | Speakers: {resolved names}
+     > Source: local recording via WhisperSync
+     > Transcript: transcript.json
+
+     ## Summary
+
+     ### Action Items
+     - [ ] **{Assignee}**: {specific action with enough detail to execute}
+
+     ### Decisions Made
+     - {Decision with specifics — field names, values, approach chosen}
+
+     ### Key Topics
+     - {Topic}: {1-2 sentence summary}
+
+     ---
+
+     ## Detailed Notes
+
+     ### {Topic heading}
+     {Structured breakdown with speaker attribution and selective quotes}
+     ```
+
+   - Write minutes.md to the meeting folder (next to transcript.json).
+
+7. **Inform user**:
+   "Minutes saved to `{meeting_folder}/minutes.md`. Transcript flattened to `transcript-readable.txt`."
+
+## Notes
+
+- Each meeting folder contains: `recording.wav`, `transcript.json`, `minutes.md`, and the transient `transcript-readable.txt`.
+- The original recording is never modified or moved.
+- WhisperSync saves meetings to `Documents\WhisperSync\transcriptions\{year}\{date}_{name}\` by default.
+````
+
+### Tips
+
+- **Best model for meetings**: Use `large-v3` (set via tray menu -> Settings -> Meeting Model). Most accurate for multi-speaker audio.
+- **Re-transcribe**: Changed your mind on the model? Re-run transcription on the saved WAV — the original recording is always preserved.
+- **Token optimization**: Always use `transcript-readable.txt` (not the raw JSON) when feeding into AI tools — it's ~90% smaller.
+- **Speaker limits**: If you know the exact speaker count, WhisperX can use that constraint for better diarization accuracy.
 
 ---
 
