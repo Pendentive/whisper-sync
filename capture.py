@@ -138,21 +138,18 @@ class AudioRecorder:
     def discard_streaming(self):
         """Close writers and delete the temp files."""
         from .streaming_wav import cleanup_temp_files
-        writers = [self._mic_writer, self._speaker_writer]
-        for w in writers:
+        parent = None
+        for w in (self._mic_writer, self._speaker_writer):
             if w is not None:
+                parent = w.path.parent
                 try:
                     w.close()
                 except Exception:
                     pass
-        if self._mic_writer is not None:
-            parent = self._mic_writer.path.parent
-            self._mic_writer = None
-            self._speaker_writer = None
+        self._mic_writer = None
+        self._speaker_writer = None
+        if parent is not None:
             cleanup_temp_files(parent)
-        else:
-            self._mic_writer = None
-            self._speaker_writer = None
 
 
 def save_wav(filepath: str, data: np.ndarray, sample_rate: int = 16000):

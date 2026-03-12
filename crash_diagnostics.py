@@ -34,7 +34,8 @@ def install_excepthook(log: logging.Logger) -> None:
         tb = "".join(
             traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)
         )
-        log.critical(f"Unhandled exception in thread '{args.thread.name}':\n{tb}")
+        thread_name = args.thread.name if args.thread is not None else "<unknown>"
+        log.critical(f"Unhandled exception in thread '{thread_name}':\n{tb}")
         for handler in log.handlers:
             handler.flush()
 

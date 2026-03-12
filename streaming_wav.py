@@ -52,10 +52,10 @@ class StreamingWavWriter:
 
         Safe to call from audio callbacks — uses a lock internally.
         """
-        if self._file is None:
-            return
         int_data = (chunk * 32767).astype(np.int16).tobytes()
         with self._lock:
+            if self._file is None:
+                return
             self._file.write(int_data)
             self._bytes_written += len(int_data)
 

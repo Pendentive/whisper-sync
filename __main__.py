@@ -704,7 +704,7 @@ class WhisperSync:
                 if dur is not None:
                     logger.warning(
                         f"Recovered {dur:.0f}s of {name.split('-')[0]} audio "
-                        f"from previous crash — saved to {temp_dir}"
+                        f"from previous crash — file at {temp_dir / name}"
                     )
                 else:
                     logger.info(f"Cleaned up stale temp file: {name}")
