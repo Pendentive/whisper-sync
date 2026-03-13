@@ -5,7 +5,12 @@ Hotkey-triggered audio capture and transcription that runs 100% locally on your 
 - **Dictation** — press a hotkey, speak, press again. Your words are transcribed and pasted into whatever app is focused. Sub-second turnaround with a fast model.
 - **Meeting recording** — press a hotkey to record your mic + system audio (what you hear). Press again to stop, name the meeting, and get a full transcript with speaker labels saved to disk.
 
-Runs as a system tray icon on Windows. No cloud services, no subscriptions, no data leaves your machine.
+Runs as a system tray icon on Windows.
+
+**What runs where:**
+- **Dictation transcription** — 100% local GPU. No network calls.
+- **Meeting transcription + speaker identification** — 100% local GPU. No network calls.
+- **Meeting minutes / action items** — requires an LLM (e.g., Claude). The transcript stays on your machine; only the text you choose to send leaves it.
 
 ---
 

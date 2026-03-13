@@ -723,6 +723,13 @@ class WhisperSync:
         return result[0]
 
     def run(self):
+        # Clear any orphaned keyboard hooks from a previous crash
+        # This prevents the stuck-Ctrl-key bug when restarting after abnormal exit
+        try:
+            keyboard.unhook_all()
+        except Exception:
+            pass
+
         # Check for orphaned temp WAV files from a previous crash
         temp_dir = self._meeting_temp_dir()
         for name in ("mic-temp.wav", "speaker-temp.wav"):
@@ -743,12 +750,12 @@ class WhisperSync:
         keyboard.add_hotkey(
             self.cfg["hotkeys"]["dictation_toggle"],
             self.toggle_dictation,
-            suppress=True,
+            suppress=False,
         )
         keyboard.add_hotkey(
             self.cfg["hotkeys"]["meeting_toggle"],
             self.toggle_meeting,
-            suppress=True,
+            suppress=False,
         )
 
         self.tray = pystray.Icon(
@@ -777,7 +784,11 @@ class WhisperSync:
 
         threading.Thread(target=_preload, daemon=True).start()
 
-        self.tray.run()
+        try:
+            self.tray.run()
+        finally:
+            # Always release keyboard hooks to prevent stuck modifier keys
+            keyboard.unhook_all()
 
 
 def main():
@@ -790,6 +801,11 @@ def main():
     except Exception:
         import traceback
         logger.critical(f"FATAL CRASH:\n{traceback.format_exc()}")
+        # Last-resort hook cleanup — prevents stuck Ctrl key on crash
+        try:
+            keyboard.unhook_all()
+        except Exception:
+            pass
         raise
 
 

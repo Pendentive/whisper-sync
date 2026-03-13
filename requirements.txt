@@ -1,0 +1,9 @@
+# Core transcription
+whisperx
+
+# Audio capture (WhisperSync)
+sounddevice
+pystray
+Pillow
+keyboard
+pyperclip

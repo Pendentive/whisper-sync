@@ -15,7 +15,7 @@ def install_excepthook(log: logging.Logger) -> None:
     """Register global handlers for unhandled exceptions.
 
     Catches both main-thread and background-thread crashes,
-    logs the full traceback, then exits.
+    logs the full traceback, releases keyboard hooks, then exits.
     """
 
     def _handle_exception(exc_type, exc_value, exc_tb):
@@ -24,6 +24,12 @@ def install_excepthook(log: logging.Logger) -> None:
             return
         tb = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
         log.critical(f"Unhandled exception:\n{tb}")
+        # Release keyboard hooks to prevent stuck modifier keys
+        try:
+            import keyboard
+            keyboard.unhook_all()
+        except Exception:
+            pass
         # Flush all handlers so the traceback is persisted
         for handler in log.handlers:
             handler.flush()

@@ -1,0 +1,18 @@
+{
+  "hotkeys": {
+    "dictation_toggle": "ctrl+shift+space",
+    "meeting_toggle": "ctrl+shift+m"
+  },
+  "paste_method": "clipboard",
+  "language": "en",
+  "model": "large-v3",
+  "dictation_model": "large-v3",
+  "compute_type": "float16",
+  "output_dir": "transcriptions",
+  "mic_device": null,
+  "speaker_device": null,
+  "sample_rate": 16000,
+  "use_system_devices": true,
+  "left_click": "meeting",
+  "middle_click": "dictation"
+}
