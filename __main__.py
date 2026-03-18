@@ -827,46 +827,101 @@ class WhisperSync:
                          width=11, anchor="w").pack(side=tk.LEFT)
                 tk.Label(left, text="\u2192", font=("Segoe UI", 9), bg=card_bg, fg=fg_dim).pack(side=tk.LEFT, padx=4)
 
-                # Autocomplete entry with dropdown suggestions
+                # Autocomplete combo: Entry + ▼ button + floating Listbox
                 entry_var = tk.StringVar(value=name)
                 entry = tk.Entry(left, textvariable=entry_var, font=("Segoe UI", 9, "bold"),
                                  bg="#313244", fg=accent, insertbackground=fg,
-                                 relief="flat", highlightthickness=1, highlightcolor=accent, width=16)
-                entry.pack(side=tk.LEFT, padx=4, ipady=2)
+                                 relief="flat", highlightthickness=1, highlightcolor=accent, width=14)
+                entry.pack(side=tk.LEFT, padx=(4, 0), ipady=2)
                 dropdowns[spk_id] = entry_var
 
-                # Autocomplete behavior: type to filter, Tab to accept
-                suggestion_list = list(known_names) + (["Unknown"] if "Unknown" not in known_names else [])
+                all_names = list(known_names) + (["Unknown"] if "Unknown" not in known_names else [])
 
-                def _make_autocomplete(ent, var, suggestions):
-                    """Bind autocomplete to an entry widget."""
+                def _make_combo(ent, var, names, parent_row):
+                    """Bind autocomplete + dropdown button to an entry widget."""
+                    listbox_frame = [None]  # Mutable ref for the floating listbox
+
+                    def _close_listbox():
+                        if listbox_frame[0]:
+                            listbox_frame[0].destroy()
+                            listbox_frame[0] = None
+
+                    def _show_listbox(filter_text=""):
+                        _close_listbox()
+                        # Position below the entry
+                        x = ent.winfo_rootx() - root.winfo_rootx()
+                        y = ent.winfo_rooty() - root.winfo_rooty() + ent.winfo_height()
+
+                        frame = tk.Frame(root, bg="#313244", highlightbackground=accent, highlightthickness=1)
+                        frame.place(x=x, y=y, width=ent.winfo_width() + 30)
+                        listbox_frame[0] = frame
+
+                        filtered = [n for n in names if filter_text.lower() in n.lower()] if filter_text else names
+                        lb = tk.Listbox(frame, bg="#313244", fg=fg, selectbackground="#45475a",
+                                        selectforeground=accent, font=("Segoe UI", 9),
+                                        relief="flat", highlightthickness=0, height=min(len(filtered), 8))
+                        lb.pack(fill="both", expand=True)
+                        for n in filtered:
+                            lb.insert(tk.END, n)
+
+                        def _select(event=None):
+                            sel = lb.curselection()
+                            if sel:
+                                var.set(lb.get(sel[0]))
+                                ent.icursor(tk.END)
+                            _close_listbox()
+                            ent.focus_set()
+
+                        lb.bind("<ButtonRelease-1>", _select)
+                        lb.bind("<Return>", _select)
+
+                    def _toggle_listbox():
+                        if listbox_frame[0]:
+                            _close_listbox()
+                        else:
+                            _show_listbox()
+
                     def _on_key(event):
+                        if event.keysym == "Escape":
+                            _close_listbox()
+                            return
                         if event.keysym in ("Tab", "Return"):
-                            # Accept the current autocomplete suggestion
                             current = var.get()
-                            matches = [s for s in suggestions if s.lower().startswith(current.lower())]
+                            matches = [s for s in names if s.lower().startswith(current.lower())]
                             if matches and current.lower() != matches[0].lower():
                                 var.set(matches[0])
                                 ent.icursor(tk.END)
-                                return "break"
+                            _close_listbox()
+                            return "break"
                         elif event.keysym not in ("BackSpace", "Delete", "Left", "Right", "Home", "End"):
-                            # Show autocomplete preview
-                            root.after(10, lambda: _suggest(ent, var, suggestions))
+                            root.after(10, lambda: _autocomplete(ent, var, names))
 
-                    def _suggest(ent, var, suggestions):
+                    def _autocomplete(ent, var, names):
                         current = var.get()
                         if not current:
+                            _close_listbox()
                             return
-                        matches = [s for s in suggestions if s.lower().startswith(current.lower()) and s.lower() != current.lower()]
+                        matches = [s for s in names if s.lower().startswith(current.lower()) and s.lower() != current.lower()]
                         if matches:
                             pos = ent.index(tk.INSERT)
                             var.set(matches[0])
                             ent.select_range(pos, tk.END)
                             ent.icursor(pos)
+                        # Show filtered listbox while typing
+                        if len(current) >= 1:
+                            _show_listbox(current)
+                        else:
+                            _close_listbox()
 
                     ent.bind("<KeyRelease>", _on_key)
 
-                _make_autocomplete(entry, entry_var, suggestion_list)
+                    # ▼ button
+                    btn = tk.Label(parent_row, text="\u25bc", font=("Segoe UI", 7), bg=card_bg,
+                                   fg=fg_dim, cursor="hand2", padx=4)
+                    btn.pack(in_=left, side=tk.LEFT, padx=(0, 4))
+                    btn.bind("<Button-1>", lambda e: _toggle_listbox())
+
+                _make_combo(entry, entry_var, all_names, row)
 
                 # Confidence dot
                 conf = confidence.get(spk_id, "low")
