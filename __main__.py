@@ -1,5 +1,6 @@
 """WhisperSync entry point — tray icon + hotkey listener."""
 
+import faulthandler
 import sys
 import threading
 import tempfile
@@ -11,15 +12,17 @@ import pystray
 
 from . import config
 from .capture import AudioRecorder, get_default_devices, get_host_apis, list_devices, save_wav, save_stereo_wav
-from .icons import idle_icon, recording_icon, dictation_icon, saving_icon, transcribing_icon, done_icon, error_icon
+from .icons import idle_icon, recording_icon, dictation_icon, saving_icon, transcribing_icon, done_icon, queued_icon, error_icon
 from .logger import logger, get_log_path
 from .model_status import get_model_status, download_model, bootstrap_models
 from .paste import paste
 from .paths import get_install_root, get_default_output_dir, is_standalone
-from .transcribe import transcribe, transcribe_fast, preload
+from .worker_manager import TranscriptionWorker, WorkerCrashedError
 from . import dictation_log
 from .streaming_wav import fix_orphan
 from .crash_diagnostics import install_excepthook, check_previous_crash
+from .flatten import flatten as flatten_transcript
+from .rebuild_index import rebuild_root_index
 
 HOTKEY_OPTIONS = [
     "ctrl+shift+space",
@@ -58,10 +61,14 @@ class WhisperSync:
         self.cfg = config.load()
         self.recorder = AudioRecorder(sample_rate=self.cfg["sample_rate"])
         self.mode = None  # None, "dictation", "meeting", "saving", "transcribing", "done", "error"
-        self._transcribing = False  # True while background transcription is running
+        self._meeting_transcribing = False  # True while meeting transcription runs in background
         self.tray = None
         self._lock = threading.Lock()
         self._api_filter = "Windows WASAPI"  # None = show all
+        self._dictation_wav_path: Path | None = None
+        self._meeting_start_time: datetime | None = None
+        dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
+        self.worker = TranscriptionWorker(self.cfg, preload_model=dictation_model)
 
     def _update_icon(self):
         if self.tray is None:
@@ -74,7 +81,12 @@ class WhisperSync:
             "done": (done_icon(), "Done!"),
             "error": (error_icon(), "Error — check console"),
         }
-        icon, title = icons.get(self.mode, (idle_icon(), "Idle"))
+        if self.mode:
+            icon, title = icons[self.mode]
+        elif self._meeting_transcribing:
+            icon, title = transcribing_icon(), "Transcribing meeting..."
+        else:
+            icon, title = idle_icon(), "Idle"
         self.tray.icon = icon
         self.tray.title = f"WhisperSync: {title}"
 
@@ -118,6 +130,17 @@ class WhisperSync:
 
         threading.Thread(target=_reset, daemon=True).start()
 
+    def _flash_queued(self):
+        """Rapid amber flash to indicate dictation is queued behind a meeting stage."""
+        import time
+        for _ in range(2):
+            self.tray.icon = queued_icon()
+            self.tray.title = "WhisperSync: Queued..."
+            time.sleep(0.15)
+            self.tray.icon = transcribing_icon()
+            self.tray.title = "WhisperSync: Transcribing..."
+            time.sleep(0.15)
+
     def _can_record(self) -> bool:
         """Can we start a new recording? Allowed if idle or just transcribing in background."""
         return self.mode is None or self.mode in ("transcribing", "done", "error")
@@ -129,16 +152,29 @@ class WhisperSync:
             elif self._can_record():
                 self._start_dictation()
 
+    def _dictation_log_dir(self) -> Path:
+        return Path(__file__).parent / "logs" / "data" / "dictation"
+
     def _start_dictation(self):
+        if not self.worker.is_ready():
+            logger.warning("Worker not ready yet — ignoring dictation request")
+            return
         self.mode = "dictation"
         self._update_icon()
         mic = self.cfg.get("mic_device")
         if self.cfg.get("use_system_devices", True):
             mic = None
         self.recorder.start(mic_device=mic)
+        # Stream to disk in the daily dictation log folder so audio survives a crash
+        log_dir = self._dictation_log_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self._dictation_wav_path = log_dir / f"{ts}.wav"
+        self.recorder.start_streaming(self._dictation_wav_path)
 
     def _stop_dictation(self):
         audio = self.recorder.stop()
+        self.recorder.stop_streaming()
 
         if "mic" not in audio:
             self.mode = None
@@ -152,9 +188,17 @@ class WhisperSync:
 
         def _process():
             import time as _time
+
+            # If meeting is transcribing, flash queued icon — worker handles
+            # dictation between meeting stages but there may be a brief wait
+            if self._meeting_transcribing:
+                self._flash_queued()
+
             t0 = _time.perf_counter()
             try:
-                text = transcribe_fast(audio["mic"], model_override=dictation_model)
+                # Longer timeout when queued behind a meeting stage
+                timeout = 180 if self._meeting_transcribing else 60
+                text = self.worker.transcribe_fast(audio["mic"], model_override=dictation_model, timeout=timeout)
                 t1 = _time.perf_counter()
                 logger.info(f"transcribe_fast: {t1 - t0:.2f}s")
                 if text:
@@ -163,7 +207,16 @@ class WhisperSync:
                 logger.info(f"total (stop -> paste): {t2 - t0:.2f}s")
                 if text:
                     dictation_log.append(text, t2 - t0)
+                # Success — remove crash-safety WAV (text is in the .md log)
+                if self._dictation_wav_path and self._dictation_wav_path.exists():
+                    self._dictation_wav_path.unlink(missing_ok=True)
                 self.mode = "done"
+                self._update_icon()
+            except WorkerCrashedError:
+                logger.error("Worker crashed during dictation — respawning...")
+                logger.info(f"Dictation audio preserved at: {self._dictation_wav_path}")
+                self.worker.restart()
+                self.mode = "error"
                 self._update_icon()
             except Exception as e:
                 logger.error(f"Dictation error: {e}")
@@ -176,12 +229,157 @@ class WhisperSync:
 
         threading.Thread(target=_process, daemon=True).start()
 
+    def _recover_dictation(self, wav_path: str):
+        """Transcribe a recovered dictation WAV from a previous crash.
+
+        Puts the text on the clipboard (not auto-paste — wrong window may be focused
+        after a restart). The user can Ctrl+V when ready.
+        """
+        import pyperclip
+        logger.info(f"Recovering crashed dictation from: {wav_path}")
+        try:
+            import numpy as np
+            import wave
+            with wave.open(wav_path, "r") as wf:
+                frames = wf.readframes(wf.getnframes())
+                audio_np = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32767.0
+
+            dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
+            text = self.worker.transcribe_fast(audio_np, model_override=dictation_model)
+            if text:
+                pyperclip.copy(text)
+                dictation_log.append(text, 0)
+                logger.info(f"Crash-recovered dictation copied to clipboard: {text[:80]}...")
+            else:
+                logger.info("Crash-recovered dictation produced no text")
+            # Clean up the WAV now that text is on clipboard + in the .md log
+            Path(wav_path).unlink(missing_ok=True)
+        except Exception as e:
+            logger.error(f"Failed to recover dictation: {e}")
+            logger.info(f"Audio preserved at: {wav_path}")
+
+    def _recover_meetings(self):
+        """Show a dialog for each recovered meeting WAV, let user name and place it."""
+        for wav_path, duration in self._recovered_meeting_paths:
+            mins = int(duration // 60)
+            secs = int(duration % 60)
+            name = self._ask_recovery_name(wav_path, f"{mins}m {secs}s")
+            if name is self._ABORT:
+                logger.info(f"Recovery skipped for {wav_path} — file preserved")
+                continue
+            # Move to local-transcriptions (month-based, MMDD_HHMM naming)
+            from datetime import datetime as _dt, timedelta as _td
+            mtime = _dt.fromtimestamp(Path(wav_path).stat().st_mtime)
+            # Estimate start time from WAV duration
+            try:
+                import wave as _wave
+                with _wave.open(wav_path, 'rb') as _wf:
+                    _dur = _wf.getnframes() / _wf.getframerate()
+                start = mtime - _td(seconds=_dur)
+            except Exception:
+                start = mtime
+            week_dir = f"{start.strftime('%m')}-w{(start.day - 1) // 7 + 1}"
+            date_time_str = start.strftime("%m%d_%H%M")
+            folder_name = f"{date_time_str}_{name}" if name else f"{date_time_str}_recovered-meeting"
+            meeting_dir = self._output_dir() / week_dir / folder_name
+            meeting_dir.mkdir(parents=True, exist_ok=True)
+            dest = meeting_dir / "recording.wav"
+            Path(wav_path).rename(dest)
+            logger.info(f"Recovered meeting moved to: {dest}")
+            # Transcribe in background
+            def _transcribe(path=str(dest)):
+                try:
+                    self._meeting_transcribing = True
+                    self._update_icon()
+                    result = self.worker.transcribe(path, diarize=True)
+                    logger.info(f"Recovery transcript saved: {result.get('json_path', path)}")
+                    try:
+                        json_path = result.get('json_path')
+                        if json_path:
+                            flatten_transcript(json_path)
+                    except Exception:
+                        pass  # Non-fatal for recovery
+                except Exception as e:
+                    logger.error(f"Recovery transcription failed: {e}")
+                    logger.info(f"Audio preserved at: {path}")
+                finally:
+                    self._meeting_transcribing = False
+                    if self.mode is None:
+                        self.mode = "done"
+                        self._update_icon()
+                        self._schedule_idle(3, blink=True)
+                    else:
+                        self._update_icon()
+            threading.Thread(target=_transcribe, daemon=True).start()
+        self._recovered_meeting_paths = []
+
+    def _ask_recovery_name(self, wav_path: str, duration_str: str):
+        """Show a dialog to name a recovered meeting. Returns name string or _ABORT."""
+        result = [self._ABORT]
+        event = threading.Event()
+
+        def _show():
+            import tkinter as tk
+            root = tk.Tk()
+            root.title("WhisperSync: Recovered Meeting")
+            root.attributes("-topmost", True)
+            root.geometry("420x180")
+            root.resizable(False, False)
+
+            tk.Label(
+                root,
+                text=f"Recovered {duration_str} of meeting audio from a crash.",
+                wraplength=380,
+            ).pack(pady=(12, 4))
+            tk.Label(root, text="Meeting name:").pack(pady=(4, 2))
+            entry = tk.Entry(root, width=45)
+            entry.pack(pady=4)
+            entry.focus_force()
+
+            btn_frame = tk.Frame(root)
+            btn_frame.pack(pady=8)
+
+            def _submit(event=None):
+                result[0] = entry.get()
+                root.destroy()
+
+            def _skip():
+                result[0] = self._ABORT
+                root.destroy()
+
+            entry.bind("<Return>", _submit)
+            entry.bind("<Escape>", lambda e: _skip())
+            tk.Button(btn_frame, text="Save & Transcribe", command=_submit, width=16).pack(side=tk.LEFT, padx=4)
+            tk.Button(btn_frame, text="Skip", command=_skip, width=8).pack(side=tk.LEFT, padx=4)
+
+            root.update_idletasks()
+            x = (root.winfo_screenwidth() - root.winfo_reqwidth()) // 2
+            y = (root.winfo_screenheight() - root.winfo_reqheight()) // 2
+            root.geometry(f"+{x}+{y}")
+
+            root.protocol("WM_DELETE_WINDOW", _skip)
+            root.mainloop()
+            event.set()
+
+        t = threading.Thread(target=_show, daemon=True)
+        t.start()
+        event.wait(timeout=120)
+
+        if result[0] is self._ABORT:
+            return self._ABORT
+
+        name = result[0] or ""
+        return "".join(c if c.isalnum() or c in " -_" else "" for c in name).strip().replace(" ", "-")
+
     def _discard_dictation(self):
         """Discard current dictation — stop recording, throw away audio, return to idle."""
         with self._lock:
             if self.mode != "dictation":
                 return
             self.recorder.stop()  # stop recording, discard the audio
+            self.recorder.stop_streaming()
+            if self._dictation_wav_path and self._dictation_wav_path.exists():
+                self._dictation_wav_path.unlink(missing_ok=True)
             logger.info("Dictation discarded (left-click)")
             self.mode = None
             self._update_icon()
@@ -195,6 +393,7 @@ class WhisperSync:
 
     def _start_meeting(self):
         self.mode = "meeting"
+        self._meeting_start_time = datetime.now()
         self._update_icon()
         mic = self.cfg.get("mic_device")
         speaker = self.cfg.get("speaker_device")
@@ -206,10 +405,13 @@ class WhisperSync:
             defaults = get_default_devices()
             speaker = defaults["output"]
         self.recorder.start(mic_device=mic, speaker_device=speaker)
+        if self.recorder.speaker_loopback_active:
+            logger.info("Meeting recording: mic + speaker loopback (stereo)")
+        else:
+            logger.warning("Meeting recording: mic only (speaker loopback unavailable)")
         temp = self._meeting_temp_dir()
         mic_temp = temp / "mic-temp.wav"
-        speaker_temp = temp / "speaker-temp.wav" if speaker is not None else None
-        self.recorder.start_streaming(mic_temp, speaker_temp)
+        self.recorder.start_streaming(mic_temp)
 
     _ABORT = object()  # Sentinel for abort
 
@@ -292,11 +494,11 @@ class WhisperSync:
 
             self.recorder.stop_streaming()
             try:
-                now = datetime.now()
-                date_str = now.strftime("%Y-%m-%d")
-                year_str = now.strftime("%Y")
-                folder_name = f"{date_str}_{meeting_name}" if meeting_name else f"{date_str}_meeting"
-                meeting_dir = self._output_dir() / year_str / folder_name
+                start = getattr(self, '_meeting_start_time', None) or datetime.now()
+                week_dir = f"{start.strftime('%m')}-w{(start.day - 1) // 7 + 1}"
+                date_time_str = start.strftime("%m%d_%H%M")
+                folder_name = f"{date_time_str}_{meeting_name}" if meeting_name else f"{date_time_str}_meeting"
+                meeting_dir = self._output_dir() / week_dir / folder_name
                 meeting_dir.mkdir(parents=True, exist_ok=True)
 
                 wav_path = meeting_dir / "recording.wav"
@@ -308,36 +510,85 @@ class WhisperSync:
                 logger.info(f"WAV saved: {wav_path}")
                 from .streaming_wav import cleanup_temp_files
                 cleanup_temp_files(self._meeting_temp_dir())
-                self.mode = "transcribing"
+
+                # Release mode so user can dictate while meeting transcribes
+                self.mode = None
+                self._meeting_transcribing = True
                 self._update_icon()
 
-                result = transcribe(str(wav_path), diarize=True)
+                if not self.worker.is_alive():
+                    logger.warning("Worker not alive — restarting...")
+                    self.worker.restart()
+                    if not self.worker.wait_ready(timeout=120):
+                        raise RuntimeError("Worker failed to restart")
+                result = self.worker.transcribe(str(wav_path), diarize=True)
                 logger.info(f"Transcript saved: {result.get('json_path', wav_path)}")
-                self.mode = "done"
-                self._update_icon()
+                # Auto-flatten transcript for immediate readability
+                try:
+                    json_path = result.get('json_path')
+                    if json_path:
+                        readable_path = flatten_transcript(json_path)
+                        if readable_path:
+                            logger.info(f"Flattened transcript: {readable_path}")
+                except Exception as e:
+                    logger.warning(f"Auto-flatten failed (non-fatal): {e}")
+                # Rebuild week + root INDEX.md
+                try:
+                    rebuild_root_index(self._output_dir())
+                except Exception as e:
+                    logger.warning(f"Index rebuild failed (non-fatal): {e}")
+                self._meeting_transcribing = False
+                # Flash "done" only if user is idle (not mid-dictation)
+                if self.mode is None:
+                    self.mode = "done"
+                    self._update_icon()
+                    self._schedule_idle(3, blink=True)
+                else:
+                    self._update_icon()
+            except WorkerCrashedError:
+                logger.error("Worker crashed during meeting — respawning...")
+                logger.info(f"Audio is preserved at: {wav_path}")
+                self.worker.restart()
+                self._meeting_transcribing = False
+                if self.mode is None:
+                    self.mode = "error"
+                    self._update_icon()
+                    self._schedule_idle(3)
+                else:
+                    self._update_icon()
             except PermissionError as e:
                 # Gated model access — show user the acceptance URLs
                 logger.error(str(e))
                 self._show_error_popup("Diarization Model Access", str(e))
-                self.mode = "error"
-                self._update_icon()
+                self._meeting_transcribing = False
+                if self.mode is None:
+                    self.mode = "error"
+                    self._update_icon()
+                    self._schedule_idle(3)
+                else:
+                    self._update_icon()
             except FileNotFoundError as e:
                 # Missing HF token
                 logger.error(str(e))
                 self._show_error_popup("Hugging Face Token Missing", str(e))
-                self.mode = "error"
-                self._update_icon()
+                self._meeting_transcribing = False
+                if self.mode is None:
+                    self.mode = "error"
+                    self._update_icon()
+                    self._schedule_idle(3)
+                else:
+                    self._update_icon()
             except Exception as e:
                 logger.error(f"Meeting transcription error: {e}")
                 import traceback
                 logger.debug(traceback.format_exc())
-                self.mode = "error"
-                self._update_icon()
-            finally:
-                if self.mode == "done":
-                    self._schedule_idle(3, blink=True)
-                elif self.mode == "error":
+                self._meeting_transcribing = False
+                if self.mode is None:
+                    self.mode = "error"
+                    self._update_icon()
                     self._schedule_idle(3)
+                else:
+                    self._update_icon()
 
         threading.Thread(target=_post_record, daemon=True).start()
 
@@ -597,9 +848,12 @@ class WhisperSync:
             return
         self.cfg[key] = model_name
         self._save_and_refresh()
-        # If changing dictation model, preload it in background
+        # Reload model in the appropriate worker subprocess
         if key == "dictation_model":
-            threading.Thread(target=lambda: preload(model_name=model_name), daemon=True).start()
+            threading.Thread(
+                target=lambda: self.worker.reload_model(model_name),
+                daemon=True,
+            ).start()
 
     def _model_menu_items(self) -> list:
         """Build model status menu items."""
@@ -680,6 +934,7 @@ class WhisperSync:
         import subprocess
         if self.recorder.is_recording:
             self.recorder.stop()
+        self.worker.stop()
         keyboard.unhook_all()
         subprocess.Popen(
             [sys.executable, "-m", "whisper_sync"],
@@ -691,6 +946,7 @@ class WhisperSync:
     def quit(self):
         if self.recorder.is_recording:
             self.recorder.stop()
+        self.worker.stop()
         keyboard.unhook_all()
         if self.tray:
             self.tray.stop()
@@ -730,7 +986,8 @@ class WhisperSync:
         except Exception:
             pass
 
-        # Check for orphaned temp WAV files from a previous crash
+        # Check for orphaned temp WAV files from a previous crash (meeting)
+        self._recovered_meeting_paths = []
         temp_dir = self._meeting_temp_dir()
         for name in ("mic-temp.wav", "speaker-temp.wav"):
             temp_path = temp_dir / name
@@ -741,8 +998,23 @@ class WhisperSync:
                         f"Recovered {dur:.0f}s of {name.split('-')[0]} audio "
                         f"from previous crash — file at {temp_dir / name}"
                     )
+                    if name == "mic-temp.wav":
+                        self._recovered_meeting_paths.append((str(temp_path), dur))
                 else:
                     logger.info(f"Cleaned up stale temp file: {name}")
+
+        # Check for orphaned dictation WAVs from a previous crash
+        # (successful dictations delete the WAV, so any .wav here = crash)
+        self._recovered_dictation_paths = []
+        dict_log_dir = self._dictation_log_dir()
+        if dict_log_dir.exists():
+            for wav in sorted(dict_log_dir.glob("*.wav")):
+                dur = fix_orphan(wav)
+                if dur is not None:
+                    logger.warning(f"Recovered {dur:.0f}s dictation from crash: {wav.name}")
+                    self._recovered_dictation_paths.append(str(wav))
+                else:
+                    logger.info(f"Cleaned up stale dictation WAV: {wav.name}")
 
         # Bootstrap: ensure base models are cached, prompt for large ones
         bootstrap_models(self.cfg, on_large_model=self._prompt_large_download)
@@ -774,24 +1046,38 @@ class WhisperSync:
         logger.info(f"Log file: {get_log_path()}")
         logger.info("Right-click tray icon for menu.")
 
-        # Preload dictation model in background so first dictation is fast
-        def _preload():
-            try:
-                preload(model_name=dictation_model)
-                logger.info(f"Dictation model '{dictation_model}' ready")
-            except Exception as e:
-                logger.warning(f"Preload warning: {e}")
+        # Start transcription worker subprocess (loads models in isolation)
+        self.worker.start()
 
-        threading.Thread(target=_preload, daemon=True).start()
+        def _wait_worker():
+            if self.worker.wait_ready(timeout=120):
+                logger.info(f"Dictation model '{dictation_model}' ready (worker pid={self.worker._process.pid})")
+                # Recover any crashed dictations found at startup
+                for wav_path in self._recovered_dictation_paths:
+                    self._recover_dictation(wav_path)
+                self._recovered_dictation_paths = []
+                # Recover any crashed meetings — show dialog for naming
+                if self._recovered_meeting_paths:
+                    self._recover_meetings()
+            else:
+                logger.warning("Transcription worker failed to start — dictation may not work")
+
+        threading.Thread(target=_wait_worker, daemon=True).start()
 
         try:
             self.tray.run()
         finally:
             # Always release keyboard hooks to prevent stuck modifier keys
             keyboard.unhook_all()
+            self.worker.stop()
 
 
 def main():
+    # Enable faulthandler FIRST so native segfaults get logged to the log file
+    try:
+        faulthandler.enable(file=open(get_log_path(), "a"), all_threads=True)
+    except Exception:
+        faulthandler.enable()  # fallback to stderr
     try:
         logger.info("=== WhisperSync starting ===")
         install_excepthook(logger)
