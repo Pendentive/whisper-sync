@@ -414,9 +414,16 @@ class WhisperSync:
         self.recorder.start_streaming(mic_temp)
 
     _ABORT = object()  # Sentinel for abort
+    _SAVE_ONLY = object()  # Sentinel for save without summarize
 
     def _ask_meeting_name(self):
-        """Show a popup to name the meeting. Returns name string or _ABORT sentinel."""
+        """Show a popup to name the meeting. Returns (name, summarize) tuple or _ABORT.
+
+        Returns:
+            _ABORT: user clicked Discard
+            (str, True): user clicked Save & Summarize
+            (str, False): user clicked Save
+        """
         result = [self._ABORT]
         event = threading.Event()
 
@@ -425,29 +432,39 @@ class WhisperSync:
             root = tk.Tk()
             root.title("WhisperSync")
             root.attributes("-topmost", True)
-            root.geometry("350x150")
+            root.geometry("420x160")
             root.resizable(False, False)
 
             tk.Label(root, text="Meeting name (leave blank for default):").pack(pady=(12, 4))
-            entry = tk.Entry(root, width=40)
+            entry = tk.Entry(root, width=45)
             entry.pack(pady=4)
             entry.focus_force()
 
             btn_frame = tk.Frame(root)
             btn_frame.pack(pady=8)
 
-            def _submit(event=None):
-                result[0] = entry.get()
+            def _sanitize():
+                name = entry.get() or ""
+                return "".join(c if c.isalnum() or c in " -_" else "" for c in name).strip().replace(" ", "-")
+
+            def _save_and_summarize(event=None):
+                result[0] = (_sanitize(), True)
+                root.destroy()
+
+            def _save_only():
+                result[0] = (_sanitize(), False)
                 root.destroy()
 
             def _abort():
                 result[0] = self._ABORT
                 root.destroy()
 
-            entry.bind("<Return>", _submit)
+            entry.bind("<Return>", _save_and_summarize)
             entry.bind("<Escape>", lambda e: _abort())
-            tk.Button(btn_frame, text="Save", command=_submit, width=10).pack(side=tk.LEFT, padx=4)
-            tk.Button(btn_frame, text="Discard", command=_abort, width=10, fg="red").pack(side=tk.LEFT, padx=4)
+            tk.Button(btn_frame, text="Save & Summarize", command=_save_and_summarize, width=16,
+                      bg="#2563eb", fg="white").pack(side=tk.LEFT, padx=4)
+            tk.Button(btn_frame, text="Save", command=_save_only, width=8).pack(side=tk.LEFT, padx=4)
+            tk.Button(btn_frame, text="Discard", command=_abort, width=8, fg="red").pack(side=tk.LEFT, padx=4)
 
             # Center on screen
             root.update_idletasks()
@@ -463,11 +480,80 @@ class WhisperSync:
         t.start()
         event.wait(timeout=60)
 
-        if result[0] is self._ABORT:
-            return self._ABORT
+        return result[0]
 
-        name = result[0] or ""
-        return "".join(c if c.isalnum() or c in " -_" else "" for c in name).strip().replace(" ", "-")
+    def _ask_rename_suggestion(self, current_name: str, summary: str):
+        """Show a popup suggesting a better meeting name based on minutes summary.
+
+        Returns the chosen name string, or None to skip rename.
+        """
+        import re
+
+        # Generate suggestion from summary: take first ~5 meaningful words, kebab-case
+        words = re.sub(r'[^a-zA-Z0-9\s]', '', summary).lower().split()
+        # Filter out very short/common words
+        stopwords = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'was', 'are', 'were', 'be', 'been'}
+        meaningful = [w for w in words if w not in stopwords and len(w) > 2][:5]
+        suggested = "-".join(meaningful) if meaningful else current_name
+
+        result = [None]
+        event = threading.Event()
+
+        def _show():
+            import tkinter as tk
+            root = tk.Tk()
+            root.title("WhisperSync: Rename Meeting?")
+            root.attributes("-topmost", True)
+            root.geometry("500x200")
+            root.resizable(False, False)
+
+            tk.Label(root, text="Meeting summarized. Rename folder?",
+                     font=("Segoe UI", 10, "bold")).pack(pady=(10, 2))
+            tk.Label(root, text=f"Summary: {summary[:100]}{'...' if len(summary) > 100 else ''}",
+                     wraplength=460, fg="#555").pack(pady=(2, 8))
+
+            tk.Label(root, text="Current:").pack(anchor="w", padx=20)
+            tk.Label(root, text=f"  {current_name}", fg="#888").pack(anchor="w", padx=20)
+
+            tk.Label(root, text="Suggested name:").pack(anchor="w", padx=20, pady=(6, 0))
+            entry = tk.Entry(root, width=55)
+            entry.pack(padx=20, pady=2)
+            entry.insert(0, suggested)
+            entry.select_range(0, tk.END)
+            entry.focus_force()
+
+            btn_frame = tk.Frame(root)
+            btn_frame.pack(pady=8)
+
+            def _accept(event=None):
+                name = entry.get().strip()
+                if name:
+                    result[0] = "".join(c if c.isalnum() or c in " -_" else "" for c in name).strip().replace(" ", "-")
+                root.destroy()
+
+            def _skip():
+                result[0] = None
+                root.destroy()
+
+            entry.bind("<Return>", _accept)
+            entry.bind("<Escape>", lambda e: _skip())
+            tk.Button(btn_frame, text="Rename", command=_accept, width=10).pack(side=tk.LEFT, padx=4)
+            tk.Button(btn_frame, text="Keep Original", command=_skip, width=12).pack(side=tk.LEFT, padx=4)
+
+            root.update_idletasks()
+            x = (root.winfo_screenwidth() - root.winfo_reqwidth()) // 2
+            y = (root.winfo_screenheight() - root.winfo_reqheight()) // 2
+            root.geometry(f"+{x}+{y}")
+
+            root.protocol("WM_DELETE_WINDOW", _skip)
+            root.mainloop()
+            event.set()
+
+        t = threading.Thread(target=_show, daemon=True)
+        t.start()
+        event.wait(timeout=120)
+
+        return result[0]
 
     def _stop_meeting(self):
         audio = self.recorder.stop()
@@ -483,14 +569,17 @@ class WhisperSync:
 
         # Run the entire post-recording flow in a thread so we release the lock
         def _post_record():
-            meeting_name = self._ask_meeting_name()
+            dialog_result = self._ask_meeting_name()
 
-            if meeting_name is self._ABORT:
+            if dialog_result is self._ABORT:
                 logger.info("Recording discarded")
                 self.recorder.discard_streaming()
                 self.mode = None
                 self._update_icon()
                 return
+
+            meeting_name, do_summarize = dialog_result
+            logger.info(f"Meeting saved: {meeting_name or 'meeting'} (summarize={do_summarize})")
 
             self.recorder.stop_streaming()
             try:
@@ -532,6 +621,34 @@ class WhisperSync:
                             logger.info(f"Flattened transcript: {readable_path}")
                 except Exception as e:
                     logger.warning(f"Auto-flatten failed (non-fatal): {e}")
+                # Auto-generate minutes + rename suggestion (only if Save & Summarize)
+                if do_summarize:
+                    try:
+                        readable_file = meeting_dir / "transcript-readable.txt"
+                        minutes_file = meeting_dir / "minutes.md"
+                        if readable_file.exists() and not minutes_file.exists():
+                            self._generate_minutes(meeting_dir, readable_file, minutes_file)
+                        # Extract summary and offer rename
+                        if minutes_file.exists():
+                            summary = None
+                            for line in minutes_file.read_text(encoding="utf-8").splitlines():
+                                if line.startswith("> Summary:"):
+                                    summary = line[len("> Summary:"):].strip()
+                                    break
+                            if summary:
+                                new_name = self._ask_rename_suggestion(meeting_name or "meeting", summary)
+                                if new_name and new_name != meeting_name:
+                                    new_folder_name = f"{date_time_str}_{new_name}"
+                                    new_meeting_dir = meeting_dir.parent / new_folder_name
+                                    if not new_meeting_dir.exists():
+                                        import shutil
+                                        shutil.move(str(meeting_dir), str(new_meeting_dir))
+                                        logger.info(f"Renamed: {folder_name} -> {new_folder_name}")
+                                        meeting_dir = new_meeting_dir
+                                    else:
+                                        logger.warning(f"Rename skipped — folder already exists: {new_folder_name}")
+                    except Exception as e:
+                        logger.warning(f"Auto-summarize failed (non-fatal): {e}")
                 # Rebuild week + root INDEX.md
                 try:
                     rebuild_root_index(self._output_dir())
@@ -602,6 +719,48 @@ class WhisperSync:
                 # Repo mode: relative paths resolve from repo root
                 p = get_install_root() / p
         return p
+
+    def _generate_minutes(self, meeting_dir: Path, readable_file: Path, minutes_file: Path):
+        """Generate minutes.md via Claude CLI (claude -p) using the shared prompt template."""
+        import subprocess as _sp
+
+        prompt_file = Path(__file__).parent / "minutes_prompt.md"
+        if not prompt_file.exists():
+            logger.warning(f"Minutes prompt template not found: {prompt_file}")
+            return
+
+        prompt_text = prompt_file.read_text(encoding="utf-8")
+        transcript_text = readable_file.read_text(encoding="utf-8")
+
+        # Build the full prompt: template + transcript
+        full_prompt = (
+            f"{prompt_text}\n\n"
+            f"---\n\n"
+            f"Meeting folder: {meeting_dir.name}\n\n"
+            f"Transcript:\n\n{transcript_text}"
+        )
+
+        logger.info(f"Generating minutes via Claude CLI for: {meeting_dir.name}")
+        try:
+            result = _sp.run(
+                ["claude", "-p", "--model", "sonnet"],
+                input=full_prompt,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 minutes max
+                cwd=str(Path(__file__).parent.parent.parent),  # repo root
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                minutes_file.write_text(result.stdout, encoding="utf-8")
+                logger.info(f"Minutes saved: {minutes_file}")
+            else:
+                logger.warning(f"Claude CLI returned code {result.returncode}")
+                if result.stderr:
+                    logger.debug(f"stderr: {result.stderr[:500]}")
+        except FileNotFoundError:
+            logger.warning("Claude CLI not found — minutes generation skipped. Install: npm i -g @anthropic-ai/claude-code")
+        except _sp.TimeoutExpired:
+            logger.warning("Claude CLI timed out generating minutes (5 min limit)")
 
     def _meeting_temp_dir(self) -> Path:
         return Path(__file__).parent / "logs" / "data" / "meeting"
