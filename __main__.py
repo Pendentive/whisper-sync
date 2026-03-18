@@ -506,18 +506,22 @@ class WhisperSync:
             entry.bind("<Return>", _save_and_summarize)
             entry.bind("<Escape>", lambda e: _abort())
 
-            # Discard (left)
-            tk.Button(btn_frame, text="Discard", command=_abort, width=10,
-                      font=("Segoe UI", 9), bg="#45475a", fg=danger, activebackground="#585b70",
-                      activeforeground=danger, relief="flat", cursor="hand2").pack(side=tk.LEFT, padx=6)
+            # Pack RIGHT to LEFT so rightmost button is packed first
+            # Save & Summarize (rightmost, primary)
+            tk.Button(btn_frame, text="Save & Summarize", command=_save_and_summarize, width=16,
+                      font=("Segoe UI", 9, "bold"), bg=accent, fg="#1e1e2e", activebackground="#74c7ec",
+                      activeforeground="#1e1e2e", relief="flat", cursor="hand2",
+                      borderwidth=0, padx=12, pady=4).pack(side=tk.RIGHT, padx=6)
             # Save (middle)
             tk.Button(btn_frame, text="Save", command=_save_only, width=10,
                       font=("Segoe UI", 9), bg="#45475a", fg=fg, activebackground="#585b70",
-                      activeforeground=fg, relief="flat", cursor="hand2").pack(side=tk.LEFT, padx=6)
-            # Save & Summarize (right, primary)
-            tk.Button(btn_frame, text="Save & Summarize", command=_save_and_summarize, width=16,
-                      font=("Segoe UI", 9, "bold"), bg=accent, fg="#1e1e2e", activebackground="#74c7ec",
-                      activeforeground="#1e1e2e", relief="flat", cursor="hand2").pack(side=tk.LEFT, padx=6)
+                      activeforeground=fg, relief="flat", cursor="hand2",
+                      borderwidth=0, padx=12, pady=4).pack(side=tk.RIGHT, padx=6)
+            # Discard (leftmost)
+            tk.Button(btn_frame, text="Discard", command=_abort, width=10,
+                      font=("Segoe UI", 9), bg="#45475a", fg=danger, activebackground="#585b70",
+                      activeforeground=danger, relief="flat", cursor="hand2",
+                      borderwidth=0, padx=12, pady=4).pack(side=tk.RIGHT, padx=6)
 
             self._center_window(root)
             root.protocol("WM_DELETE_WINDOW", _abort)
@@ -530,33 +534,59 @@ class WhisperSync:
 
         return result[0]
 
+    def _generate_name_suggestions(self, summary: str, current_name: str) -> list[str]:
+        """Generate 3 meeting name suggestions via Claude CLI.
+
+        Falls back to simple word extraction if CLI fails.
+        """
+        import subprocess as _sp
+        import re
+
+        prompt = (
+            "Generate exactly 3 short meeting folder names based on this meeting summary. "
+            "Rules:\n"
+            "- Each name should be 2-4 words, kebab-case (e.g., architecture-soft-reset, migration-go-live-planning)\n"
+            "- Names should capture WHAT the meeting was about, not WHO was in it\n"
+            "- No dates, no generic words like 'meeting' or 'discussion' or 'sync'\n"
+            "- Think like a PM labeling a folder they'll scan later\n"
+            "- Output ONLY the 3 names, one per line, nothing else\n\n"
+            f"Current name: {current_name}\n"
+            f"Summary: {summary}"
+        )
+
+        try:
+            result = _sp.run(
+                ["claude", "-p", "--model", "haiku"],
+                input=prompt, capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                lines = [l.strip().strip("-").strip() for l in result.stdout.strip().splitlines()]
+                # Sanitize and filter
+                suggestions = []
+                for line in lines:
+                    name = self._sanitize_name(line.lower())
+                    if name and len(name) > 3 and name != current_name:
+                        suggestions.append(name)
+                if suggestions:
+                    return suggestions[:3]
+        except Exception:
+            pass
+
+        # Fallback: simple word extraction
+        words = re.sub(r'[^a-zA-Z0-9\s]', '', summary).lower().split()
+        stopwords = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+                     'of', 'with', 'by', 'is', 'was', 'are', 'were', 'be', 'been', 'has',
+                     'had', 'have', 'that', 'this', 'from', 'not', 'all', 'can', 'will',
+                     'meeting', 'discussion', 'sync', 'call'}
+        meaningful = [w for w in words if w not in stopwords and len(w) > 2][:4]
+        return ["-".join(meaningful)] if meaningful else [current_name]
+
     def _ask_rename_suggestion(self, current_name: str, summary: str):
         """Show a popup suggesting a better meeting name based on minutes summary.
 
         Returns the chosen name string, or None to skip rename.
         """
-        import re
-
-        # Generate 3 suggestions from summary
-        words = re.sub(r'[^a-zA-Z0-9\s]', '', summary).lower().split()
-        stopwords = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
-                     'of', 'with', 'by', 'is', 'was', 'are', 'were', 'be', 'been', 'has',
-                     'had', 'have', 'that', 'this', 'from', 'not', 'all', 'can', 'will'}
-        meaningful = [w for w in words if w not in stopwords and len(w) > 2]
-
-        suggestions = []
-        if len(meaningful) >= 5:
-            suggestions.append("-".join(meaningful[:5]))  # First 5 words
-        if len(meaningful) >= 3:
-            suggestions.append("-".join(meaningful[:3]))  # Short version
-        if len(meaningful) >= 7:
-            suggestions.append("-".join(meaningful[2:7]))  # Mid-section
-        # Fallback
-        if not suggestions:
-            suggestions = ["-".join(meaningful) if meaningful else current_name]
-        # Ensure unique
-        seen = set()
-        suggestions = [s for s in suggestions if s not in seen and not seen.add(s)]
+        suggestions = self._generate_name_suggestions(summary, current_name)
 
         result = [None]
         event = threading.Event()
@@ -565,65 +595,73 @@ class WhisperSync:
             import tkinter as tk
 
             root = tk.Tk()
-            root.title("WhisperSync: Rename Meeting")
+            root.title("WhisperSync")
             self._style_window(root)
 
             bg = "#1e1e2e"
             fg = "#cdd6f4"
             fg_dim = "#6c7086"
+            fg_muted = "#a6adc8"
             accent = "#89b4fa"
             entry_bg = "#313244"
             card_bg = "#181825"
+            chip_bg = "#313244"
+            chip_hover = "#45475a"
 
-            # Calculate height based on number of suggestions
-            height = 260 + (len(suggestions) * 28)
-            root.geometry(f"520x{height}")
+            root.geometry("480x310")
 
-            # Title
-            tk.Label(root, text="Rename Meeting", font=("Segoe UI", 11, "bold"),
-                     bg=bg, fg=fg).pack(pady=(12, 2))
+            # --- Header ---
+            header = tk.Frame(root, bg=bg)
+            header.pack(fill="x", padx=24, pady=(16, 0))
+            tk.Label(header, text="\u2728", font=("Segoe UI", 14), bg=bg).pack(side=tk.LEFT)
+            tk.Label(header, text="  Rename Meeting", font=("Segoe UI", 12, "bold"),
+                     bg=bg, fg=fg).pack(side=tk.LEFT)
 
-            # Summary preview
-            summary_text = summary[:120] + ("..." if len(summary) > 120 else "")
-            tk.Label(root, text=summary_text, wraplength=480,
-                     font=("Segoe UI", 8), bg=bg, fg=fg_dim, justify="left").pack(padx=20, pady=(2, 8))
+            # --- Summary card ---
+            summary_card = tk.Frame(root, bg=card_bg)
+            summary_card.pack(fill="x", padx=24, pady=(12, 0))
+            # Rounded corners not possible in tk, but border color helps
+            summary_card.configure(highlightbackground="#313244", highlightthickness=1)
+            summary_text = summary[:140] + ("..." if len(summary) > 140 else "")
+            tk.Label(summary_card, text=summary_text, wraplength=420,
+                     font=("Segoe UI", 8), bg=card_bg, fg=fg_dim,
+                     justify="left", anchor="w").pack(padx=12, pady=8, anchor="w")
 
-            # Current name
-            current_frame = tk.Frame(root, bg=card_bg, highlightbackground="#313244", highlightthickness=1)
-            current_frame.pack(fill="x", padx=20, pady=(0, 8))
-            tk.Label(current_frame, text="Current:", font=("Segoe UI", 8),
-                     bg=card_bg, fg=fg_dim).pack(anchor="w", padx=8, pady=(4, 0))
-            tk.Label(current_frame, text=current_name, font=("Segoe UI Semibold", 9),
-                     bg=card_bg, fg=fg).pack(anchor="w", padx=8, pady=(0, 4))
+            # --- Current name ---
+            tk.Label(root, text=f"Current:  {current_name}",
+                     font=("Segoe UI", 8), bg=bg, fg=fg_dim).pack(anchor="w", padx=26, pady=(10, 0))
 
-            # Suggestion buttons
-            tk.Label(root, text="Suggestions (click to use):", font=("Segoe UI", 8),
-                     bg=bg, fg=fg_dim).pack(anchor="w", padx=20, pady=(0, 2))
+            # --- Suggestions as radio-style chips ---
+            tk.Label(root, text="Pick a name or type your own:",
+                     font=("Segoe UI", 9), bg=bg, fg=fg_muted).pack(anchor="w", padx=26, pady=(8, 4))
 
-            entry = tk.Entry(root, width=55, font=("Segoe UI", 10),
+            entry = tk.Entry(root, width=50, font=("Segoe UI", 10),
                              bg=entry_bg, fg=fg, insertbackground=fg,
                              relief="flat", highlightthickness=1, highlightcolor=accent)
-            entry.pack(padx=20, ipady=4)
+            entry.pack(padx=24, ipady=5)
             entry.insert(0, suggestions[0])
             entry.select_range(0, tk.END)
             entry.focus_force()
 
-            # Clickable suggestion chips
             chip_frame = tk.Frame(root, bg=bg)
-            chip_frame.pack(padx=20, pady=(4, 0), anchor="w")
-            for i, sug in enumerate(suggestions):
-                def _use_suggestion(s=sug):
+            chip_frame.pack(padx=24, pady=(6, 0), anchor="w")
+
+            for sug in suggestions:
+                def _use(s=sug):
                     entry.delete(0, tk.END)
                     entry.insert(0, s)
                     entry.select_range(0, tk.END)
-                chip = tk.Label(chip_frame, text=sug, font=("Segoe UI", 8),
-                                bg="#313244", fg=accent, padx=8, pady=2, cursor="hand2")
-                chip.pack(side=tk.LEFT, padx=(0, 6), pady=2)
-                chip.bind("<Button-1>", lambda e, s=sug: _use_suggestion(s))
 
-            # Buttons
+                chip = tk.Label(chip_frame, text=f" {sug} ", font=("Segoe UI", 8),
+                                bg=chip_bg, fg=accent, padx=10, pady=3, cursor="hand2")
+                chip.pack(side=tk.LEFT, padx=(0, 8), pady=2)
+                chip.bind("<Enter>", lambda e, c=chip: c.configure(bg=chip_hover))
+                chip.bind("<Leave>", lambda e, c=chip: c.configure(bg=chip_bg))
+                chip.bind("<Button-1>", lambda e, s=sug: _use(s))
+
+            # --- Buttons ---
             btn_frame = tk.Frame(root, bg=bg)
-            btn_frame.pack(pady=(12, 10))
+            btn_frame.pack(pady=(16, 14))
 
             def _accept(ev=None):
                 name = entry.get().strip()
@@ -639,11 +677,13 @@ class WhisperSync:
             entry.bind("<Escape>", lambda e: _skip())
 
             tk.Button(btn_frame, text="Keep Original", command=_skip, width=14,
-                      font=("Segoe UI", 9), bg="#45475a", fg=fg, activebackground="#585b70",
-                      activeforeground=fg, relief="flat", cursor="hand2").pack(side=tk.LEFT, padx=6)
+                      font=("Segoe UI", 9), bg="#45475a", fg=fg_muted, activebackground="#585b70",
+                      activeforeground=fg, relief="flat", cursor="hand2",
+                      borderwidth=0, padx=12, pady=4).pack(side=tk.LEFT, padx=8)
             tk.Button(btn_frame, text="Rename", command=_accept, width=14,
                       font=("Segoe UI", 9, "bold"), bg=accent, fg="#1e1e2e", activebackground="#74c7ec",
-                      activeforeground="#1e1e2e", relief="flat", cursor="hand2").pack(side=tk.LEFT, padx=6)
+                      activeforeground="#1e1e2e", relief="flat", cursor="hand2",
+                      borderwidth=0, padx=12, pady=4).pack(side=tk.LEFT, padx=8)
 
             self._center_window(root)
             root.protocol("WM_DELETE_WINDOW", _skip)
