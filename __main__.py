@@ -623,12 +623,18 @@ class WhisperSync:
                     logger.warning(f"Auto-flatten failed (non-fatal): {e}")
                 # Auto-generate minutes + rename suggestion (only if Save & Summarize)
                 if do_summarize:
+                    # Step 1: Generate minutes if they don't already exist
                     try:
                         readable_file = meeting_dir / "transcript-readable.txt"
                         minutes_file = meeting_dir / "minutes.md"
                         if readable_file.exists() and not minutes_file.exists():
                             self._generate_minutes(meeting_dir, readable_file, minutes_file)
-                        # Extract summary and offer rename
+                    except Exception as e:
+                        logger.warning(f"Auto-minutes failed (non-fatal): {e}")
+
+                    # Step 2: Always offer rename if we have minutes with a summary
+                    try:
+                        minutes_file = meeting_dir / "minutes.md"
                         if minutes_file.exists():
                             summary = None
                             for line in minutes_file.read_text(encoding="utf-8").splitlines():
@@ -647,8 +653,12 @@ class WhisperSync:
                                         meeting_dir = new_meeting_dir
                                     else:
                                         logger.warning(f"Rename skipped — folder already exists: {new_folder_name}")
+                            else:
+                                logger.info("No > Summary: line found in minutes — rename skipped")
+                        else:
+                            logger.info("No minutes.md found — rename skipped")
                     except Exception as e:
-                        logger.warning(f"Auto-summarize failed (non-fatal): {e}")
+                        logger.warning(f"Rename suggestion failed (non-fatal): {e}")
                 # Rebuild week + root INDEX.md
                 try:
                     rebuild_root_index(self._output_dir())
