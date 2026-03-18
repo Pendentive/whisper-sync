@@ -436,6 +436,25 @@ class WhisperSync:
         root.attributes("-topmost", True)
         root.resizable(False, False)
 
+    @staticmethod
+    def _flat_button(parent, text, command, bg="#45475a", fg="#cdd6f4", hover_bg="#585b70",
+                     font=("Segoe UI", 9), width=None, bold=False):
+        """Create a flat, borderless button using a Label (avoids Windows tk.Button bevel).
+
+        Returns the Label widget. Use pack/grid on the returned widget.
+        """
+        import tkinter as tk
+        if bold:
+            font = (font[0], font[1], "bold")
+        lbl = tk.Label(parent, text=text, font=font, bg=bg, fg=fg,
+                       padx=16, pady=5, cursor="hand2")
+        if width:
+            lbl.configure(width=width)
+        lbl.bind("<Button-1>", lambda e: command())
+        lbl.bind("<Enter>", lambda e: lbl.configure(bg=hover_bg))
+        lbl.bind("<Leave>", lambda e: lbl.configure(bg=bg))
+        return lbl
+
     def _is_claude_cli_available(self) -> bool:
         """Check if Claude CLI is available for minutes generation."""
         import subprocess as _sp
@@ -508,21 +527,10 @@ class WhisperSync:
             entry.bind("<Escape>", lambda e: _abort())
 
             # Pack RIGHT to LEFT so rightmost button is packed first
-            # Save & Summarize (rightmost, primary)
-            tk.Button(btn_frame, text="Save & Summarize", command=_save_and_summarize, width=16,
-                      font=("Segoe UI", 9, "bold"), bg=accent, fg="#1e1e2e", activebackground="#74c7ec",
-                      activeforeground="#1e1e2e", relief="flat", cursor="hand2",
-                      borderwidth=0, padx=12, pady=4).pack(side=tk.RIGHT, padx=6)
-            # Save (middle)
-            tk.Button(btn_frame, text="Save", command=_save_only, width=10,
-                      font=("Segoe UI", 9), bg="#45475a", fg=fg, activebackground="#585b70",
-                      activeforeground=fg, relief="flat", cursor="hand2",
-                      borderwidth=0, padx=12, pady=4).pack(side=tk.RIGHT, padx=6)
-            # Discard (leftmost)
-            tk.Button(btn_frame, text="Discard", command=_abort, width=10,
-                      font=("Segoe UI", 9), bg="#45475a", fg=danger, activebackground="#585b70",
-                      activeforeground=danger, relief="flat", cursor="hand2",
-                      borderwidth=0, padx=12, pady=4).pack(side=tk.RIGHT, padx=6)
+            self._flat_button(btn_frame, "Save & Summarize", _save_and_summarize,
+                              bg=accent, fg="#1e1e2e", hover_bg="#74c7ec", bold=True).pack(side=tk.RIGHT, padx=6)
+            self._flat_button(btn_frame, "Save", _save_only).pack(side=tk.RIGHT, padx=6)
+            self._flat_button(btn_frame, "Discard", _abort, fg=danger).pack(side=tk.RIGHT, padx=6)
 
             self._center_window(root)
             root.protocol("WM_DELETE_WINDOW", _abort)
@@ -677,14 +685,9 @@ class WhisperSync:
             entry.bind("<Return>", _accept)
             entry.bind("<Escape>", lambda e: _skip())
 
-            tk.Button(btn_frame, text="Keep Original", command=_skip, width=14,
-                      font=("Segoe UI", 9), bg="#45475a", fg=fg_muted, activebackground="#585b70",
-                      activeforeground=fg, relief="flat", cursor="hand2",
-                      borderwidth=0, padx=12, pady=4).pack(side=tk.LEFT, padx=8)
-            tk.Button(btn_frame, text="Rename", command=_accept, width=14,
-                      font=("Segoe UI", 9, "bold"), bg=accent, fg="#1e1e2e", activebackground="#74c7ec",
-                      activeforeground="#1e1e2e", relief="flat", cursor="hand2",
-                      borderwidth=0, padx=12, pady=4).pack(side=tk.LEFT, padx=8)
+            self._flat_button(btn_frame, "Keep Original", _skip, fg=fg_muted).pack(side=tk.LEFT, padx=8)
+            self._flat_button(btn_frame, "Rename", _accept,
+                              bg=accent, fg="#1e1e2e", hover_bg="#74c7ec", bold=True).pack(side=tk.LEFT, padx=8)
 
             self._center_window(root)
             root.protocol("WM_DELETE_WINDOW", _skip)
@@ -729,9 +732,7 @@ class WhisperSync:
                 result[0] = dont_show.get()
                 root.destroy()
 
-            tk.Button(root, text="OK", command=_ok, width=10,
-                      font=("Segoe UI", 9), bg="#45475a", fg=fg, activebackground="#585b70",
-                      activeforeground=fg, relief="flat", cursor="hand2").pack()
+            self._flat_button(root, "OK", _ok).pack()
 
             self._center_window(root)
             root.protocol("WM_DELETE_WINDOW", _ok)
@@ -948,14 +949,9 @@ class WhisperSync:
                 result[0] = None
                 root.destroy()
 
-            tk.Button(btn_frame, text="Confirm", command=_confirm, width=12,
-                      font=("Segoe UI", 9, "bold"), bg=accent, fg="#1e1e2e", activebackground="#74c7ec",
-                      activeforeground="#1e1e2e", relief="flat", cursor="hand2",
-                      borderwidth=0, padx=12, pady=4).pack(side=tk.RIGHT, padx=8)
-            tk.Button(btn_frame, text="Skip", command=_skip, width=10,
-                      font=("Segoe UI", 9), bg="#45475a", fg=fg_muted, activebackground="#585b70",
-                      activeforeground=fg, relief="flat", cursor="hand2",
-                      borderwidth=0, padx=12, pady=4).pack(side=tk.RIGHT, padx=8)
+            self._flat_button(btn_frame, "Confirm", _confirm,
+                              bg=accent, fg="#1e1e2e", hover_bg="#74c7ec", bold=True).pack(side=tk.RIGHT, padx=8)
+            self._flat_button(btn_frame, "Skip", _skip, fg=fg_muted).pack(side=tk.RIGHT, padx=8)
 
             self._center_window(root)
             root.protocol("WM_DELETE_WINDOW", _skip)
