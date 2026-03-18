@@ -34,3 +34,8 @@ Rules:
 - Known people: Abhi (CEO), Vinod (engineering lead), Dinesh (backend), Jenish/Jiten/Jinesh (same person), David, Kirthana, Colby (PM), Alan, Jose.
 - SPEAKER_00 is usually Colby unless context clearly indicates otherwise.
 - The > Summary: line is REQUIRED and must be a single line, no markdown formatting.
+
+Speaker identification for this meeting:
+{SPEAKER_CONTEXT}
+
+Use these real names (not SPEAKER_XX labels) when attributing quotes, actions, and decisions.

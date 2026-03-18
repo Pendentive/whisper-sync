@@ -23,6 +23,7 @@ from .streaming_wav import fix_orphan
 from .crash_diagnostics import install_excepthook, check_previous_crash
 from .flatten import flatten as flatten_transcript
 from .rebuild_index import rebuild_root_index
+from .speakers import identify_speakers, write_speaker_map, update_config, get_config_path
 
 HOTKEY_OPTIONS = [
     "ctrl+shift+space",
@@ -743,6 +744,137 @@ class WhisperSync:
 
         return result[0]
 
+    def _ask_speaker_confirmation(self, identification_result: dict) -> dict | None:
+        """Show speaker confirmation dialog. Returns confirmed speaker_map or None to skip."""
+        speaker_map = identification_result.get("speaker_map", {})
+        confidence = identification_result.get("confidence", {})
+        reasoning = identification_result.get("reasoning", {})
+
+        if not speaker_map:
+            return None
+
+        # Auto-confirm if single speaker with high confidence
+        if len(speaker_map) == 1:
+            sole_speaker = list(speaker_map.keys())[0]
+            if confidence.get(sole_speaker) == "high":
+                logger.info(f"Auto-confirmed single speaker: {speaker_map[sole_speaker]}")
+                return speaker_map
+
+        result = [None]
+        event = threading.Event()
+
+        # Load known speaker names for dropdowns
+        config_path = Path(get_config_path())
+        known_names = ["Unknown"]
+        if config_path.exists():
+            for line in config_path.read_text(encoding="utf-8").splitlines():
+                if line.startswith("| ") and " | " in line and "ID" not in line and "---" not in line:
+                    parts = [p.strip() for p in line.split("|") if p.strip()]
+                    if len(parts) >= 2:
+                        known_names.append(parts[1])
+
+        def _show():
+            import tkinter as tk
+
+            root = tk.Tk()
+            root.title("WhisperSync")
+            self._style_window(root)
+
+            bg = "#1e1e2e"
+            fg = "#cdd6f4"
+            fg_dim = "#6c7086"
+            fg_muted = "#a6adc8"
+            accent = "#89b4fa"
+            card_bg = "#181825"
+            green = "#a6e3a1"
+            yellow = "#f9e2af"
+            red = "#f38ba8"
+
+            conf_colors = {"high": green, "medium": yellow, "low": red}
+
+            num_speakers = len(speaker_map)
+            height = min(170 + (num_speakers * 40), 500)
+            root.geometry(f"500x{height}")
+
+            # Header
+            header = tk.Frame(root, bg=bg)
+            header.pack(fill="x", padx=24, pady=(14, 0))
+            tk.Label(header, text="\U0001f3a4", font=("Segoe UI", 13), bg=bg).pack(side=tk.LEFT)
+            tk.Label(header, text="  Identify Speakers", font=("Segoe UI", 11, "bold"),
+                     bg=bg, fg=fg).pack(side=tk.LEFT)
+
+            # Speaker rows
+            dropdowns = {}
+            rows_frame = tk.Frame(root, bg=bg)
+            rows_frame.pack(fill="x", padx=24, pady=(12, 0))
+
+            for spk_id, name in speaker_map.items():
+                row = tk.Frame(rows_frame, bg=card_bg, highlightbackground="#313244", highlightthickness=1)
+                row.pack(fill="x", pady=2, ipady=2)
+
+                # Speaker label
+                tk.Label(row, text=spk_id, font=("Segoe UI", 8), bg=card_bg, fg=fg_dim,
+                         width=12, anchor="w").pack(side=tk.LEFT, padx=(10, 4), pady=4)
+
+                # Arrow
+                tk.Label(row, text="\u2192", font=("Segoe UI", 9), bg=card_bg, fg=fg_dim).pack(side=tk.LEFT, padx=2)
+
+                # Dropdown — build options list
+                dropdown_values = list(known_names)
+                if name not in dropdown_values:
+                    dropdown_values.append(name)
+
+                var = tk.StringVar(value=name)
+                om = tk.OptionMenu(row, var, *dropdown_values)
+                om.configure(font=("Segoe UI", 9), bg="#313244", fg=fg, activebackground="#45475a",
+                             activeforeground=fg, highlightthickness=0, relief="flat", width=14)
+                om["menu"].configure(bg="#313244", fg=fg, activebackground="#45475a", activeforeground=fg)
+                om.pack(side=tk.LEFT, padx=4, pady=2)
+                dropdowns[spk_id] = var
+
+                # Confidence dot
+                conf = confidence.get(spk_id, "low")
+                color = conf_colors.get(conf, red)
+                tk.Label(row, text="\u25cf", font=("Segoe UI", 10), bg=card_bg, fg=color).pack(side=tk.LEFT, padx=4)
+
+                # Reasoning
+                reason = reasoning.get(spk_id, "")
+                if reason:
+                    tk.Label(row, text=reason[:45], font=("Segoe UI", 7), bg=card_bg, fg=fg_dim,
+                             anchor="w").pack(side=tk.LEFT, padx=(4, 8), expand=True, fill="x")
+
+            # Buttons
+            btn_frame = tk.Frame(root, bg=bg)
+            btn_frame.pack(pady=(14, 12))
+
+            def _confirm():
+                result[0] = {spk_id: var.get() for spk_id, var in dropdowns.items()}
+                root.destroy()
+
+            def _skip():
+                result[0] = None
+                root.destroy()
+
+            tk.Button(btn_frame, text="Confirm", command=_confirm, width=12,
+                      font=("Segoe UI", 9, "bold"), bg=accent, fg="#1e1e2e", activebackground="#74c7ec",
+                      activeforeground="#1e1e2e", relief="flat", cursor="hand2",
+                      borderwidth=0, padx=12, pady=4).pack(side=tk.RIGHT, padx=8)
+            tk.Button(btn_frame, text="Skip", command=_skip, width=10,
+                      font=("Segoe UI", 9), bg="#45475a", fg=fg_muted, activebackground="#585b70",
+                      activeforeground=fg, relief="flat", cursor="hand2",
+                      borderwidth=0, padx=12, pady=4).pack(side=tk.RIGHT, padx=8)
+
+            self._center_window(root)
+            root.protocol("WM_DELETE_WINDOW", _skip)
+            root.mainloop()
+            event.set()
+
+        t = threading.Thread(target=_show, daemon=True)
+        t.start()
+        event.wait(timeout=120)
+
+        return result[0]
+
     def _stop_meeting(self):
         audio = self.recorder.stop()
 
@@ -800,7 +932,30 @@ class WhisperSync:
                         raise RuntimeError("Worker failed to restart")
                 result = self.worker.transcribe(str(wav_path), diarize=True)
                 logger.info(f"Transcript saved: {result.get('json_path', wav_path)}")
-                # Auto-flatten transcript for immediate readability
+
+                # --- Speaker identification (runs for BOTH Save and Save & Summarize) ---
+                llm_ok = self._is_claude_cli_available()
+                if llm_ok:
+                    try:
+                        cfg_path = get_config_path()
+                        json_path = result.get('json_path', str(meeting_dir / "transcript.json"))
+                        id_result = identify_speakers(json_path, cfg_path, folder_name)
+                        if id_result and id_result.get("speaker_map"):
+                            confirmed_map = self._ask_speaker_confirmation(id_result)
+                            if confirmed_map:
+                                write_speaker_map(json_path, confirmed_map)
+                                update_config(cfg_path, confirmed_map, id_result.get("config_updates"))
+                                logger.info(f"Speakers confirmed: {confirmed_map}")
+                            else:
+                                logger.info("Speaker identification skipped by user")
+                        else:
+                            logger.info("No speakers identified from transcript")
+                    except Exception as e:
+                        logger.warning(f"Speaker identification failed (non-fatal): {e}")
+                else:
+                    logger.info("Claude CLI not available — speaker identification skipped")
+
+                # --- Flatten transcript (now with resolved speaker names if identified) ---
                 try:
                     json_path = result.get('json_path')
                     if json_path:
@@ -809,11 +964,11 @@ class WhisperSync:
                             logger.info(f"Flattened transcript: {readable_path}")
                 except Exception as e:
                     logger.warning(f"Auto-flatten failed (non-fatal): {e}")
-                # Auto-generate minutes + rename suggestion (only if Save & Summarize)
+
+                # --- Auto-generate minutes + rename (only if Save & Summarize) ---
                 if do_summarize:
-                    # Check LLM availability
-                    llm_available = self._is_claude_cli_available()
-                    if not llm_available:
+                    if not llm_ok:
+                        # Show LLM warning only when user chose Summarize but CLI is missing
                         suppress = self.cfg.get("suppress_llm_warning", False)
                         if not suppress:
                             dont_show = self._show_llm_unavailable()
@@ -931,6 +1086,7 @@ class WhisperSync:
 
     def _generate_minutes(self, meeting_dir: Path, readable_file: Path, minutes_file: Path):
         """Generate minutes.md via Claude CLI (claude -p) using the shared prompt template."""
+        import json
         import subprocess as _sp
 
         prompt_file = Path(__file__).parent / "minutes_prompt.md"
@@ -940,6 +1096,37 @@ class WhisperSync:
 
         prompt_text = prompt_file.read_text(encoding="utf-8")
         transcript_text = readable_file.read_text(encoding="utf-8")
+
+        # Build speaker context from transcript.json speaker_map + config roles
+        speaker_context = ""
+        try:
+            json_path = meeting_dir / "transcript.json"
+            if json_path.exists():
+                with open(json_path) as f:
+                    tdata = json.load(f)
+                smap = tdata.get("speaker_map", {})
+                if smap:
+                    cfg_path = Path(get_config_path())
+                    roles = {}
+                    if cfg_path.exists():
+                        for line in cfg_path.read_text(encoding="utf-8").splitlines():
+                            if line.startswith("| ") and " | " in line and "ID" not in line and "---" not in line:
+                                parts = [p.strip() for p in line.split("|") if p.strip()]
+                                if len(parts) >= 3:
+                                    roles[parts[1].lower()] = parts[2]
+                    ctx_lines = []
+                    for spk_id, name in smap.items():
+                        role = roles.get(name.lower(), "")
+                        ctx_lines.append(f"  {spk_id} = {name}" + (f" ({role})" if role else ""))
+                    speaker_context = "\n".join(ctx_lines)
+        except Exception:
+            pass
+
+        # Inject speaker context into prompt
+        prompt_text = prompt_text.replace(
+            "{SPEAKER_CONTEXT}",
+            speaker_context or "No speaker identification available — use context clues from the transcript."
+        )
 
         # Build the full prompt: template + transcript
         full_prompt = (
