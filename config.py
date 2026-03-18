@@ -12,6 +12,7 @@ _VALID_KEYS = {
     "hotkeys", "paste_method", "language", "model", "dictation_model",
     "compute_type", "output_dir", "mic_device", "speaker_device",
     "sample_rate", "use_system_devices", "left_click", "middle_click",
+    "suppress_llm_warning",
 }
 
 

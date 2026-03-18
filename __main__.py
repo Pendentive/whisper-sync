@@ -414,10 +414,38 @@ class WhisperSync:
         self.recorder.start_streaming(mic_temp)
 
     _ABORT = object()  # Sentinel for abort
-    _SAVE_ONLY = object()  # Sentinel for save without summarize
+
+    @staticmethod
+    def _sanitize_name(name: str) -> str:
+        """Sanitize a meeting name for use as a folder name."""
+        return "".join(c if c.isalnum() or c in " -_" else "" for c in name).strip().replace(" ", "-")
+
+    @staticmethod
+    def _center_window(root):
+        """Center a tkinter window on screen."""
+        root.update_idletasks()
+        x = (root.winfo_screenwidth() - root.winfo_reqwidth()) // 2
+        y = (root.winfo_screenheight() - root.winfo_reqheight()) // 2
+        root.geometry(f"+{x}+{y}")
+
+    @staticmethod
+    def _style_window(root):
+        """Apply consistent modern styling to a tkinter window."""
+        root.configure(bg="#1e1e2e")
+        root.attributes("-topmost", True)
+        root.resizable(False, False)
+
+    def _is_claude_cli_available(self) -> bool:
+        """Check if Claude CLI is available for minutes generation."""
+        import subprocess as _sp
+        try:
+            r = _sp.run(["claude", "--version"], capture_output=True, text=True, timeout=5)
+            return r.returncode == 0
+        except (FileNotFoundError, _sp.TimeoutExpired):
+            return False
 
     def _ask_meeting_name(self):
-        """Show a popup to name the meeting. Returns (name, summarize) tuple or _ABORT.
+        """Show a popup to name the meeting.
 
         Returns:
             _ABORT: user clicked Discard
@@ -429,25 +457,41 @@ class WhisperSync:
 
         def _show_dialog():
             import tkinter as tk
+            from tkinter import ttk
+
             root = tk.Tk()
             root.title("WhisperSync")
-            root.attributes("-topmost", True)
-            root.geometry("420x160")
-            root.resizable(False, False)
+            self._style_window(root)
+            root.geometry("440x170")
 
-            tk.Label(root, text="Meeting name (leave blank for default):").pack(pady=(12, 4))
-            entry = tk.Entry(root, width=45)
-            entry.pack(pady=4)
+            bg = "#1e1e2e"
+            fg = "#cdd6f4"
+            fg_dim = "#6c7086"
+            accent = "#89b4fa"
+            danger = "#f38ba8"
+            entry_bg = "#313244"
+
+            # Title
+            tk.Label(root, text="Save Meeting Recording", font=("Segoe UI", 11, "bold"),
+                     bg=bg, fg=fg).pack(pady=(14, 2))
+
+            # Entry
+            tk.Label(root, text="Meeting name (leave blank for default):",
+                     font=("Segoe UI", 9), bg=bg, fg=fg_dim).pack(pady=(2, 4))
+            entry = tk.Entry(root, width=48, font=("Segoe UI", 10),
+                             bg=entry_bg, fg=fg, insertbackground=fg,
+                             relief="flat", highlightthickness=1, highlightcolor=accent)
+            entry.pack(padx=20, ipady=4)
             entry.focus_force()
 
-            btn_frame = tk.Frame(root)
-            btn_frame.pack(pady=8)
+            # Buttons — order: Discard (left), Save (middle), Save & Summarize (right)
+            btn_frame = tk.Frame(root, bg=bg)
+            btn_frame.pack(pady=(12, 10))
 
             def _sanitize():
-                name = entry.get() or ""
-                return "".join(c if c.isalnum() or c in " -_" else "" for c in name).strip().replace(" ", "-")
+                return self._sanitize_name(entry.get() or "")
 
-            def _save_and_summarize(event=None):
+            def _save_and_summarize(ev=None):
                 result[0] = (_sanitize(), True)
                 root.destroy()
 
@@ -461,17 +505,21 @@ class WhisperSync:
 
             entry.bind("<Return>", _save_and_summarize)
             entry.bind("<Escape>", lambda e: _abort())
+
+            # Discard (left)
+            tk.Button(btn_frame, text="Discard", command=_abort, width=10,
+                      font=("Segoe UI", 9), bg="#45475a", fg=danger, activebackground="#585b70",
+                      activeforeground=danger, relief="flat", cursor="hand2").pack(side=tk.LEFT, padx=6)
+            # Save (middle)
+            tk.Button(btn_frame, text="Save", command=_save_only, width=10,
+                      font=("Segoe UI", 9), bg="#45475a", fg=fg, activebackground="#585b70",
+                      activeforeground=fg, relief="flat", cursor="hand2").pack(side=tk.LEFT, padx=6)
+            # Save & Summarize (right, primary)
             tk.Button(btn_frame, text="Save & Summarize", command=_save_and_summarize, width=16,
-                      bg="#2563eb", fg="white").pack(side=tk.LEFT, padx=4)
-            tk.Button(btn_frame, text="Save", command=_save_only, width=8).pack(side=tk.LEFT, padx=4)
-            tk.Button(btn_frame, text="Discard", command=_abort, width=8, fg="red").pack(side=tk.LEFT, padx=4)
+                      font=("Segoe UI", 9, "bold"), bg=accent, fg="#1e1e2e", activebackground="#74c7ec",
+                      activeforeground="#1e1e2e", relief="flat", cursor="hand2").pack(side=tk.LEFT, padx=6)
 
-            # Center on screen
-            root.update_idletasks()
-            x = (root.winfo_screenwidth() - root.winfo_reqwidth()) // 2
-            y = (root.winfo_screenheight() - root.winfo_reqheight()) // 2
-            root.geometry(f"+{x}+{y}")
-
+            self._center_window(root)
             root.protocol("WM_DELETE_WINDOW", _abort)
             root.mainloop()
             event.set()
@@ -489,46 +537,98 @@ class WhisperSync:
         """
         import re
 
-        # Generate suggestion from summary: take first ~5 meaningful words, kebab-case
+        # Generate 3 suggestions from summary
         words = re.sub(r'[^a-zA-Z0-9\s]', '', summary).lower().split()
-        # Filter out very short/common words
-        stopwords = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'was', 'are', 'were', 'be', 'been'}
-        meaningful = [w for w in words if w not in stopwords and len(w) > 2][:5]
-        suggested = "-".join(meaningful) if meaningful else current_name
+        stopwords = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+                     'of', 'with', 'by', 'is', 'was', 'are', 'were', 'be', 'been', 'has',
+                     'had', 'have', 'that', 'this', 'from', 'not', 'all', 'can', 'will'}
+        meaningful = [w for w in words if w not in stopwords and len(w) > 2]
+
+        suggestions = []
+        if len(meaningful) >= 5:
+            suggestions.append("-".join(meaningful[:5]))  # First 5 words
+        if len(meaningful) >= 3:
+            suggestions.append("-".join(meaningful[:3]))  # Short version
+        if len(meaningful) >= 7:
+            suggestions.append("-".join(meaningful[2:7]))  # Mid-section
+        # Fallback
+        if not suggestions:
+            suggestions = ["-".join(meaningful) if meaningful else current_name]
+        # Ensure unique
+        seen = set()
+        suggestions = [s for s in suggestions if s not in seen and not seen.add(s)]
 
         result = [None]
         event = threading.Event()
 
         def _show():
             import tkinter as tk
+
             root = tk.Tk()
-            root.title("WhisperSync: Rename Meeting?")
-            root.attributes("-topmost", True)
-            root.geometry("500x200")
-            root.resizable(False, False)
+            root.title("WhisperSync: Rename Meeting")
+            self._style_window(root)
 
-            tk.Label(root, text="Meeting summarized. Rename folder?",
-                     font=("Segoe UI", 10, "bold")).pack(pady=(10, 2))
-            tk.Label(root, text=f"Summary: {summary[:100]}{'...' if len(summary) > 100 else ''}",
-                     wraplength=460, fg="#555").pack(pady=(2, 8))
+            bg = "#1e1e2e"
+            fg = "#cdd6f4"
+            fg_dim = "#6c7086"
+            accent = "#89b4fa"
+            entry_bg = "#313244"
+            card_bg = "#181825"
 
-            tk.Label(root, text="Current:").pack(anchor="w", padx=20)
-            tk.Label(root, text=f"  {current_name}", fg="#888").pack(anchor="w", padx=20)
+            # Calculate height based on number of suggestions
+            height = 260 + (len(suggestions) * 28)
+            root.geometry(f"520x{height}")
 
-            tk.Label(root, text="Suggested name:").pack(anchor="w", padx=20, pady=(6, 0))
-            entry = tk.Entry(root, width=55)
-            entry.pack(padx=20, pady=2)
-            entry.insert(0, suggested)
+            # Title
+            tk.Label(root, text="Rename Meeting", font=("Segoe UI", 11, "bold"),
+                     bg=bg, fg=fg).pack(pady=(12, 2))
+
+            # Summary preview
+            summary_text = summary[:120] + ("..." if len(summary) > 120 else "")
+            tk.Label(root, text=summary_text, wraplength=480,
+                     font=("Segoe UI", 8), bg=bg, fg=fg_dim, justify="left").pack(padx=20, pady=(2, 8))
+
+            # Current name
+            current_frame = tk.Frame(root, bg=card_bg, highlightbackground="#313244", highlightthickness=1)
+            current_frame.pack(fill="x", padx=20, pady=(0, 8))
+            tk.Label(current_frame, text="Current:", font=("Segoe UI", 8),
+                     bg=card_bg, fg=fg_dim).pack(anchor="w", padx=8, pady=(4, 0))
+            tk.Label(current_frame, text=current_name, font=("Segoe UI Semibold", 9),
+                     bg=card_bg, fg=fg).pack(anchor="w", padx=8, pady=(0, 4))
+
+            # Suggestion buttons
+            tk.Label(root, text="Suggestions (click to use):", font=("Segoe UI", 8),
+                     bg=bg, fg=fg_dim).pack(anchor="w", padx=20, pady=(0, 2))
+
+            entry = tk.Entry(root, width=55, font=("Segoe UI", 10),
+                             bg=entry_bg, fg=fg, insertbackground=fg,
+                             relief="flat", highlightthickness=1, highlightcolor=accent)
+            entry.pack(padx=20, ipady=4)
+            entry.insert(0, suggestions[0])
             entry.select_range(0, tk.END)
             entry.focus_force()
 
-            btn_frame = tk.Frame(root)
-            btn_frame.pack(pady=8)
+            # Clickable suggestion chips
+            chip_frame = tk.Frame(root, bg=bg)
+            chip_frame.pack(padx=20, pady=(4, 0), anchor="w")
+            for i, sug in enumerate(suggestions):
+                def _use_suggestion(s=sug):
+                    entry.delete(0, tk.END)
+                    entry.insert(0, s)
+                    entry.select_range(0, tk.END)
+                chip = tk.Label(chip_frame, text=sug, font=("Segoe UI", 8),
+                                bg="#313244", fg=accent, padx=8, pady=2, cursor="hand2")
+                chip.pack(side=tk.LEFT, padx=(0, 6), pady=2)
+                chip.bind("<Button-1>", lambda e, s=sug: _use_suggestion(s))
 
-            def _accept(event=None):
+            # Buttons
+            btn_frame = tk.Frame(root, bg=bg)
+            btn_frame.pack(pady=(12, 10))
+
+            def _accept(ev=None):
                 name = entry.get().strip()
                 if name:
-                    result[0] = "".join(c if c.isalnum() or c in " -_" else "" for c in name).strip().replace(" ", "-")
+                    result[0] = self._sanitize_name(name)
                 root.destroy()
 
             def _skip():
@@ -537,14 +637,15 @@ class WhisperSync:
 
             entry.bind("<Return>", _accept)
             entry.bind("<Escape>", lambda e: _skip())
-            tk.Button(btn_frame, text="Rename", command=_accept, width=10).pack(side=tk.LEFT, padx=4)
-            tk.Button(btn_frame, text="Keep Original", command=_skip, width=12).pack(side=tk.LEFT, padx=4)
 
-            root.update_idletasks()
-            x = (root.winfo_screenwidth() - root.winfo_reqwidth()) // 2
-            y = (root.winfo_screenheight() - root.winfo_reqheight()) // 2
-            root.geometry(f"+{x}+{y}")
+            tk.Button(btn_frame, text="Keep Original", command=_skip, width=14,
+                      font=("Segoe UI", 9), bg="#45475a", fg=fg, activebackground="#585b70",
+                      activeforeground=fg, relief="flat", cursor="hand2").pack(side=tk.LEFT, padx=6)
+            tk.Button(btn_frame, text="Rename", command=_accept, width=14,
+                      font=("Segoe UI", 9, "bold"), bg=accent, fg="#1e1e2e", activebackground="#74c7ec",
+                      activeforeground="#1e1e2e", relief="flat", cursor="hand2").pack(side=tk.LEFT, padx=6)
 
+            self._center_window(root)
             root.protocol("WM_DELETE_WINDOW", _skip)
             root.mainloop()
             event.set()
@@ -552,6 +653,53 @@ class WhisperSync:
         t = threading.Thread(target=_show, daemon=True)
         t.start()
         event.wait(timeout=120)
+
+        return result[0]
+
+    def _show_llm_unavailable(self):
+        """Show a dialog when Claude CLI is not available. Returns True if user checked 'don't show again'."""
+        result = [False]
+        event = threading.Event()
+
+        def _show():
+            import tkinter as tk
+
+            root = tk.Tk()
+            root.title("WhisperSync")
+            self._style_window(root)
+            root.geometry("420x160")
+
+            bg = "#1e1e2e"
+            fg = "#cdd6f4"
+            fg_dim = "#6c7086"
+            warn = "#f9e2af"
+
+            tk.Label(root, text="LLM Not Available", font=("Segoe UI", 11, "bold"),
+                     bg=bg, fg=warn).pack(pady=(14, 4))
+            tk.Label(root, text="Claude CLI not found. Auto-summarize and rename\nrequire Claude Code to be installed.",
+                     font=("Segoe UI", 9), bg=bg, fg=fg_dim, justify="center").pack(pady=(0, 8))
+
+            dont_show = tk.BooleanVar(value=False)
+            tk.Checkbutton(root, text="Don't show again", variable=dont_show,
+                           font=("Segoe UI", 8), bg=bg, fg=fg_dim, selectcolor="#313244",
+                           activebackground=bg, activeforeground=fg).pack(pady=(0, 8))
+
+            def _ok():
+                result[0] = dont_show.get()
+                root.destroy()
+
+            tk.Button(root, text="OK", command=_ok, width=10,
+                      font=("Segoe UI", 9), bg="#45475a", fg=fg, activebackground="#585b70",
+                      activeforeground=fg, relief="flat", cursor="hand2").pack()
+
+            self._center_window(root)
+            root.protocol("WM_DELETE_WINDOW", _ok)
+            root.mainloop()
+            event.set()
+
+        t = threading.Thread(target=_show, daemon=True)
+        t.start()
+        event.wait(timeout=30)
 
         return result[0]
 
@@ -623,42 +771,53 @@ class WhisperSync:
                     logger.warning(f"Auto-flatten failed (non-fatal): {e}")
                 # Auto-generate minutes + rename suggestion (only if Save & Summarize)
                 if do_summarize:
-                    # Step 1: Generate minutes if they don't already exist
-                    try:
-                        readable_file = meeting_dir / "transcript-readable.txt"
-                        minutes_file = meeting_dir / "minutes.md"
-                        if readable_file.exists() and not minutes_file.exists():
-                            self._generate_minutes(meeting_dir, readable_file, minutes_file)
-                    except Exception as e:
-                        logger.warning(f"Auto-minutes failed (non-fatal): {e}")
+                    # Check LLM availability
+                    llm_available = self._is_claude_cli_available()
+                    if not llm_available:
+                        suppress = self.cfg.get("suppress_llm_warning", False)
+                        if not suppress:
+                            dont_show = self._show_llm_unavailable()
+                            if dont_show:
+                                self.cfg["suppress_llm_warning"] = True
+                                config.save(self.cfg)
+                        logger.warning("Claude CLI not available — skipping summarize")
+                    else:
+                        # Step 1: Generate minutes if they don't already exist
+                        try:
+                            readable_file = meeting_dir / "transcript-readable.txt"
+                            minutes_file = meeting_dir / "minutes.md"
+                            if readable_file.exists() and not minutes_file.exists():
+                                self._generate_minutes(meeting_dir, readable_file, minutes_file)
+                        except Exception as e:
+                            logger.warning(f"Auto-minutes failed (non-fatal): {e}")
 
-                    # Step 2: Always offer rename if we have minutes with a summary
-                    try:
-                        minutes_file = meeting_dir / "minutes.md"
-                        if minutes_file.exists():
-                            summary = None
-                            for line in minutes_file.read_text(encoding="utf-8").splitlines():
-                                if line.startswith("> Summary:"):
-                                    summary = line[len("> Summary:"):].strip()
-                                    break
-                            if summary:
-                                new_name = self._ask_rename_suggestion(meeting_name or "meeting", summary)
-                                if new_name and new_name != meeting_name:
-                                    new_folder_name = f"{date_time_str}_{new_name}"
-                                    new_meeting_dir = meeting_dir.parent / new_folder_name
-                                    if not new_meeting_dir.exists():
-                                        import shutil
-                                        shutil.move(str(meeting_dir), str(new_meeting_dir))
-                                        logger.info(f"Renamed: {folder_name} -> {new_folder_name}")
-                                        meeting_dir = new_meeting_dir
-                                    else:
-                                        logger.warning(f"Rename skipped — folder already exists: {new_folder_name}")
+                        # Step 2: Always offer rename if we have minutes with a summary
+                        try:
+                            minutes_file = meeting_dir / "minutes.md"
+                            if minutes_file.exists():
+                                summary = None
+                                for line in minutes_file.read_text(encoding="utf-8").splitlines():
+                                    if line.startswith("> Summary:"):
+                                        summary = line[len("> Summary:"):].strip()
+                                        break
+                                if summary:
+                                    new_name = self._ask_rename_suggestion(meeting_name or "meeting", summary)
+                                    if new_name and new_name != meeting_name:
+                                        new_folder_name = f"{date_time_str}_{new_name}"
+                                        new_meeting_dir = meeting_dir.parent / new_folder_name
+                                        if not new_meeting_dir.exists():
+                                            import shutil
+                                            shutil.move(str(meeting_dir), str(new_meeting_dir))
+                                            logger.info(f"Renamed: {folder_name} -> {new_folder_name}")
+                                            meeting_dir = new_meeting_dir
+                                        else:
+                                            logger.warning(f"Rename skipped — folder already exists: {new_folder_name}")
+                                else:
+                                    logger.info("No > Summary: line found in minutes — rename skipped")
                             else:
-                                logger.info("No > Summary: line found in minutes — rename skipped")
-                        else:
-                            logger.info("No minutes.md found — rename skipped")
-                    except Exception as e:
-                        logger.warning(f"Rename suggestion failed (non-fatal): {e}")
+                                logger.info("No minutes.md found — rename skipped")
+                        except Exception as e:
+                            logger.warning(f"Rename suggestion failed (non-fatal): {e}")
                 # Rebuild week + root INDEX.md
                 try:
                     rebuild_root_index(self._output_dir())
