@@ -1,0 +1,207 @@
+"""Speaker identification and config management for WhisperSync.
+
+Handles:
+- LLM-based speaker identification via claude -p
+- Writing speaker_map to transcript.json
+- Updating transcription-config.md with new speaker data
+"""
+
+import json
+import re
+import subprocess
+from pathlib import Path
+
+from .logger import logger
+
+
+def identify_speakers(
+    transcript_json_path: str,
+    config_path: str,
+    folder_name: str,
+) -> dict | None:
+    """Identify speakers via Claude CLI.
+
+    Args:
+        transcript_json_path: Path to transcript.json
+        config_path: Path to transcription-config.md
+        folder_name: Meeting folder name (for pattern matching)
+
+    Returns:
+        Parsed JSON dict with speaker_map, confidence, reasoning, config_updates.
+        None if identification failed.
+    """
+    prompt_path = Path(__file__).parent / "speaker_prompt.md"
+    if not prompt_path.exists():
+        logger.warning(f"Speaker prompt not found: {prompt_path}")
+        return None
+
+    # Load first 30 segments
+    with open(transcript_json_path) as f:
+        data = json.load(f)
+    segments = data.get("segments", [])[:30]
+    if not segments:
+        return None
+
+    # Format segments for the prompt
+    seg_text = ""
+    for s in segments:
+        speaker = s.get("speaker", "UNKNOWN")
+        text = s.get("text", "").strip()
+        start = s.get("start", 0)
+        mins, secs = int(start // 60), int(start % 60)
+        seg_text += f"[{mins:02d}:{secs:02d}] {speaker}: {text}\n"
+
+    # Load config
+    config_text = ""
+    config_file = Path(config_path)
+    if config_file.exists():
+        config_text = config_file.read_text(encoding="utf-8")
+
+    # Load prompt template
+    prompt_template = prompt_path.read_text(encoding="utf-8")
+
+    # Build full prompt
+    full_prompt = (
+        f"{prompt_template}\n\n"
+        f"---\n\n"
+        f"Meeting folder: {folder_name}\n\n"
+        f"Known speakers config:\n{config_text}\n\n"
+        f"Transcript (first 30 segments):\n{seg_text}"
+    )
+
+    try:
+        result = subprocess.run(
+            ["claude", "-p", "--model", "haiku"],
+            input=full_prompt,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=str(Path(__file__).parent.parent.parent),
+        )
+        if result.returncode != 0:
+            logger.warning(f"Speaker identification CLI failed: {result.returncode}")
+            return None
+
+        # Robust JSON extraction: find first { to last }
+        response = result.stdout.strip()
+        first_brace = response.find("{")
+        last_brace = response.rfind("}")
+        if first_brace == -1 or last_brace == -1 or last_brace <= first_brace:
+            logger.warning("Speaker identification response contains no valid JSON object")
+            logger.debug(f"Raw response: {response[:500]}")
+            return None
+
+        json_str = response[first_brace:last_brace + 1]
+        return json.loads(json_str)
+
+    except json.JSONDecodeError as e:
+        logger.warning(f"Speaker identification returned invalid JSON: {e}")
+        logger.debug(f"Raw response: {result.stdout[:500]}")
+        return None
+    except FileNotFoundError:
+        logger.warning("Claude CLI not found — speaker identification skipped")
+        return None
+    except subprocess.TimeoutExpired:
+        logger.warning("Speaker identification timed out (30s)")
+        return None
+    except Exception as e:
+        logger.warning(f"Speaker identification failed: {e}")
+        return None
+
+
+def write_speaker_map(transcript_json_path: str, speaker_map: dict) -> None:
+    """Write speaker_map to transcript.json (additive — does not modify segments)."""
+    with open(transcript_json_path) as f:
+        data = json.load(f)
+
+    data["speaker_map"] = speaker_map
+
+    with open(transcript_json_path, "w") as f:
+        json.dump(data, f, indent=2)
+
+    logger.info(f"Speaker map written: {speaker_map}")
+
+
+def update_config(config_path: str, speaker_map: dict, config_updates: dict | None) -> None:
+    """Update transcription-config.md with new speaker data.
+
+    - Adds new speakers to Known Speakers table
+    - Appends new voice notes to existing speakers
+    - Does NOT modify Meeting-to-Speaker Map (requires more context — future enhancement)
+    """
+    config_file = Path(config_path)
+    if not config_file.exists():
+        logger.warning(f"Config file not found: {config_path}")
+        return
+
+    if not config_updates:
+        return
+
+    text = config_file.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    modified = False
+
+    # --- Add new speakers ---
+    new_speakers = config_updates.get("new_speakers", [])
+    if new_speakers:
+        # Find the end of the Known Speakers table
+        table_end = None
+        in_table = False
+        for i, line in enumerate(lines):
+            if "| ID | Name | Voice Notes |" in line:
+                in_table = True
+                continue
+            if in_table and line.startswith("|"):
+                table_end = i
+                continue
+            if in_table and not line.startswith("|"):
+                break
+
+        if table_end is not None:
+            for speaker in new_speakers:
+                # Handle both dict and string formats from LLM
+                if isinstance(speaker, str):
+                    name = speaker
+                    notes = ""
+                else:
+                    name = speaker.get("name", "Unknown")
+                    notes = speaker.get("notes", "")
+                speaker_id = name.lower().replace(" ", "-")
+                # Check if already exists by scanning ID column only
+                already_exists = False
+                for line in lines:
+                    if line.startswith("|") and f"| {speaker_id} |" in line.lower():
+                        already_exists = True
+                        break
+                if not already_exists:
+                    new_row = f"| {speaker_id} | {name} | {notes} |"
+                    lines.insert(table_end + 1, new_row)
+                    table_end += 1
+                    modified = True
+                    logger.info(f"Added new speaker to config: {name}")
+
+    # --- Update voice notes for existing speakers ---
+    new_notes = config_updates.get("new_voice_notes", {})
+    if new_notes:
+        for speaker_id, note in new_notes.items():
+            for i, line in enumerate(lines):
+                if line.startswith("|") and f"| {speaker_id} |" in line.lower():
+                    # Append note to existing voice notes column
+                    parts = line.split("|")
+                    if len(parts) >= 4:
+                        existing_notes = parts[3].strip()
+                        if note.lower() not in existing_notes.lower():
+                            parts[3] = f" {existing_notes}; {note} "
+                            lines[i] = "|".join(parts)
+                            modified = True
+                            logger.info(f"Updated voice notes for {speaker_id}: {note}")
+                    break
+
+    if modified:
+        config_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        logger.info("transcription-config.md updated")
+
+
+def get_config_path() -> str:
+    """Return the path to transcription-config.md."""
+    return str(Path(__file__).parent.parent.parent / ".claude" / "workflows" / "transcription-config.md")
