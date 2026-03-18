@@ -763,12 +763,18 @@ class WhisperSync:
         result = [None]
         event = threading.Event()
 
-        # Load known speaker names for dropdowns
+        # Load known speaker names from Known Speakers table ONLY (not Meeting Map)
         config_path = Path(get_config_path())
-        known_names = ["Unknown"]
+        known_names = []
         if config_path.exists():
+            in_speakers_table = False
             for line in config_path.read_text(encoding="utf-8").splitlines():
-                if line.startswith("| ") and " | " in line and "ID" not in line and "---" not in line:
+                if "## Known Speakers" in line:
+                    in_speakers_table = True
+                    continue
+                if in_speakers_table and line.startswith("##"):
+                    break  # Hit next section — stop parsing
+                if in_speakers_table and line.startswith("| ") and "ID" not in line and "---" not in line:
                     parts = [p.strip() for p in line.split("|") if p.strip()]
                     if len(parts) >= 2:
                         known_names.append(parts[1])
@@ -793,7 +799,8 @@ class WhisperSync:
             conf_colors = {"high": green, "medium": yellow, "low": red}
 
             num_speakers = len(speaker_map)
-            height = min(170 + (num_speakers * 40), 500)
+            # Each speaker row ~40px + reasoning line ~16px
+            height = min(170 + (num_speakers * 58), 550)
             root.geometry(f"500x{height}")
 
             # Header
@@ -810,38 +817,69 @@ class WhisperSync:
 
             for spk_id, name in speaker_map.items():
                 row = tk.Frame(rows_frame, bg=card_bg, highlightbackground="#313244", highlightthickness=1)
-                row.pack(fill="x", pady=2, ipady=2)
+                row.pack(fill="x", pady=3, ipady=3)
 
-                # Speaker label
-                tk.Label(row, text=spk_id, font=("Segoe UI", 8), bg=card_bg, fg=fg_dim,
-                         width=12, anchor="w").pack(side=tk.LEFT, padx=(10, 4), pady=4)
+                # Left side: speaker label + arrow + autocomplete entry
+                left = tk.Frame(row, bg=card_bg)
+                left.pack(side=tk.LEFT, padx=(10, 0), pady=4)
 
-                # Arrow
-                tk.Label(row, text="\u2192", font=("Segoe UI", 9), bg=card_bg, fg=fg_dim).pack(side=tk.LEFT, padx=2)
+                tk.Label(left, text=spk_id, font=("Segoe UI", 9), bg=card_bg, fg=fg_dim,
+                         width=11, anchor="w").pack(side=tk.LEFT)
+                tk.Label(left, text="\u2192", font=("Segoe UI", 9), bg=card_bg, fg=fg_dim).pack(side=tk.LEFT, padx=4)
 
-                # Dropdown — build options list
-                dropdown_values = list(known_names)
-                if name not in dropdown_values:
-                    dropdown_values.append(name)
+                # Autocomplete entry with dropdown suggestions
+                entry_var = tk.StringVar(value=name)
+                entry = tk.Entry(left, textvariable=entry_var, font=("Segoe UI", 9, "bold"),
+                                 bg="#313244", fg=accent, insertbackground=fg,
+                                 relief="flat", highlightthickness=1, highlightcolor=accent, width=16)
+                entry.pack(side=tk.LEFT, padx=4, ipady=2)
+                dropdowns[spk_id] = entry_var
 
-                var = tk.StringVar(value=name)
-                om = tk.OptionMenu(row, var, *dropdown_values)
-                om.configure(font=("Segoe UI", 9), bg="#313244", fg=fg, activebackground="#45475a",
-                             activeforeground=fg, highlightthickness=0, relief="flat", width=14)
-                om["menu"].configure(bg="#313244", fg=fg, activebackground="#45475a", activeforeground=fg)
-                om.pack(side=tk.LEFT, padx=4, pady=2)
-                dropdowns[spk_id] = var
+                # Autocomplete behavior: type to filter, Tab to accept
+                suggestion_list = list(known_names) + (["Unknown"] if "Unknown" not in known_names else [])
+
+                def _make_autocomplete(ent, var, suggestions):
+                    """Bind autocomplete to an entry widget."""
+                    def _on_key(event):
+                        if event.keysym in ("Tab", "Return"):
+                            # Accept the current autocomplete suggestion
+                            current = var.get()
+                            matches = [s for s in suggestions if s.lower().startswith(current.lower())]
+                            if matches and current.lower() != matches[0].lower():
+                                var.set(matches[0])
+                                ent.icursor(tk.END)
+                                return "break"
+                        elif event.keysym not in ("BackSpace", "Delete", "Left", "Right", "Home", "End"):
+                            # Show autocomplete preview
+                            root.after(10, lambda: _suggest(ent, var, suggestions))
+
+                    def _suggest(ent, var, suggestions):
+                        current = var.get()
+                        if not current:
+                            return
+                        matches = [s for s in suggestions if s.lower().startswith(current.lower()) and s.lower() != current.lower()]
+                        if matches:
+                            pos = ent.index(tk.INSERT)
+                            var.set(matches[0])
+                            ent.select_range(pos, tk.END)
+                            ent.icursor(pos)
+
+                    ent.bind("<KeyRelease>", _on_key)
+
+                _make_autocomplete(entry, entry_var, suggestion_list)
 
                 # Confidence dot
                 conf = confidence.get(spk_id, "low")
                 color = conf_colors.get(conf, red)
-                tk.Label(row, text="\u25cf", font=("Segoe UI", 10), bg=card_bg, fg=color).pack(side=tk.LEFT, padx=4)
+                tk.Label(row, text="\u25cf", font=("Segoe UI", 11), bg=card_bg, fg=color).pack(side=tk.LEFT, padx=(8, 4))
 
-                # Reasoning
+                # Reasoning on its own line below
                 reason = reasoning.get(spk_id, "")
                 if reason:
-                    tk.Label(row, text=reason[:45], font=("Segoe UI", 7), bg=card_bg, fg=fg_dim,
-                             anchor="w").pack(side=tk.LEFT, padx=(4, 8), expand=True, fill="x")
+                    reason_frame = tk.Frame(rows_frame, bg=bg)
+                    reason_frame.pack(fill="x", padx=24, pady=(0, 2))
+                    tk.Label(reason_frame, text=f"\u2514 {reason}", font=("Segoe UI", 7, "italic"),
+                             bg=bg, fg=fg_dim, anchor="w", wraplength=400).pack(anchor="w")
 
             # Buttons
             btn_frame = tk.Frame(root, bg=bg)
