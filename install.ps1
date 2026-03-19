@@ -38,22 +38,37 @@ function RunWithSpinner($label, $exe, $arguments) {
     # Drain stdout/stderr async to prevent buffer deadlock
     $outTask = $proc.StandardOutput.ReadToEndAsync()
     $errTask = $proc.StandardError.ReadToEndAsync()
-    $spinner = @('|', '/', '-', '\')
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $i = 0
+    $phases = @("Resolving packages", "Downloading", "Installing", "Finalizing")
     while (-not $proc.HasExited) {
-        Write-Host "`r      $($spinner[$i % 4]) $label..." -NoNewline
-        Start-Sleep -Milliseconds 250
-        $i++
+        $pct = [math]::Min(95, $i)
+        $phase = $phases[[math]::Min($phases.Length - 1, [math]::Floor($i / 25))]
+        $elapsed = $sw.Elapsed.TotalSeconds
+        # Estimate remaining based on progress (rough but helpful)
+        $remaining = if ($pct -gt 5) { [int](($elapsed / $pct) * (100 - $pct)) } else { -1 }
+        $progressParams = @{
+            Activity = $label
+            Status = "$phase..."
+            PercentComplete = $pct
+            CurrentOperation = "Elapsed: $([math]::Floor($elapsed))s"
+        }
+        if ($remaining -gt 0) { $progressParams["SecondsRemaining"] = $remaining }
+        Write-Progress @progressParams
+        Start-Sleep -Milliseconds 500
+        $i += 2
     }
     $proc.WaitForExit()
     $outTask.Wait(); $errTask.Wait()
+    Write-Progress -Activity $label -Completed
+    $sw.Stop()
     if ($proc.ExitCode -ne 0) {
-        Write-Host "`r      " -NoNewline; Write-Host "[!] $label failed              " -ForegroundColor Red
+        Write-Host "      " -NoNewline; Write-Host "[!] $label failed" -ForegroundColor Red
         $errText = $errTask.Result
         if ($errText -and $errText.Trim()) { Write-Host $errText -ForegroundColor Red }
         throw "$label failed (exit code $($proc.ExitCode))"
     }
-    Write-Host "`r      " -NoNewline; Write-Host "[OK] " -NoNewline -ForegroundColor Green; Write-Host "$label              " -ForegroundColor Gray
+    Ok "$label ($([math]::Round($sw.Elapsed.TotalSeconds))s)"
 }
 
 try {
