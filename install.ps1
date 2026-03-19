@@ -18,26 +18,25 @@ function Section($text) {
     Write-Host "  --- " -NoNewline -ForegroundColor DarkGray; Write-Host $text -NoNewline -ForegroundColor Cyan; Write-Host " ---" -ForegroundColor DarkGray
     Write-Host ""
 }
-function RunSilent($activity, $command, [string[]]$arguments) {
-    # Run a command silently — suppress all stdout/stderr, check exit code.
-    # Warnings on stderr (torchcodec, lightning, xet) must not trigger failure.
+function NoBOM($path, $content) {
+    # Write file without UTF-8 BOM (Python/JSON can't parse BOM)
+    [System.IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding $false))
+}
+function RunNative {
+    # Run a native command (pip, python, cscript) safely.
+    # Temporarily disables ErrorActionPreference so stderr warnings don't kill the script.
+    # Shows "... done" or "... failed" inline.
+    param($label, [scriptblock]$cmd)
     Write-Host "      " -NoNewline; Write-Host "..." -NoNewline -ForegroundColor DarkGray
-    $errFile = "$env:TEMP\ws-err-$([guid]::NewGuid().ToString('N').Substring(0,8)).log"
-    $outFile = "$env:TEMP\ws-out-$([guid]::NewGuid().ToString('N').Substring(0,8)).log"
-    $proc = Start-Process -FilePath $command -ArgumentList $arguments `
-        -NoNewWindow -Wait -PassThru -WorkingDirectory $ScriptRoot `
-        -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-    if ($proc.ExitCode -ne 0) {
+    $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    try { & $cmd 2>&1 | Out-Null } catch {}
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+    if ($code -ne 0) {
         Write-Host " failed" -ForegroundColor Red
-        $errContent = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
-        $outContent = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
-        if ($errContent -and $errContent.Trim()) { Write-Host ""; Write-Host $errContent -ForegroundColor Red }
-        if ($outContent -and $outContent -match "Error|Exception") { Write-Host $outContent -ForegroundColor Red }
-        Remove-Item $errFile, $outFile -ErrorAction SilentlyContinue
-        throw "$activity failed (exit code $($proc.ExitCode))"
+        throw "$label failed (exit code $code)"
     }
     Write-Host " done" -ForegroundColor Green
-    Remove-Item $errFile, $outFile -ErrorAction SilentlyContinue
 }
 
 try {
@@ -55,23 +54,19 @@ Write-Host ""
 Step 1 "Checking Python..."
 
 $pythonCmd = $null
+$ErrorActionPreference = "Continue"
 foreach ($cmd in @("python", "python3", "py")) {
-    try {
-        $ver = & $cmd --version 2>&1
-        if ($ver -match "Python (\d+)\.(\d+)") {
-            $major = [int]$Matches[1]
-            $minor = [int]$Matches[2]
-            if ($major -ge 3 -and $minor -ge 10) {
-                $pythonCmd = $cmd
-                Ok "$ver"
-                break
-            }
+    $ver = & $cmd --version 2>&1
+    if ($LASTEXITCODE -eq 0 -and $ver -match "Python (\d+)\.(\d+)") {
+        $major = [int]$Matches[1]; $minor = [int]$Matches[2]
+        if ($major -ge 3 -and $minor -ge 10) {
+            $pythonCmd = $cmd; Ok "$ver"; break
         }
-    } catch {}
+    }
 }
+$ErrorActionPreference = "Stop"
 
 if (-not $pythonCmd) {
-    Write-Host ""
     Warn "Python 3.10+ not found!"
     Info "Install from https://python.org/downloads/"
     Info "Make sure to check 'Add to PATH' during installation."
@@ -82,43 +77,30 @@ if (-not $pythonCmd) {
 
 Step 2 "Detecting GPU..."
 
-$cudaVersion = $null
-$gpuName = "Unknown"
-
-try {
-    $nvOutput = & nvidia-smi --query-gpu=name --format=csv,noheader 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        $gpuName = ($nvOutput | Select-Object -First 1).Trim()
-        Ok "$gpuName"
-
-        # Map GPU family to CUDA version
-        # Note: Python 3.13+ only has PyTorch wheels for cu124+, not cu121
-        if ($gpuName -match "RTX\s*50[0-9]{2}|RTX\s*5[0-9]{3}|Blackwell") {
-            $cudaVersion = "cu128"
-            $cudaLabel = "CUDA 12.8 (RTX 50-series)"
-        } elseif ($gpuName -match "RTX\s*[2-4]0[0-9]{2}|RTX\s*[2-4][0-9]{3}|A[0-9]{3,4}|L[0-9]{2}") {
-            $cudaVersion = "cu124"
-            $cudaLabel = "CUDA 12.4 (RTX 20/30/40-series)"
-        } elseif ($gpuName -match "GTX\s*1[0-9]{3}|GTX\s*9[0-9]{2}") {
-            $cudaVersion = "cu118"
-            $cudaLabel = "CUDA 11.8 (GTX 10/9-series)"
-        } else {
-            $cudaVersion = "cu124"
-            $cudaLabel = "CUDA 12.4 (default)"
-        }
-
-        Info "Selected: $cudaLabel"
-        $confirm = Prompt "Press Enter to confirm, or type a version (cu118/cu124/cu128)"
-        if ($confirm -and $confirm -match "^cu\d+$") {
-            $cudaVersion = $confirm
-            Warn "Manual override: $cudaVersion"
-        }
+$cudaVersion = $null; $gpuName = "Unknown"
+$ErrorActionPreference = "Continue"
+$nvOutput = & nvidia-smi --query-gpu=name --format=csv,noheader 2>&1
+if ($LASTEXITCODE -eq 0) {
+    $gpuName = ($nvOutput | Select-Object -First 1).Trim()
+    Ok "$gpuName"
+    # Map GPU family to CUDA version (Python 3.13+ needs cu124+)
+    if ($gpuName -match "RTX\s*50[0-9]{2}|RTX\s*5[0-9]{3}|Blackwell") {
+        $cudaVersion = "cu128"; $cudaLabel = "CUDA 12.8 (RTX 50-series)"
+    } elseif ($gpuName -match "RTX\s*[2-4]0[0-9]{2}|RTX\s*[2-4][0-9]{3}|A[0-9]{3,4}|L[0-9]{2}") {
+        $cudaVersion = "cu124"; $cudaLabel = "CUDA 12.4 (RTX 20/30/40-series)"
+    } elseif ($gpuName -match "GTX\s*1[0-9]{3}|GTX\s*9[0-9]{2}") {
+        $cudaVersion = "cu118"; $cudaLabel = "CUDA 11.8 (GTX 10/9-series)"
+    } else {
+        $cudaVersion = "cu124"; $cudaLabel = "CUDA 12.4 (default)"
     }
-} catch {
+    Info "Selected: $cudaLabel"
+    $confirm = Prompt "Press Enter to confirm, or type a version (cu118/cu124/cu128)"
+    if ($confirm -and $confirm -match "^cu\d+$") { $cudaVersion = $confirm; Warn "Manual override: $cudaVersion" }
+} else {
     Warn "nvidia-smi not found - no GPU detected"
     Info "WhisperSync will run in CPU mode (slower)."
-    Info "Install NVIDIA drivers from https://nvidia.com/drivers"
 }
+$ErrorActionPreference = "Stop"
 
 # ── Step 3: Create venv ──
 
@@ -127,16 +109,13 @@ Step 3 "Setting up virtual environment..."
 if (Test-Path $VenvPath) {
     Warn "Venv already exists"
     $recreate = Prompt "Delete and recreate? (y/N)"
-    if ($recreate -eq "y") {
-        Remove-Item -Recurse -Force $VenvPath
-        Ok "Old venv removed"
-    } else {
-        Info "Keeping existing venv"
-    }
+    if ($recreate -eq "y") { Remove-Item -Recurse -Force $VenvPath; Ok "Old venv removed" }
+    else { Info "Keeping existing venv" }
 }
-
 if (-not (Test-Path $VenvPath)) {
-    & $pythonCmd -m venv $VenvPath
+    $ErrorActionPreference = "Continue"
+    & $pythonCmd -m venv $VenvPath 2>&1 | Out-Null
+    $ErrorActionPreference = "Stop"
     Ok "Virtual environment created"
 }
 
@@ -147,48 +126,44 @@ $VenvPip = "$VenvPath\Scripts\pip.exe"
 
 Step 4 "Installing dependencies..."
 
-& $VenvPython -m pip install --upgrade pip --quiet 2>&1 | Out-Null
+# Suppress git credential popups during pip
+$prevGitPrompt = $env:GIT_TERMINAL_PROMPT; $prevGitAskpass = $env:GIT_ASKPASS
+$env:GIT_TERMINAL_PROMPT = "0"; $env:GIT_ASKPASS = ""
 
-# Suppress git credential popups during pip - pip installs from PyPI, not git repos.
-$prevGitPrompt = $env:GIT_TERMINAL_PROMPT
-$prevGitAskpass = $env:GIT_ASKPASS
-$env:GIT_TERMINAL_PROMPT = "0"
-$env:GIT_ASKPASS = ""
-RunSilent "Dependencies" $VenvPip @("install", "-r", $RequirementsFile, "-qq")
+RunNative "pip upgrade" { & $VenvPython -m pip install --upgrade pip -qq }
+RunNative "Dependencies" { & $VenvPip install -r $RequirementsFile -qq }
 Ok "Dependencies installed"
 
 # ── Step 5: Install CUDA PyTorch ──
 
 if ($cudaVersion) {
     Step 5 "Installing PyTorch ($cudaVersion)..."
-    RunSilent "PyTorch GPU" $VenvPip @("install", "torch", "torchaudio", "--index-url", "https://download.pytorch.org/whl/$cudaVersion", "--force-reinstall", "--no-deps", "-qq")
+    RunNative "PyTorch" { & $VenvPip install torch torchaudio --index-url "https://download.pytorch.org/whl/$cudaVersion" --force-reinstall --no-deps -qq }
     Ok "PyTorch GPU installed"
 } else {
     Step 5 "Skipping GPU PyTorch (no GPU detected)"
 }
-# Restore git env
-$env:GIT_TERMINAL_PROMPT = $prevGitPrompt
-$env:GIT_ASKPASS = $prevGitAskpass
+$env:GIT_TERMINAL_PROMPT = $prevGitPrompt; $env:GIT_ASKPASS = $prevGitAskpass
 
 # ── Step 6: Standalone marker ──
 
 $markerPath = "$PkgDir\.standalone"
-if (-not (Test-Path $markerPath)) {
-    "" | Out-File -Encoding ASCII $markerPath
-}
+if (-not (Test-Path $markerPath)) { "" | Out-File -Encoding ASCII $markerPath }
 
 # ── Step 7: Verify ──
 
 Step 6 "Verifying installation..."
 
+$ErrorActionPreference = "Continue"
 $cudaCheck = & $VenvPython -c "import torch; avail = torch.cuda.is_available(); name = torch.cuda.get_device_name(0) if avail else 'N/A'; print('CUDA:', avail, ' Device:', name)" 2>&1
-if ($cudaCheck -match "True") { Ok "CUDA: $cudaCheck" } else { Warn "CUDA: $cudaCheck" }
+if ("$cudaCheck" -match "True") { Ok "$cudaCheck" } else { Warn "$cudaCheck" }
 
 $wxCheck = & $VenvPython -c "import whisperx; print('OK')" 2>&1
-if ($wxCheck -match "OK") { Ok "whisperX ready" } else { Warn "whisperX: $wxCheck" }
+if ("$wxCheck" -match "OK") { Ok "whisperX ready" } else { Warn "whisperX: $wxCheck" }
 
 $sdCheck = & $VenvPython -c "import sounddevice; print('OK')" 2>&1
-if ($sdCheck -match "OK") { Ok "Audio capture ready" } else { Warn "sounddevice: $sdCheck" }
+if ("$sdCheck" -match "OK") { Ok "Audio capture ready" } else { Warn "sounddevice: $sdCheck" }
+$ErrorActionPreference = "Stop"
 
 # ── Step 8: HF token ──
 
@@ -242,25 +217,14 @@ while (-not $outputDir) {
         Warn "'$($customOut.Trim())' is not a full path - use something like C:\..."
         continue
     }
-    # Validate we can create/access the folder
     try {
-        if (-not (Test-Path $candidate)) {
-            New-Item -ItemType Directory -Path $candidate -Force -ErrorAction Stop | Out-Null
-        }
-        # Verify it's actually a directory we can write to
-        if (Test-Path $candidate -PathType Container) {
-            $outputDir = $candidate
-        } else {
-            Warn "That path exists but is not a folder"
-        }
-    } catch {
-        Warn "Can't use that path: $_"
-        Info "Try a different folder (e.g. C:\Users\$env:USERNAME\Documents\whispersync-meetings)"
-    }
+        if (-not (Test-Path $candidate)) { New-Item -ItemType Directory -Path $candidate -Force -ErrorAction Stop | Out-Null }
+        if (Test-Path $candidate -PathType Container) { $outputDir = $candidate }
+        else { Warn "That path exists but is not a folder" }
+    } catch { Warn "Can't use that path: $_"; Info "Try a different folder" }
 }
-$configPath = "$PkgDir\config.json"
 $configJson = "{`n  `"output_dir`": `"$($outputDir -replace '\\', '/')`"`n}"
-[System.IO.File]::WriteAllText($configPath, $configJson, (New-Object System.Text.UTF8Encoding $false))
+NoBOM "$PkgDir\config.json" $configJson
 Ok "Recordings will save to $outputDir"
 
 # ── Step 10: Shortcuts ──
@@ -270,14 +234,13 @@ Section "Shortcuts"
 $LauncherPath = "$ScriptRoot\start.ps1"
 $IconPath = "$PkgDir\whisper-capture.ico"
 
-$createDesktop = Prompt "Create a Desktop shortcut? (Y/n)"
-if ($createDesktop -ne "n") {
-    $DesktopFolder = [Environment]::GetFolderPath("Desktop")
-    $DesktopShortcut = "$DesktopFolder\WhisperSync.lnk"
+function CreateShortcut($lnkPath, $label) {
+    # Remove existing shortcut if present (avoids locked-file errors on re-install)
+    if (Test-Path $lnkPath) { Remove-Item $lnkPath -Force -ErrorAction SilentlyContinue }
     $VbsTemp = "$env:TEMP\wc-shortcut.vbs"
     @"
 Set WshShell = WScript.CreateObject("WScript.Shell")
-Set lnk = WshShell.CreateShortcut("$DesktopShortcut")
+Set lnk = WshShell.CreateShortcut("$lnkPath")
 lnk.TargetPath = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 lnk.Arguments = "-ExecutionPolicy Bypass -WindowStyle Minimized -File ""$LauncherPath"" -Watchdog"
 lnk.WorkingDirectory = "$ScriptRoot"
@@ -286,37 +249,27 @@ lnk.Description = "WhisperSync - local speech-to-text"
 lnk.IconLocation = "$IconPath, 0"
 lnk.Save
 "@ | Out-File -Encoding ASCII $VbsTemp
-    cscript //nologo $VbsTemp
+    $ErrorActionPreference = "Continue"
+    cscript //nologo $VbsTemp 2>&1 | Out-Null
+    $ErrorActionPreference = "Stop"
     Remove-Item $VbsTemp -ErrorAction SilentlyContinue
-    Ok "Desktop shortcut created"
+    Ok "$label created"
+}
+
+$createDesktop = Prompt "Create a Desktop shortcut? (Y/n)"
+if ($createDesktop -ne "n") {
+    CreateShortcut "$([Environment]::GetFolderPath('Desktop'))\WhisperSync.lnk" "Desktop shortcut"
 }
 
 $createStartup = Prompt "Auto-launch on login? (Y/n)"
 if ($createStartup -ne "n") {
-    $StartupFolder = [Environment]::GetFolderPath("Startup")
-    $StartupShortcut = "$StartupFolder\WhisperSync.lnk"
-    $VbsTemp = "$env:TEMP\wc-shortcut.vbs"
-    @"
-Set WshShell = WScript.CreateObject("WScript.Shell")
-Set lnk = WshShell.CreateShortcut("$StartupShortcut")
-lnk.TargetPath = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-lnk.Arguments = "-ExecutionPolicy Bypass -WindowStyle Minimized -File ""$LauncherPath"" -Watchdog"
-lnk.WorkingDirectory = "$ScriptRoot"
-lnk.WindowStyle = 7
-lnk.Description = "WhisperSync - local speech-to-text"
-lnk.IconLocation = "$IconPath, 0"
-lnk.Save
-"@ | Out-File -Encoding ASCII $VbsTemp
-    cscript //nologo $VbsTemp
-    Remove-Item $VbsTemp -ErrorAction SilentlyContinue
-    Ok "Startup shortcut created"
+    CreateShortcut "$([Environment]::GetFolderPath('Startup'))\WhisperSync.lnk" "Startup shortcut"
 }
 
 # ── Step 11: Bootstrap models ──
 
 Section "Downloading Models"
 
-# Write a temp script so we don't fight PowerShell quote escaping
 $bootstrapScript = "$env:TEMP\ws-bootstrap.py"
 $bootstrapCode = @"
 import warnings, os
@@ -326,12 +279,14 @@ from whisper_sync.model_status import bootstrap_models
 from whisper_sync import config
 bootstrap_models(config.load())
 "@
-[System.IO.File]::WriteAllText($bootstrapScript, $bootstrapCode, (New-Object System.Text.UTF8Encoding $false))
-RunSilent "Models" $VenvPython @($bootstrapScript)
+NoBOM $bootstrapScript $bootstrapCode
+RunNative "Models" { & $VenvPython $bootstrapScript }
 Remove-Item $bootstrapScript -ErrorAction SilentlyContinue
 Ok "Models cached"
 
-# ── Done ──
+# ══════════════════════════════════════════════
+#  COMPLETION SCREEN
+# ══════════════════════════════════════════════
 
 Write-Host ""
 Write-Host ""
@@ -354,7 +309,7 @@ Write-Host ""
 Write-Host "  " -NoNewline; Write-Host "Audio never leaves your machine." -ForegroundColor Green
 Write-Host ""
 
-# ── Get Started (no gate - always shown) ──
+# ── Get Started (always shown) ──
 
 Write-Host "  =============================================" -ForegroundColor DarkCyan
 Write-Host "  " -NoNewline; Write-Host "GET STARTED" -ForegroundColor Cyan -NoNewline; Write-Host "  Record your first dictation and meeting!" -ForegroundColor White
@@ -379,7 +334,7 @@ Write-Host "    " -NoNewline; Write-Host "   " -NoNewline; Write-Host "*" -Foreg
 Write-Host "    " -NoNewline; Write-Host "     generated with " -NoNewline -ForegroundColor DarkCyan; Write-Host "action items" -NoNewline -ForegroundColor White; Write-Host " and " -NoNewline -ForegroundColor DarkCyan; Write-Host "summaries" -NoNewline -ForegroundColor White; Write-Host " " -NoNewline; Write-Host "*" -ForegroundColor DarkYellow
 Write-Host ""
 
-# ── Benchmark (first gate) ──
+# ── Benchmark (gated) ──
 
 Write-Host "  =============================================" -ForegroundColor DarkCyan
 Write-Host "  " -NoNewline; Write-Host "BENCHMARK" -ForegroundColor Cyan -NoNewline; Write-Host "  Let's compare models on your GPU!" -ForegroundColor White
@@ -423,8 +378,11 @@ for name in models_to_test:
     print(f'    {name:<10} {avg:.2f}s  {bar:<20}  ({quality.get(name, "")})')
 print()
 "@
-    [System.IO.File]::WriteAllText($benchScript, $benchCode, (New-Object System.Text.UTF8Encoding $false))
-    & $VenvPython $benchScript
+    NoBOM $benchScript $benchCode
+    # Benchmark runs with visible output (user wants to see results)
+    $ErrorActionPreference = "Continue"
+    & $VenvPython $benchScript 2>&1 | Where-Object { $_ -notmatch "warning|Warning|torchcodec|Lightning|Xet Storage" }
+    $ErrorActionPreference = "Stop"
     Remove-Item $benchScript -ErrorAction SilentlyContinue
     Ok "Benchmark complete"
     Write-Host ""
@@ -434,17 +392,16 @@ print()
     Write-Host ""
     $setModel = Prompt "Set both to large-v3? (Y/n)"
     if ($setModel -ne "n") {
-        $modelCfgPath = "$PkgDir\config.json"
         $existingCfg = @{}
-        if (Test-Path $modelCfgPath) {
-            $existingCfg = Get-Content $modelCfgPath -Raw | ConvertFrom-Json
-            # Convert PSObject to hashtable
-            $ht = @{}; $existingCfg.PSObject.Properties | ForEach-Object { $ht[$_.Name] = $_.Value }; $existingCfg = $ht
+        $cfgPath = "$PkgDir\config.json"
+        if (Test-Path $cfgPath) {
+            $raw = Get-Content $cfgPath -Raw
+            $parsed = $raw | ConvertFrom-Json
+            $parsed.PSObject.Properties | ForEach-Object { $existingCfg[$_.Name] = $_.Value }
         }
         $existingCfg["model"] = "large-v3"
         $existingCfg["dictation_model"] = "large-v3"
-        $cfgJson = $existingCfg | ConvertTo-Json
-        [System.IO.File]::WriteAllText($modelCfgPath, $cfgJson, (New-Object System.Text.UTF8Encoding $false))
+        NoBOM $cfgPath ($existingCfg | ConvertTo-Json)
         Ok "Models set to large-v3"
     }
 }
