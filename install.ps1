@@ -22,21 +22,38 @@ function NoBOM($path, $content) {
     # Write file without UTF-8 BOM (Python/JSON can't parse BOM)
     [System.IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding $false))
 }
-function RunNative {
-    # Run a native command (pip, python, cscript) safely.
-    # Temporarily disables ErrorActionPreference so stderr warnings don't kill the script.
-    # Shows "... done" or "... failed" inline.
-    param($label, [scriptblock]$cmd)
-    Write-Host "      " -NoNewline; Write-Host "..." -NoNewline -ForegroundColor DarkGray
-    $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-    try { & $cmd 2>&1 | Out-Null } catch {}
-    $code = $LASTEXITCODE
-    $ErrorActionPreference = $prev
-    if ($code -ne 0) {
-        Write-Host " failed" -ForegroundColor Red
-        throw "$label failed (exit code $code)"
+function RunWithSpinner($label, $exe, $arguments) {
+    # Run a native command with an animated spinner using .NET Process.
+    # Bypasses all PowerShell quirks (ErrorActionPreference, LASTEXITCODE, stderr).
+    # Env vars inherited automatically. WorkingDirectory set explicitly.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.Arguments = $arguments
+    $psi.WorkingDirectory = $ScriptRoot
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    # Drain stdout/stderr async to prevent buffer deadlock
+    $outTask = $proc.StandardOutput.ReadToEndAsync()
+    $errTask = $proc.StandardError.ReadToEndAsync()
+    $spinner = @('|', '/', '-', '\')
+    $i = 0
+    while (-not $proc.HasExited) {
+        Write-Host "`r      $($spinner[$i % 4]) $label..." -NoNewline
+        Start-Sleep -Milliseconds 250
+        $i++
     }
-    Write-Host " done" -ForegroundColor Green
+    $proc.WaitForExit()
+    $outTask.Wait(); $errTask.Wait()
+    if ($proc.ExitCode -ne 0) {
+        Write-Host "`r      " -NoNewline; Write-Host "[!] $label failed              " -ForegroundColor Red
+        $errText = $errTask.Result
+        if ($errText -and $errText.Trim()) { Write-Host $errText -ForegroundColor Red }
+        throw "$label failed (exit code $($proc.ExitCode))"
+    }
+    Write-Host "`r      " -NoNewline; Write-Host "[OK] " -NoNewline -ForegroundColor Green; Write-Host "$label              " -ForegroundColor Gray
 }
 
 try {
@@ -130,15 +147,15 @@ Step 4 "Installing dependencies..."
 $prevGitPrompt = $env:GIT_TERMINAL_PROMPT; $prevGitAskpass = $env:GIT_ASKPASS
 $env:GIT_TERMINAL_PROMPT = "0"; $env:GIT_ASKPASS = ""
 
-RunNative "pip upgrade" { & $VenvPython -m pip install --upgrade pip -qq }
-RunNative "Dependencies" { & $VenvPip install -r $RequirementsFile -qq }
+RunWithSpinner "Upgrading pip" $VenvPython "-m pip install --upgrade pip -qq"
+RunWithSpinner "Installing dependencies" $VenvPip "install -r $RequirementsFile -qq"
 Ok "Dependencies installed"
 
 # ── Step 5: Install CUDA PyTorch ──
 
 if ($cudaVersion) {
     Step 5 "Installing PyTorch ($cudaVersion)..."
-    RunNative "PyTorch" { & $VenvPip install torch torchaudio --index-url "https://download.pytorch.org/whl/$cudaVersion" --force-reinstall --no-deps -qq }
+    RunWithSpinner "Installing PyTorch" $VenvPip "install torch torchaudio --index-url https://download.pytorch.org/whl/$cudaVersion --force-reinstall --no-deps -qq"
     Ok "PyTorch GPU installed"
 } else {
     Step 5 "Skipping GPU PyTorch (no GPU detected)"
@@ -280,7 +297,7 @@ from whisper_sync import config
 bootstrap_models(config.load())
 "@
 NoBOM $bootstrapScript $bootstrapCode
-RunNative "Models" { & $VenvPython $bootstrapScript }
+RunWithSpinner "Downloading models" $VenvPython $bootstrapScript
 Remove-Item $bootstrapScript -ErrorAction SilentlyContinue
 Ok "Models cached"
 
