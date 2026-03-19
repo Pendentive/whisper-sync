@@ -1,0 +1,23 @@
+# Personal config (users create from whisper_sync/config.defaults.json)
+whisper_sync/config.json
+
+# Runtime data — per-machine
+logs/
+models/
+whisper-env/
+
+# Build output
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Temp files
+*.npy
+*.tmp
