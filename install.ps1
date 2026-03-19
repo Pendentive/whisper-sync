@@ -18,6 +18,29 @@ function Section($text) {
     Write-Host "  --- " -NoNewline -ForegroundColor DarkGray; Write-Host $text -NoNewline -ForegroundColor Cyan; Write-Host " ---" -ForegroundColor DarkGray
     Write-Host ""
 }
+function RunWithProgress($activity, $command, $arguments) {
+    # Run a command silently while showing a PowerShell progress bar
+    $proc = Start-Process -FilePath $command -ArgumentList $arguments `
+        -NoNewWindow -RedirectStandardOutput "$env:TEMP\ws-stdout.log" `
+        -RedirectStandardError "$env:TEMP\ws-stderr.log" -PassThru
+    $spinner = @("|", "/", "-", "\")
+    $i = 0
+    while (-not $proc.HasExited) {
+        $pct = [math]::Min(95, $i * 2)  # creep toward 95%, never hit 100 until done
+        Write-Progress -Activity $activity -Status "$($spinner[$i % 4]) Installing..." -PercentComplete $pct
+        Start-Sleep -Milliseconds 500
+        $i++
+    }
+    Write-Progress -Activity $activity -Status "Done" -PercentComplete 100 -Completed
+    if ($proc.ExitCode -ne 0) {
+        $errLog = Get-Content "$env:TEMP\ws-stderr.log" -Raw -ErrorAction SilentlyContinue
+        $outLog = Get-Content "$env:TEMP\ws-stdout.log" -Raw -ErrorAction SilentlyContinue
+        if ($errLog) { Write-Host $errLog -ForegroundColor Red }
+        if ($outLog -and $outLog -match "ERROR") { Write-Host $outLog -ForegroundColor Red }
+        throw "Command failed with exit code $($proc.ExitCode)"
+    }
+    Remove-Item "$env:TEMP\ws-stdout.log", "$env:TEMP\ws-stderr.log" -ErrorAction SilentlyContinue
+}
 
 try {
 $ErrorActionPreference = "Stop"
@@ -125,7 +148,6 @@ $VenvPython = "$VenvPath\Scripts\python.exe"
 $VenvPip = "$VenvPath\Scripts\pip.exe"
 
 Step 4 "Installing dependencies..."
-Info "This may take a few minutes on first install"
 
 & $VenvPython -m pip install --upgrade pip --quiet 2>&1 | Out-Null
 
@@ -134,15 +156,14 @@ $prevGitPrompt = $env:GIT_TERMINAL_PROMPT
 $prevGitAskpass = $env:GIT_ASKPASS
 $env:GIT_TERMINAL_PROMPT = "0"
 $env:GIT_ASKPASS = ""
-& $VenvPip install -r $RequirementsFile --quiet --progress-bar on
+RunWithProgress "Installing Python dependencies" $VenvPip "install -r $RequirementsFile -qq"
 Ok "Dependencies installed"
 
 # ── Step 5: Install CUDA PyTorch ──
 
 if ($cudaVersion) {
     Step 5 "Installing PyTorch ($cudaVersion)..."
-    Info "Overrides CPU-only torch with GPU-accelerated version"
-    & $VenvPip install torch torchaudio --index-url "https://download.pytorch.org/whl/$cudaVersion" --force-reinstall --no-deps --quiet --progress-bar on
+    RunWithProgress "Installing PyTorch (GPU)" $VenvPip "install torch torchaudio --index-url https://download.pytorch.org/whl/$cudaVersion --force-reinstall --no-deps -qq"
     Ok "PyTorch GPU installed"
 } else {
     Step 5 "Skipping GPU PyTorch (no GPU detected)"
@@ -290,8 +311,7 @@ lnk.Save
 
 Section "Downloading Models"
 
-Info "Caching transcription + word timing models..."
-& $VenvPython -c "from whisper_sync.model_status import bootstrap_models; from whisper_sync import config; bootstrap_models(config.load())"
+RunWithProgress "Downloading transcription models" $VenvPython "-c ""from whisper_sync.model_status import bootstrap_models; from whisper_sync import config; bootstrap_models(config.load())"""
 Ok "Models cached"
 
 # ── Done ──
