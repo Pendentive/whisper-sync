@@ -85,6 +85,9 @@ def bootstrap_models(cfg: dict, on_large_model=None):
         else:
             print(f"[WhisperSync] Model {name} ({size}) not cached — download via Settings menu")
 
+    # Ensure alignment model (wav2vec2) is cached — needed for word timing
+    _bootstrap_alignment_model()
+
 
 def _estimate_download_size(model_name: str) -> str:
     """Return human-readable download size estimate."""
@@ -97,6 +100,26 @@ def _estimate_download_size(model_name: str) -> str:
         "large-v3": "~3 GB",
     }
     return sizes.get(model_name, "unknown size")
+
+
+def _bootstrap_alignment_model():
+    """Download the wav2vec2 alignment model if not already cached.
+
+    This model provides word-level timing accuracy. Without it, the first
+    meeting transcription triggers a download, which is a bad first-run experience.
+    """
+    alignment_path = _TORCH_CACHE / _ALIGNMENT_MODEL
+    if alignment_path.exists():
+        return
+    try:
+        print("[WhisperSync] Downloading word timing model (wav2vec2)...")
+        import whisperx
+        # Loading the alignment model triggers the download
+        whisperx.load_align_model(language_code="en", device="cpu")
+        print("[WhisperSync] Word timing model cached successfully")
+    except Exception as e:
+        print(f"[WhisperSync] Failed to download alignment model: {e}")
+        print("[WhisperSync] Word timing will download on first use instead")
 
 
 def _download_whisper_model(model_name: str):
