@@ -418,6 +418,8 @@ Write-Host "    " -NoNewline; Write-Host "2." -ForegroundColor Cyan -NoNewline; 
 Write-Host "    " -NoNewline; Write-Host "3." -ForegroundColor Cyan -NoNewline; Write-Host " Talk, play a video, join a call - it hears everything" -ForegroundColor White
 Write-Host "    " -NoNewline; Write-Host "4." -ForegroundColor Cyan -NoNewline; Write-Host " Left-click again" -NoNewline -ForegroundColor Yellow; Write-Host " and follow the save dialog" -ForegroundColor DarkGray
 Write-Host "    " -NoNewline; Write-Host "5." -ForegroundColor Cyan -NoNewline; Write-Host " Done! " -NoNewline -ForegroundColor Green; Write-Host "Transcript with speaker names in your folder." -ForegroundColor DarkGray
+Write-Host "    " -NoNewline; Write-Host "   " -NoNewline; Write-Host " *" -NoNewline -ForegroundColor DarkYellow; Write-Host " Bonus:" -NoNewline -ForegroundColor DarkCyan; Write-Host " With Claude CLI installed, you also get" -ForegroundColor DarkGray
+Write-Host "    " -NoNewline; Write-Host "     auto-generated " -NoNewline -ForegroundColor DarkGray; Write-Host "meeting minutes" -NoNewline -ForegroundColor White; Write-Host " and " -NoNewline -ForegroundColor DarkGray; Write-Host "action items" -NoNewline -ForegroundColor White; Write-Host " *" -ForegroundColor DarkYellow
 Write-Host ""
 Write-Host "  =============================================" -ForegroundColor DarkCyan
 Write-Host ""
@@ -428,6 +430,62 @@ Write-Host ""
 Write-Host "    Right-click tray icon" -NoNewline -ForegroundColor Yellow; Write-Host " > " -NoNewline -ForegroundColor DarkGray; Write-Host "Settings" -NoNewline -ForegroundColor White; Write-Host " > " -NoNewline -ForegroundColor DarkGray; Write-Host "Download large-v3" -ForegroundColor White
 Write-Host ""
 Write-Host "  =============================================" -ForegroundColor DarkCyan
+Write-Host ""
+
+# ── Benchmark offer ──
+
+Write-Host "  =============================================" -ForegroundColor DarkCyan
+Write-Host "  " -NoNewline; Write-Host "BENCHMARK" -ForegroundColor Cyan -NoNewline; Write-Host " (optional)" -ForegroundColor DarkGray
+Write-Host "  =============================================" -ForegroundColor DarkCyan
+Write-Host ""
+Write-Host "  Want to see how fast dictation is on your GPU?" -ForegroundColor White
+Write-Host "  Runs a quick test with each installed model and" -ForegroundColor DarkGray
+Write-Host "  shows turnaround time so you can pick your favorite." -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "  " -NoNewline; Write-Host "(For meetings, always use the best model -" -ForegroundColor DarkGray
+Write-Host "  " -NoNewline; Write-Host "speed doesn't matter, accuracy does.)" -ForegroundColor DarkGray
+Write-Host ""
+$runBenchmark = Prompt "Run benchmark now? (y/N)"
+if ($runBenchmark -eq "y") {
+    Write-Host ""
+    Step 12 "Running benchmark..."
+    $benchScript = "$env:TEMP\ws-bench.py"
+    @"
+import warnings, os, time, numpy as np
+warnings.filterwarnings('ignore')
+os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
+from whisper_sync.transcribe import _load_whisper_model, _get_device
+from whisper_sync import config
+cfg = config.load()
+device = _get_device()
+# Generate 5 seconds of silence (simulates a short dictation)
+audio = np.zeros(16000 * 5, dtype=np.float32)
+models_to_test = []
+from whisper_sync.model_status import is_model_cached
+for m in ['tiny', 'base', 'large-v3']:
+    if is_model_cached(m):
+        models_to_test.append(m)
+print()
+for name in models_to_test:
+    compute = 'int8' if device == 'cpu' else cfg.get('compute_type', 'float16')
+    model = _load_whisper_model(name, compute, 'en')
+    # Warm up
+    model.transcribe(audio, batch_size=4, language='en')
+    # Timed run
+    t0 = time.perf_counter()
+    for _ in range(3):
+        model.transcribe(audio, batch_size=4, language='en')
+    avg = (time.perf_counter() - t0) / 3
+    quality = {'tiny': 'Basic', 'base': 'Good', 'large-v3': 'Best'}
+    bar = '#' * max(1, int(20 - avg * 10))
+    print(f'    {name:<10} {avg:.2f}s  {bar:<20}  ({quality.get(name, "")})')
+print()
+"@ | Out-File -Encoding UTF8 $benchScript
+    & $VenvPython $benchScript
+    Remove-Item $benchScript -ErrorAction SilentlyContinue
+    Ok "Benchmark complete"
+}
+
 Write-Host ""
 
 } catch {
