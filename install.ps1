@@ -19,25 +19,25 @@ function Section($text) {
     Write-Host ""
 }
 function RunSilent($activity, $command, [string[]]$arguments) {
-    # Run a command with -qq (silent) and show a simple waiting message.
-    # Output goes to temp files for error capture. No Start-Process or Start-Job
-    # needed — runs inline so env vars and paths are inherited correctly.
+    # Run a command silently — suppress all stdout/stderr, check exit code.
+    # Warnings on stderr (torchcodec, lightning, xet) must not trigger failure.
     Write-Host "      " -NoNewline; Write-Host "..." -NoNewline -ForegroundColor DarkGray
     $errFile = "$env:TEMP\ws-err-$([guid]::NewGuid().ToString('N').Substring(0,8)).log"
-    & $command @arguments 2> $errFile
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) {
+    $outFile = "$env:TEMP\ws-out-$([guid]::NewGuid().ToString('N').Substring(0,8)).log"
+    $proc = Start-Process -FilePath $command -ArgumentList $arguments `
+        -NoNewWindow -Wait -PassThru `
+        -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+    if ($proc.ExitCode -ne 0) {
         Write-Host " failed" -ForegroundColor Red
         $errContent = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
-        if ($errContent -and $errContent.Trim()) {
-            Write-Host ""
-            Write-Host $errContent -ForegroundColor Red
-        }
-        Remove-Item $errFile -ErrorAction SilentlyContinue
-        throw "$activity failed (exit code $exitCode)"
+        $outContent = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
+        if ($errContent -and $errContent.Trim()) { Write-Host ""; Write-Host $errContent -ForegroundColor Red }
+        if ($outContent -and $outContent -match "Error|Exception") { Write-Host $outContent -ForegroundColor Red }
+        Remove-Item $errFile, $outFile -ErrorAction SilentlyContinue
+        throw "$activity failed (exit code $($proc.ExitCode))"
     }
     Write-Host " done" -ForegroundColor Green
-    Remove-Item $errFile -ErrorAction SilentlyContinue
+    Remove-Item $errFile, $outFile -ErrorAction SilentlyContinue
 }
 
 try {
