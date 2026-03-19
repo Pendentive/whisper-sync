@@ -107,12 +107,9 @@ Write-Host "Upgrading pip..." -ForegroundColor Green
 & $VenvPython -m pip install --upgrade pip --quiet 2>&1 | Out-Null
 
 Write-Host "Installing dependencies (this may take a few minutes)..." -ForegroundColor Green
-# GIT_TERMINAL_PROMPT=0 prevents git auth popups from pip's internal git operations
-$env:GIT_TERMINAL_PROMPT = "0"
-& $VenvPip install -r $RequirementsFile --quiet --progress-bar on 2>&1 | ForEach-Object {
-    if ($_ -match "Successfully installed") { Write-Host "  $_" -ForegroundColor Gray }
-}
-$env:GIT_TERMINAL_PROMPT = $null
+Write-Host ""
+& $VenvPip install -r $RequirementsFile --progress-bar on
+Write-Host ""
 
 # ── Step 5: Install CUDA PyTorch ──
 
@@ -120,9 +117,7 @@ if ($cudaVersion) {
     Write-Host ""
     Write-Host "Installing PyTorch with $cudaVersion..." -ForegroundColor Green
     Write-Host "(This overrides the CPU-only torch that whisperX installs)" -ForegroundColor Gray
-    & $VenvPip install torch torchaudio --index-url "https://download.pytorch.org/whl/$cudaVersion" --force-reinstall --no-deps --quiet --progress-bar on 2>&1 | ForEach-Object {
-        if ($_ -match "Successfully installed") { Write-Host "  $_" -ForegroundColor Gray }
-    }
+    & $VenvPip install torch torchaudio --index-url "https://download.pytorch.org/whl/$cudaVersion" --force-reinstall --no-deps --progress-bar on
 }
 
 # ── Step 6: Create .standalone marker ──
