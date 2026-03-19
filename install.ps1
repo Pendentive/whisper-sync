@@ -177,10 +177,11 @@ if (Test-Path $hfTokenFile) {
 
 Write-Host ""
 Write-Host "=== Recording Output ===" -ForegroundColor Cyan
-$defaultOut = "$ScriptRoot\transcriptions"
-Write-Host "Where should meeting recordings be saved?" -ForegroundColor White
+$docsFolder = [Environment]::GetFolderPath("MyDocuments")
+$defaultOut = "$docsFolder\whispersync-meetings"
+Write-Host "Where should meeting recordings and transcriptions be saved?" -ForegroundColor White
 Write-Host "  Default: $defaultOut" -ForegroundColor Gray
-Write-Host "  Tip: paste a full path like C:\Users\you\Documents\meetings" -ForegroundColor Gray
+Write-Host "  Tip: paste a full path like C:\Users\you\Documents\my-meetings" -ForegroundColor Gray
 $outputDir = $null
 while (-not $outputDir) {
     $customOut = Read-Host "  Press Enter for default, or paste an absolute path"
@@ -192,6 +193,8 @@ while (-not $outputDir) {
         Write-Host "  [WARN] '$($customOut.Trim())' is not an absolute path. Please use a full path (e.g. C:\...)." -ForegroundColor Yellow
     }
 }
+# Create the output folder structure
+New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 # Write config.json without BOM (Python json.load chokes on BOM)
 $configPath = "$PkgDir\config.json"
 $configJson = "{`n  `"output_dir`": `"$($outputDir -replace '\\', '/')`"`n}"
