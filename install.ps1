@@ -435,11 +435,11 @@ Write-Host ""
 # ── Benchmark offer ──
 
 Write-Host "  =============================================" -ForegroundColor DarkCyan
-Write-Host "  " -NoNewline; Write-Host "BENCHMARK" -ForegroundColor Cyan -NoNewline; Write-Host " (optional)" -ForegroundColor DarkGray
+Write-Host "  " -NoNewline; Write-Host "BENCHMARK" -ForegroundColor Cyan -NoNewline; Write-Host "  Let's compare models on your GPU" -ForegroundColor White
 Write-Host "  =============================================" -ForegroundColor DarkCyan
 Write-Host ""
-Write-Host "  Let's compare models on your GPU! Quick test to see" -ForegroundColor White
-Write-Host "  turnaround times so you can pick your sweet spot." -ForegroundColor DarkGray
+Write-Host "  Quick test to see turnaround times so you can" -ForegroundColor DarkGray
+Write-Host "  pick your sweet spot." -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  " -NoNewline; Write-Host "(For meetings, always go with the best model -" -ForegroundColor DarkGray
 Write-Host "  " -NoNewline; Write-Host "accuracy matters more than speed there.)" -ForegroundColor DarkGray
