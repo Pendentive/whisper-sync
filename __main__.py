@@ -112,22 +112,33 @@ class WhisperSync:
     # --- Recording modes ---
 
     def _schedule_idle(self, seconds: float, blink: bool = False):
-        """Return to idle after a delay. If blink=True, blink done 3 times first."""
+        """Return to idle after a delay. If blink=True, blink done 3 times first.
+
+        Only resets mode if it's still in a terminal state (done/error/None).
+        If the user started a new recording during the delay, the mode will be
+        'dictation' or 'meeting' and we must NOT overwrite it.
+        """
         import time
 
         def _reset():
             if blink and self.mode == "done":
                 for _ in range(3):
+                    if self.mode not in ("done", None):
+                        return  # User started something new — abort blink
                     self.mode = "done"
                     self._update_icon()
                     time.sleep(0.4)
+                    if self.mode not in ("done", None):
+                        return
                     self.mode = None
                     self._update_icon()
                     time.sleep(0.3)
             else:
                 time.sleep(seconds)
-            self.mode = None
-            self._update_icon()
+            # Only reset to idle if mode is still in a terminal state
+            if self.mode in ("done", "error", None):
+                self.mode = None
+                self._update_icon()
 
         threading.Thread(target=_reset, daemon=True).start()
 
@@ -412,7 +423,7 @@ class WhisperSync:
             logger.warning("Meeting recording: mic only (speaker loopback unavailable)")
         temp = self._meeting_temp_dir()
         mic_temp = temp / "mic-temp.wav"
-        self.recorder.start_streaming(mic_temp)
+        self.recorder.start_streaming(mic_temp, disk_only=True)
 
     _ABORT = object()  # Sentinel for abort
 
@@ -967,7 +978,7 @@ class WhisperSync:
     def _stop_meeting(self):
         audio = self.recorder.stop()
 
-        if "mic" not in audio:
+        if "mic" not in audio and "mic_path" not in audio:
             self.mode = None
             self._update_icon()
             return
@@ -1000,7 +1011,17 @@ class WhisperSync:
                 meeting_dir.mkdir(parents=True, exist_ok=True)
 
                 wav_path = meeting_dir / "recording.wav"
-                if "speaker" in audio:
+                if "mic_path" in audio:
+                    # Disk-only mode: mic audio already on disk as streaming WAV
+                    mic_wav_path = audio["mic_path"]
+                    if "speaker" in audio:
+                        from .streaming_wav import StreamingWavWriter
+                        mic_array = StreamingWavWriter.read_audio_from(mic_wav_path)
+                        save_stereo_wav(str(wav_path), mic_array.reshape(-1, 1), audio["speaker"], self.cfg["sample_rate"])
+                    else:
+                        import shutil
+                        shutil.move(str(mic_wav_path), str(wav_path))
+                elif "speaker" in audio:
                     save_stereo_wav(str(wav_path), audio["mic"], audio["speaker"], self.cfg["sample_rate"])
                 else:
                     save_wav(str(wav_path), audio["mic"], self.cfg["sample_rate"])
