@@ -6,14 +6,32 @@ $PkgDir = "$ScriptRoot\whisper_sync"
 $VenvPath = "$ScriptRoot\whisper-env"
 $RequirementsFile = "$ScriptRoot\requirements.txt"
 
+# ── Style helpers ──
+
+function Step($num, $text) { Write-Host "  [$num] " -NoNewline -ForegroundColor DarkCyan; Write-Host $text -ForegroundColor White }
+function Ok($text) { Write-Host "      " -NoNewline; Write-Host "[OK] " -NoNewline -ForegroundColor Green; Write-Host $text -ForegroundColor Gray }
+function Warn($text) { Write-Host "      " -NoNewline; Write-Host "[!]  " -NoNewline -ForegroundColor Yellow; Write-Host $text -ForegroundColor Yellow }
+function Info($text) { Write-Host "      $text" -ForegroundColor DarkGray }
+function Prompt($text) { return (Read-Host "      $text") }
+function Section($text) {
+    Write-Host ""
+    Write-Host "  --- " -NoNewline -ForegroundColor DarkGray; Write-Host $text -NoNewline -ForegroundColor Cyan; Write-Host " ---" -ForegroundColor DarkGray
+    Write-Host ""
+}
+
 try {
 $ErrorActionPreference = "Stop"
 
 Write-Host ""
-Write-Host "=== WhisperSync Installer ===" -ForegroundColor Cyan
+Write-Host "  =============================================" -ForegroundColor DarkCyan
+Write-Host "           " -NoNewline; Write-Host "WhisperSync Installer" -ForegroundColor Cyan
+Write-Host "       Local speech-to-text for Windows" -ForegroundColor DarkGray
+Write-Host "  =============================================" -ForegroundColor DarkCyan
 Write-Host ""
 
 # ── Step 1: Check Python ──
+
+Step 1 "Checking Python..."
 
 $pythonCmd = $null
 foreach ($cmd in @("python", "python3", "py")) {
@@ -24,7 +42,7 @@ foreach ($cmd in @("python", "python3", "py")) {
             $minor = [int]$Matches[2]
             if ($major -ge 3 -and $minor -ge 10) {
                 $pythonCmd = $cmd
-                Write-Host "[OK] Found $ver" -ForegroundColor Green
+                Ok "$ver"
                 break
             }
         }
@@ -32,15 +50,16 @@ foreach ($cmd in @("python", "python3", "py")) {
 }
 
 if (-not $pythonCmd) {
-    Write-Host "[ERROR] Python 3.10+ not found. Install from https://python.org/downloads/" -ForegroundColor Red
-    Write-Host "        Make sure to check 'Add to PATH' during installation." -ForegroundColor Yellow
+    Write-Host ""
+    Warn "Python 3.10+ not found!"
+    Info "Install from https://python.org/downloads/"
+    Info "Make sure to check 'Add to PATH' during installation."
     exit 1
 }
 
-# ── Step 2: Detect GPU + CUDA version ──
+# ── Step 2: Detect GPU ──
 
-Write-Host ""
-Write-Host "Detecting GPU..." -ForegroundColor Cyan
+Step 2 "Detecting GPU..."
 
 $cudaVersion = $null
 $gpuName = "Unknown"
@@ -49,7 +68,7 @@ try {
     $nvOutput = & nvidia-smi --query-gpu=name --format=csv,noheader 2>&1
     if ($LASTEXITCODE -eq 0) {
         $gpuName = ($nvOutput | Select-Object -First 1).Trim()
-        Write-Host "[OK] GPU: $gpuName" -ForegroundColor Green
+        Ok "$gpuName"
 
         # Map GPU family to CUDA version
         # Note: Python 3.13+ only has PyTorch wheels for cu124+, not cu121
@@ -67,35 +86,37 @@ try {
             $cudaLabel = "CUDA 12.4 (default)"
         }
 
-        Write-Host "     Selected: $cudaLabel" -ForegroundColor Green
-        $confirm = Read-Host "     Press Enter to confirm, or type a CUDA version (cu118/cu124/cu128)"
+        Info "Selected: $cudaLabel"
+        $confirm = Prompt "Press Enter to confirm, or type a version (cu118/cu124/cu128)"
         if ($confirm -and $confirm -match "^cu\d+$") {
             $cudaVersion = $confirm
-            Write-Host "     Using: $cudaVersion (manual override)" -ForegroundColor Yellow
+            Warn "Manual override: $cudaVersion"
         }
     }
 } catch {
-    Write-Host "[WARNING] nvidia-smi not found. No GPU detected." -ForegroundColor Yellow
-    Write-Host "          WhisperSync will run in CPU mode (much slower)." -ForegroundColor Yellow
-    Write-Host "          Install NVIDIA drivers from https://nvidia.com/drivers" -ForegroundColor Yellow
+    Warn "nvidia-smi not found - no GPU detected"
+    Info "WhisperSync will run in CPU mode (slower)."
+    Info "Install NVIDIA drivers from https://nvidia.com/drivers"
 }
 
 # ── Step 3: Create venv ──
 
-Write-Host ""
+Step 3 "Setting up virtual environment..."
+
 if (Test-Path $VenvPath) {
-    Write-Host "[INFO] Venv already exists at $VenvPath" -ForegroundColor Yellow
-    $recreate = Read-Host "       Delete and recreate? (y/N)"
+    Warn "Venv already exists"
+    $recreate = Prompt "Delete and recreate? (y/N)"
     if ($recreate -eq "y") {
         Remove-Item -Recurse -Force $VenvPath
+        Ok "Old venv removed"
     } else {
-        Write-Host "       Keeping existing venv. Skipping to dependency check..." -ForegroundColor Yellow
+        Info "Keeping existing venv"
     }
 }
 
 if (-not (Test-Path $VenvPath)) {
-    Write-Host "Creating virtual environment..." -ForegroundColor Green
     & $pythonCmd -m venv $VenvPath
+    Ok "Virtual environment created"
 }
 
 # ── Step 4: Install dependencies ──
@@ -103,119 +124,119 @@ if (-not (Test-Path $VenvPath)) {
 $VenvPython = "$VenvPath\Scripts\python.exe"
 $VenvPip = "$VenvPath\Scripts\pip.exe"
 
-Write-Host "Upgrading pip..." -ForegroundColor Green
+Step 4 "Installing dependencies..."
+Info "This may take a few minutes on first install"
+
 & $VenvPython -m pip install --upgrade pip --quiet 2>&1 | Out-Null
 
-Write-Host "Installing dependencies (this may take a few minutes)..." -ForegroundColor Green
-# Suppress git credential popups during pip — pip installs from PyPI, not git repos.
-# A transitive dep (faster-whisper) may trigger a git check; suppressing is safe.
+# Suppress git credential popups during pip - pip installs from PyPI, not git repos.
 $prevGitPrompt = $env:GIT_TERMINAL_PROMPT
 $prevGitAskpass = $env:GIT_ASKPASS
 $env:GIT_TERMINAL_PROMPT = "0"
 $env:GIT_ASKPASS = ""
 & $VenvPip install -r $RequirementsFile --quiet --progress-bar on
+Ok "Dependencies installed"
 
 # ── Step 5: Install CUDA PyTorch ──
 
 if ($cudaVersion) {
-    Write-Host ""
-    Write-Host "Installing PyTorch with $cudaVersion..." -ForegroundColor Green
-    Write-Host "(This overrides the CPU-only torch that whisperX installs)" -ForegroundColor Gray
+    Step 5 "Installing PyTorch ($cudaVersion)..."
+    Info "Overrides CPU-only torch with GPU-accelerated version"
     & $VenvPip install torch torchaudio --index-url "https://download.pytorch.org/whl/$cudaVersion" --force-reinstall --no-deps --quiet --progress-bar on
+    Ok "PyTorch GPU installed"
+} else {
+    Step 5 "Skipping GPU PyTorch (no GPU detected)"
 }
 # Restore git env
 $env:GIT_TERMINAL_PROMPT = $prevGitPrompt
 $env:GIT_ASKPASS = $prevGitAskpass
 
-# ── Step 6: Create .standalone marker ──
+# ── Step 6: Standalone marker ──
 
 $markerPath = "$PkgDir\.standalone"
 if (-not (Test-Path $markerPath)) {
     "" | Out-File -Encoding ASCII $markerPath
 }
 
-# ── Step 7: Verify installation ──
+# ── Step 7: Verify ──
 
-Write-Host ""
-Write-Host "=== Verification ===" -ForegroundColor Cyan
+Step 6 "Verifying installation..."
 
-$cudaCheck = & $VenvPython -c "import torch; avail = torch.cuda.is_available(); name = torch.cuda.get_device_name(0) if avail else 'N/A'; print('CUDA:', avail, '  Device:', name)" 2>&1
-Write-Host "  $cudaCheck"
+$cudaCheck = & $VenvPython -c "import torch; avail = torch.cuda.is_available(); name = torch.cuda.get_device_name(0) if avail else 'N/A'; print('CUDA:', avail, ' Device:', name)" 2>&1
+if ($cudaCheck -match "True") { Ok "CUDA: $cudaCheck" } else { Warn "CUDA: $cudaCheck" }
 
-$wxCheck = & $VenvPython -c "import whisperx; print('whisperX: OK')" 2>&1
-Write-Host "  $wxCheck"
+$wxCheck = & $VenvPython -c "import whisperx; print('OK')" 2>&1
+if ($wxCheck -match "OK") { Ok "whisperX ready" } else { Warn "whisperX: $wxCheck" }
 
-$sdCheck = & $VenvPython -c "import sounddevice; print('sounddevice: OK')" 2>&1
-Write-Host "  $sdCheck"
+$sdCheck = & $VenvPython -c "import sounddevice; print('OK')" 2>&1
+if ($sdCheck -match "OK") { Ok "Audio capture ready" } else { Warn "sounddevice: $sdCheck" }
 
-# ── Step 8: Check HF token ──
+# ── Step 8: HF token ──
 
-Write-Host ""
+Section "Speaker Identification Setup"
+
 $hfTokenDir = "$env:USERPROFILE\.huggingface"
 $hfTokenFile = "$hfTokenDir\token"
 if (Test-Path $hfTokenFile) {
-    Write-Host "[OK] Hugging Face token found" -ForegroundColor Green
+    Ok "Hugging Face token found"
 } else {
-    Write-Host "=== Hugging Face Token Setup ===" -ForegroundColor Cyan
+    Info "Meeting mode can identify who said what (speaker diarization)."
+    Info "This requires a free Hugging Face token. Skip if you only need dictation."
     Write-Host ""
-    Write-Host "Meeting mode uses speaker diarization (identifies who said what)." -ForegroundColor White
-    Write-Host "This requires a free Hugging Face token. Skip if you only need dictation." -ForegroundColor White
+    Info "To get a token:"
+    Info "  1. Create account: https://huggingface.co/join"
+    Info "  2. Accept BOTH model licenses (click 'Agree' on each):"
+    Write-Host "         " -NoNewline; Write-Host "https://huggingface.co/pyannote/segmentation-3.0" -ForegroundColor DarkYellow
+    Write-Host "         " -NoNewline; Write-Host "https://huggingface.co/pyannote/speaker-diarization-3.1" -ForegroundColor DarkYellow
+    Info "  3. Generate token: https://huggingface.co/settings/tokens"
+    Info "     (New token -> any name -> Read access)"
     Write-Host ""
-    Write-Host "To get a token:" -ForegroundColor Yellow
-    Write-Host "  1. Create account: https://huggingface.co/join" -ForegroundColor Gray
-    Write-Host "  2. Accept BOTH model licenses (click 'Agree' on each):" -ForegroundColor Gray
-    Write-Host "     https://huggingface.co/pyannote/segmentation-3.0" -ForegroundColor Gray
-    Write-Host "     https://huggingface.co/pyannote/speaker-diarization-3.1" -ForegroundColor Gray
-    Write-Host "  3. Generate token: https://huggingface.co/settings/tokens" -ForegroundColor Gray
-    Write-Host "     (New token -> any name -> Read access)" -ForegroundColor Gray
-    Write-Host ""
-    $tokenInput = Read-Host "Paste your Hugging Face token here (or press Enter to skip)"
+    $tokenInput = Prompt "Paste your token here (or Enter to skip)"
     if ($tokenInput -and $tokenInput.Trim()) {
         New-Item -ItemType Directory -Path $hfTokenDir -Force | Out-Null
         $tokenInput.Trim() | Out-File -Encoding ASCII $hfTokenFile -NoNewline
-        Write-Host "[OK] Token saved to $hfTokenFile" -ForegroundColor Green
+        Ok "Token saved"
     } else {
-        Write-Host "[SKIP] No token entered. Meeting mode will not have speaker identification." -ForegroundColor Yellow
-        Write-Host "       You can add it later - see README.md for instructions." -ForegroundColor Yellow
+        Warn "Skipped - meeting mode won't identify speakers"
+        Info "You can add it later - see README.md"
     }
 }
 
-# ── Step 9: Configure output folder ──
+# ── Step 9: Output folder ──
 
-Write-Host ""
-Write-Host "=== Recording Output ===" -ForegroundColor Cyan
+Section "Recording Output"
+
 $docsFolder = [Environment]::GetFolderPath("MyDocuments")
 $defaultOut = "$docsFolder\whispersync-meetings"
-Write-Host "Where should meeting recordings and transcriptions be saved?" -ForegroundColor White
-Write-Host "  Default: $defaultOut" -ForegroundColor Gray
-Write-Host "  Tip: paste a full path like C:\Users\you\Documents\my-meetings" -ForegroundColor Gray
+Info "Where should recordings and transcriptions be saved?"
+Write-Host ""
+Write-Host "      Default: " -NoNewline -ForegroundColor DarkGray; Write-Host $defaultOut -ForegroundColor White
+Write-Host ""
 $outputDir = $null
 while (-not $outputDir) {
-    $customOut = Read-Host "  Press Enter for default, or paste an absolute path"
+    $customOut = Prompt "Press Enter for default, or paste a full path"
     if (-not $customOut -or -not $customOut.Trim()) {
         $outputDir = $defaultOut
     } elseif ([System.IO.Path]::IsPathRooted($customOut.Trim())) {
         $outputDir = $customOut.Trim()
     } else {
-        Write-Host "  [WARN] '$($customOut.Trim())' is not an absolute path. Please use a full path (e.g. C:\...)." -ForegroundColor Yellow
+        Warn "'$($customOut.Trim())' is not a full path - use something like C:\..."
     }
 }
-# Create the output folder structure
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
-# Write config.json without BOM (Python json.load chokes on BOM)
 $configPath = "$PkgDir\config.json"
 $configJson = "{`n  `"output_dir`": `"$($outputDir -replace '\\', '/')`"`n}"
 [System.IO.File]::WriteAllText($configPath, $configJson, (New-Object System.Text.UTF8Encoding $false))
-Write-Host "[OK] Recordings will save to: $outputDir" -ForegroundColor Green
+Ok "Recordings will save to $outputDir"
 
 # ── Step 10: Shortcuts ──
+
+Section "Shortcuts"
 
 $LauncherPath = "$ScriptRoot\start.ps1"
 $IconPath = "$PkgDir\whisper-capture.ico"
 
-# Desktop shortcut (always offered first - this is how users launch the app)
-Write-Host ""
-$createDesktop = Read-Host "Create a Desktop shortcut to launch WhisperSync? (Y/n)"
+$createDesktop = Prompt "Create a Desktop shortcut? (Y/n)"
 if ($createDesktop -ne "n") {
     $DesktopFolder = [Environment]::GetFolderPath("Desktop")
     $DesktopShortcut = "$DesktopFolder\WhisperSync.lnk"
@@ -233,11 +254,10 @@ lnk.Save
 "@ | Out-File -Encoding ASCII $VbsTemp
     cscript //nologo $VbsTemp
     Remove-Item $VbsTemp -ErrorAction SilentlyContinue
-    Write-Host "[OK] Desktop shortcut created" -ForegroundColor Green
+    Ok "Desktop shortcut created"
 }
 
-# Startup shortcut (auto-launch on login)
-$createStartup = Read-Host "Also launch WhisperSync automatically when you log in? (Y/n)"
+$createStartup = Prompt "Auto-launch on login? (Y/n)"
 if ($createStartup -ne "n") {
     $StartupFolder = [Environment]::GetFolderPath("Startup")
     $StartupShortcut = "$StartupFolder\WhisperSync.lnk"
@@ -255,15 +275,16 @@ lnk.Save
 "@ | Out-File -Encoding ASCII $VbsTemp
     cscript //nologo $VbsTemp
     Remove-Item $VbsTemp -ErrorAction SilentlyContinue
-    Write-Host "[OK] Startup shortcut created (launches on login)" -ForegroundColor Green
+    Ok "Startup shortcut created"
 }
 
 # ── Step 11: Bootstrap models ──
 
-Write-Host ""
-Write-Host "=== Downloading Base Models ===" -ForegroundColor Cyan
-Write-Host "Caching tiny + base models (~225 MB total)..." -ForegroundColor Green
+Section "Downloading Models"
+
+Info "Caching transcription + word timing models..."
 & $VenvPython -c "from whisper_sync.model_status import bootstrap_models; from whisper_sync import config; bootstrap_models(config.load())"
+Ok "Models cached"
 
 # ── Done ──
 
@@ -274,58 +295,53 @@ Write-Host "       " -NoNewline; Write-Host "WhisperSync" -ForegroundColor Cyan 
 Write-Host "  =============================================" -ForegroundColor DarkCyan
 Write-Host ""
 Write-Host "  " -NoNewline; Write-Host "LAUNCH" -ForegroundColor Yellow
-Write-Host "    Double-click the " -NoNewline -ForegroundColor Gray; Write-Host "WhisperSync" -NoNewline -ForegroundColor Cyan; Write-Host " shortcut on your Desktop" -ForegroundColor Gray
-Write-Host "    Or run: " -NoNewline -ForegroundColor Gray; Write-Host "powershell -File start.ps1" -ForegroundColor DarkYellow
+Write-Host "      Double-click " -NoNewline -ForegroundColor DarkGray; Write-Host "WhisperSync" -NoNewline -ForegroundColor Cyan; Write-Host " on your Desktop" -ForegroundColor DarkGray
+Write-Host "      Or: " -NoNewline -ForegroundColor DarkGray; Write-Host "powershell -File start.ps1" -ForegroundColor DarkYellow
 Write-Host ""
 Write-Host "  ---------------------------------------------" -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "  " -NoNewline; Write-Host "DICTATION" -ForegroundColor Magenta -NoNewline; Write-Host "  (speak -> text in any app)" -ForegroundColor Gray
-Write-Host "    Start/Stop:  " -NoNewline -ForegroundColor Gray; Write-Host "Ctrl+Shift+Space" -ForegroundColor Yellow
-Write-Host "    Cancel:      " -NoNewline -ForegroundColor Gray; Write-Host "Left-click the tray icon" -ForegroundColor Yellow
-Write-Host "    " -NoNewline; Write-Host "Press hotkey, talk, press again. Text pastes where your cursor is." -ForegroundColor DarkGray
+Write-Host "  " -NoNewline; Write-Host "DICTATION" -ForegroundColor Magenta -NoNewline; Write-Host "  speak -> text in any app" -ForegroundColor DarkGray
+Write-Host "      Start/Stop   " -NoNewline -ForegroundColor DarkGray; Write-Host "Ctrl+Shift+Space" -ForegroundColor Yellow
+Write-Host "      Cancel       " -NoNewline -ForegroundColor DarkGray; Write-Host "Left-click tray icon" -ForegroundColor Yellow
+Write-Host "      " -NoNewline; Write-Host "Talk, press again. Text pastes at your cursor." -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "  " -NoNewline; Write-Host "MEETING" -ForegroundColor Magenta -NoNewline; Write-Host "    (record everything, get a transcript)" -ForegroundColor Gray
-Write-Host "    Start/Stop:  " -NoNewline -ForegroundColor Gray; Write-Host "Ctrl+Shift+M" -ForegroundColor Yellow -NoNewline; Write-Host "  or  " -ForegroundColor DarkGray -NoNewline; Write-Host "Left-click tray icon" -ForegroundColor Yellow
-Write-Host "    " -NoNewline; Write-Host "Records your mic + system audio (what you hear)." -ForegroundColor DarkGray
-Write-Host "    " -NoNewline; Write-Host "When you stop, name the meeting and get a full transcript" -ForegroundColor DarkGray
-Write-Host "    " -NoNewline; Write-Host "with speaker labels saved to your recordings folder." -ForegroundColor DarkGray
+Write-Host "  " -NoNewline; Write-Host "MEETING" -ForegroundColor Magenta -NoNewline; Write-Host "    record everything, get a transcript" -ForegroundColor DarkGray
+Write-Host "      Start/Stop   " -NoNewline -ForegroundColor DarkGray; Write-Host "Ctrl+Shift+M" -ForegroundColor Yellow -NoNewline; Write-Host "  or  " -ForegroundColor DarkGray -NoNewline; Write-Host "Left-click" -ForegroundColor Yellow
+Write-Host "      " -NoNewline; Write-Host "Records mic + system audio. Name it, get a transcript." -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "  " -NoNewline; Write-Host "TRAY ICON COLORS" -ForegroundColor Magenta
-Write-Host "    " -NoNewline; Write-Host "Gray" -ForegroundColor Gray -NoNewline; Write-Host "     Idle - ready to go" -ForegroundColor DarkGray
-Write-Host "    " -NoNewline; Write-Host "Red" -ForegroundColor Red -NoNewline; Write-Host "      Recording (mic is live!)" -ForegroundColor DarkGray
-Write-Host "    " -NoNewline; Write-Host "Amber" -ForegroundColor DarkYellow -NoNewline; Write-Host "    Transcribing..." -ForegroundColor DarkGray
-Write-Host "    " -NoNewline; Write-Host "Green" -ForegroundColor Green -NoNewline; Write-Host "    Done - text is ready" -ForegroundColor DarkGray
+Write-Host "  " -NoNewline; Write-Host "TRAY ICON" -ForegroundColor Magenta
+Write-Host "      " -NoNewline; Write-Host "Gray " -ForegroundColor Gray -NoNewline; Write-Host " Ready" -ForegroundColor DarkGray -NoNewline; Write-Host "     " -NoNewline; Write-Host "Red " -ForegroundColor Red -NoNewline; Write-Host " Recording" -ForegroundColor DarkGray
+Write-Host "      " -NoNewline; Write-Host "Amber" -ForegroundColor DarkYellow -NoNewline; Write-Host " Working" -ForegroundColor DarkGray -NoNewline; Write-Host "   " -NoNewline; Write-Host "Green " -ForegroundColor Green -NoNewline; Write-Host "Done" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  ---------------------------------------------" -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "  " -NoNewline; Write-Host "Right-click the tray icon" -ForegroundColor White -NoNewline; Write-Host " for settings, model downloads," -ForegroundColor DarkGray
-Write-Host "  hotkey customization, and more." -ForegroundColor DarkGray
-Write-Host ""
-Write-Host "  Recordings save to: " -NoNewline -ForegroundColor Gray; Write-Host "$outputDir" -ForegroundColor Cyan
+Write-Host "  " -NoNewline; Write-Host "Right-click tray icon" -ForegroundColor White -NoNewline; Write-Host " for settings & model downloads" -ForegroundColor DarkGray
+Write-Host "  Recordings: " -NoNewline -ForegroundColor DarkGray; Write-Host "$outputDir" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  =============================================" -ForegroundColor DarkCyan
 Write-Host ""
-Write-Host "  " -NoNewline; Write-Host "100% LOCAL (your GPU)" -ForegroundColor Green -NoNewline; Write-Host "       " -NoNewline; Write-Host "CLOUD (optional)" -ForegroundColor DarkYellow
-Write-Host "    Dictation" -NoNewline -ForegroundColor Gray; Write-Host "                    Meeting minutes" -ForegroundColor DarkGray
-Write-Host "    Meeting transcription" -NoNewline -ForegroundColor Gray; Write-Host "        (via Claude CLI)" -ForegroundColor DarkGray
-Write-Host "    Speaker identification" -ForegroundColor Gray
+Write-Host "  " -NoNewline; Write-Host "100% LOCAL" -ForegroundColor Green -NoNewline; Write-Host "                " -NoNewline; Write-Host "CLOUD (optional)" -ForegroundColor DarkYellow
+Write-Host "    Dictation              " -NoNewline -ForegroundColor Gray; Write-Host "Meeting minutes" -ForegroundColor DarkGray
+Write-Host "    Transcription          " -NoNewline -ForegroundColor Gray; Write-Host "(via Claude CLI)" -ForegroundColor DarkGray
+Write-Host "    Speaker ID" -ForegroundColor Gray
 Write-Host "    Audio capture" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  " -NoNewline; Write-Host "Audio never leaves your machine." -ForegroundColor Green
-Write-Host "  " -NoNewline; Write-Host "Only meeting text is sent if you opt into minutes." -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  =============================================" -ForegroundColor DarkCyan
 Write-Host ""
 
 } catch {
     Write-Host ""
-    Write-Host "=== INSTALLATION FAILED ===" -ForegroundColor Red
+    Write-Host "  =============================================" -ForegroundColor Red
+    Write-Host "         INSTALLATION FAILED" -ForegroundColor Red
+    Write-Host "  =============================================" -ForegroundColor Red
     Write-Host ""
-    Write-Host "Error: $_" -ForegroundColor Red
+    Write-Host "  Error: " -NoNewline -ForegroundColor Red; Write-Host "$_" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "If this keeps happening, screenshot this window and send it to Colby." -ForegroundColor Yellow
+    Write-Host "  Screenshot this and send to Colby." -ForegroundColor DarkGray
     Write-Host ""
 }
 
-Write-Host "Press any key to close..." -ForegroundColor Gray
+Write-Host "  Press any key to close..." -ForegroundColor DarkGray
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
