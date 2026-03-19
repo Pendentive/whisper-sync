@@ -52,22 +52,23 @@ try {
         Write-Host "[OK] GPU: $gpuName" -ForegroundColor Green
 
         # Map GPU family to CUDA version
+        # Note: Python 3.13+ only has PyTorch wheels for cu124+, not cu121
         if ($gpuName -match "RTX\s*50[0-9]{2}|RTX\s*5[0-9]{3}|Blackwell") {
             $cudaVersion = "cu128"
             $cudaLabel = "CUDA 12.8 (RTX 50-series)"
         } elseif ($gpuName -match "RTX\s*[2-4]0[0-9]{2}|RTX\s*[2-4][0-9]{3}|A[0-9]{3,4}|L[0-9]{2}") {
-            $cudaVersion = "cu121"
-            $cudaLabel = "CUDA 12.1 (RTX 20/30/40-series)"
+            $cudaVersion = "cu124"
+            $cudaLabel = "CUDA 12.4 (RTX 20/30/40-series)"
         } elseif ($gpuName -match "GTX\s*1[0-9]{3}|GTX\s*9[0-9]{2}") {
             $cudaVersion = "cu118"
             $cudaLabel = "CUDA 11.8 (GTX 10/9-series)"
         } else {
-            $cudaVersion = "cu121"
-            $cudaLabel = "CUDA 12.1 (default)"
+            $cudaVersion = "cu124"
+            $cudaLabel = "CUDA 12.4 (default)"
         }
 
         Write-Host "     Selected: $cudaLabel" -ForegroundColor Green
-        $confirm = Read-Host "     Press Enter to confirm, or type a CUDA version (cu118/cu121/cu128)"
+        $confirm = Read-Host "     Press Enter to confirm, or type a CUDA version (cu118/cu124/cu128)"
         if ($confirm -and $confirm -match "^cu\d+$") {
             $cudaVersion = $confirm
             Write-Host "     Using: $cudaVersion (manual override)" -ForegroundColor Yellow
