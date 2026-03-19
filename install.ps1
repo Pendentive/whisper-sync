@@ -261,11 +261,45 @@ Write-Host "Caching tiny + base models (~225 MB total)..." -ForegroundColor Gree
 # ── Done ──
 
 Write-Host ""
-Write-Host "=== Installation Complete ===" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "To launch WhisperSync:" -ForegroundColor White
-Write-Host "  Double-click the WhisperSync shortcut on your Desktop" -ForegroundColor Yellow
-Write-Host "  Or run: powershell -ExecutionPolicy Bypass -File start.ps1" -ForegroundColor Gray
+Write-Host "  =============================================" -ForegroundColor DarkCyan
+Write-Host "       " -NoNewline; Write-Host "WhisperSync" -ForegroundColor Cyan -NoNewline; Write-Host " installed successfully!" -ForegroundColor Green
+Write-Host "  =============================================" -ForegroundColor DarkCyan
+Write-Host ""
+Write-Host "  " -NoNewline; Write-Host "LAUNCH" -ForegroundColor Yellow
+Write-Host "    Double-click the " -NoNewline -ForegroundColor Gray; Write-Host "WhisperSync" -NoNewline -ForegroundColor Cyan; Write-Host " shortcut on your Desktop" -ForegroundColor Gray
+Write-Host "    Or run: " -NoNewline -ForegroundColor Gray; Write-Host "powershell -File start.ps1" -ForegroundColor DarkYellow
+Write-Host ""
+Write-Host "  ---------------------------------------------" -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "  " -NoNewline; Write-Host "DICTATION" -ForegroundColor Magenta -NoNewline; Write-Host "  (speak -> text in any app)" -ForegroundColor Gray
+Write-Host "    Start/Stop:  " -NoNewline -ForegroundColor Gray; Write-Host "Ctrl+Shift+Space" -ForegroundColor Yellow
+Write-Host "    Cancel:      " -NoNewline -ForegroundColor Gray; Write-Host "Left-click the tray icon" -ForegroundColor Yellow
+Write-Host "    " -NoNewline; Write-Host "Press hotkey, talk, press again. Text pastes where your cursor is." -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "  " -NoNewline; Write-Host "MEETING" -ForegroundColor Magenta -NoNewline; Write-Host "    (record everything, get a transcript)" -ForegroundColor Gray
+Write-Host "    Start/Stop:  " -NoNewline -ForegroundColor Gray; Write-Host "Ctrl+Shift+M" -ForegroundColor Yellow -NoNewline; Write-Host "  or  " -ForegroundColor DarkGray -NoNewline; Write-Host "Left-click tray icon" -ForegroundColor Yellow
+Write-Host "    " -NoNewline; Write-Host "Records your mic + system audio (what you hear)." -ForegroundColor DarkGray
+Write-Host "    " -NoNewline; Write-Host "When you stop, name the meeting and get a full transcript" -ForegroundColor DarkGray
+Write-Host "    " -NoNewline; Write-Host "with speaker labels saved to your recordings folder." -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "  " -NoNewline; Write-Host "TRAY ICON COLORS" -ForegroundColor Magenta
+Write-Host "    " -NoNewline; Write-Host "Gray" -ForegroundColor Gray -NoNewline; Write-Host "     Idle - ready to go" -ForegroundColor DarkGray
+Write-Host "    " -NoNewline; Write-Host "Red" -ForegroundColor Red -NoNewline; Write-Host "      Recording (mic is live!)" -ForegroundColor DarkGray
+Write-Host "    " -NoNewline; Write-Host "Amber" -ForegroundColor DarkYellow -NoNewline; Write-Host "    Transcribing..." -ForegroundColor DarkGray
+Write-Host "    " -NoNewline; Write-Host "Green" -ForegroundColor Green -NoNewline; Write-Host "    Done - text is ready" -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "  ---------------------------------------------" -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "  " -NoNewline; Write-Host "Right-click the tray icon" -ForegroundColor White -NoNewline; Write-Host " for settings, model downloads," -ForegroundColor DarkGray
+Write-Host "  hotkey customization, and more." -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "  Recordings save to: " -NoNewline -ForegroundColor Gray; Write-Host "$outputDir" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  =============================================" -ForegroundColor DarkCyan
+Write-Host "    " -NoNewline; Write-Host "Everything runs locally on your GPU." -ForegroundColor Green
+Write-Host "    " -NoNewline; Write-Host "No cloud. No subscriptions. Your data stays yours." -ForegroundColor DarkGray
+Write-Host "  =============================================" -ForegroundColor DarkCyan
 Write-Host ""
 
 } catch {
