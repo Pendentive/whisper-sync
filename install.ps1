@@ -29,7 +29,10 @@ function RunSilent($activity, $command, [string[]]$arguments) {
     if ($exitCode -ne 0) {
         Write-Host " failed" -ForegroundColor Red
         $errContent = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
-        if ($errContent) { Write-Host $errContent -ForegroundColor Red }
+        if ($errContent -and $errContent.Trim()) {
+            Write-Host ""
+            Write-Host $errContent -ForegroundColor Red
+        }
         Remove-Item $errFile -ErrorAction SilentlyContinue
         throw "$activity failed (exit code $exitCode)"
     }
@@ -315,14 +318,15 @@ Section "Downloading Models"
 
 # Write a temp script so we don't fight PowerShell quote escaping
 $bootstrapScript = "$env:TEMP\ws-bootstrap.py"
-@"
+$bootstrapCode = @"
 import warnings, os
 warnings.filterwarnings('ignore')
 os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
 from whisper_sync.model_status import bootstrap_models
 from whisper_sync import config
 bootstrap_models(config.load())
-"@ | Out-File -Encoding UTF8 $bootstrapScript
+"@
+[System.IO.File]::WriteAllText($bootstrapScript, $bootstrapCode, (New-Object System.Text.UTF8Encoding $false))
 RunSilent "Models" $VenvPython @($bootstrapScript)
 Remove-Item $bootstrapScript -ErrorAction SilentlyContinue
 Ok "Models cached"
@@ -391,7 +395,7 @@ if ($runBenchmark -ne "n") {
     Write-Host ""
     Step 12 "Running benchmark..."
     $benchScript = "$env:TEMP\ws-bench.py"
-    @"
+    $benchCode = @"
 import warnings, os, time, numpy as np
 warnings.filterwarnings('ignore')
 os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
@@ -418,7 +422,8 @@ for name in models_to_test:
     bar = '#' * max(1, int(20 - avg * 10))
     print(f'    {name:<10} {avg:.2f}s  {bar:<20}  ({quality.get(name, "")})')
 print()
-"@ | Out-File -Encoding UTF8 $benchScript
+"@
+    [System.IO.File]::WriteAllText($benchScript, $benchCode, (New-Object System.Text.UTF8Encoding $false))
     & $VenvPython $benchScript
     Remove-Item $benchScript -ErrorAction SilentlyContinue
     Ok "Benchmark complete"
