@@ -171,7 +171,26 @@ if (Test-Path $hfTokenFile) {
     }
 }
 
-# ── Step 9: Shortcuts ──
+# ── Step 9: Configure output folder ──
+
+Write-Host ""
+Write-Host "=== Recording Output ===" -ForegroundColor Cyan
+$defaultOut = "$ScriptRoot\transcriptions"
+Write-Host "Where should meeting recordings be saved?" -ForegroundColor White
+Write-Host "  Default: $defaultOut" -ForegroundColor Gray
+$customOut = Read-Host "  Press Enter for default, or paste an absolute path"
+if ($customOut -and $customOut.Trim()) {
+    $outputDir = $customOut.Trim()
+} else {
+    $outputDir = $defaultOut
+}
+# Write config.json with the chosen output_dir
+$configPath = "$PkgDir\config.json"
+$configContent = @{ output_dir = $outputDir } | ConvertTo-Json
+$configContent | Out-File -Encoding UTF8 $configPath
+Write-Host "[OK] Recordings will save to: $outputDir" -ForegroundColor Green
+
+# ── Step 10: Shortcuts ──
 
 $LauncherPath = "$ScriptRoot\start.ps1"
 $IconPath = "$PkgDir\whisper-capture.ico"
@@ -187,7 +206,7 @@ if ($createDesktop -ne "n") {
 Set WshShell = WScript.CreateObject("WScript.Shell")
 Set lnk = WshShell.CreateShortcut("$DesktopShortcut")
 lnk.TargetPath = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-lnk.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File ""$LauncherPath"""
+lnk.Arguments = "-ExecutionPolicy Bypass -WindowStyle Minimized -File ""$LauncherPath"" -Watchdog"
 lnk.WorkingDirectory = "$ScriptRoot"
 lnk.WindowStyle = 7
 lnk.Description = "WhisperSync - local speech-to-text"
@@ -209,7 +228,7 @@ if ($createStartup -ne "n") {
 Set WshShell = WScript.CreateObject("WScript.Shell")
 Set lnk = WshShell.CreateShortcut("$StartupShortcut")
 lnk.TargetPath = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-lnk.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File ""$LauncherPath"""
+lnk.Arguments = "-ExecutionPolicy Bypass -WindowStyle Minimized -File ""$LauncherPath"" -Watchdog"
 lnk.WorkingDirectory = "$ScriptRoot"
 lnk.WindowStyle = 7
 lnk.Description = "WhisperSync - local speech-to-text"
@@ -221,7 +240,7 @@ lnk.Save
     Write-Host "[OK] Startup shortcut created (launches on login)" -ForegroundColor Green
 }
 
-# ── Step 10: Bootstrap models ──
+# ── Step 11: Bootstrap models ──
 
 Write-Host ""
 Write-Host "=== Downloading Base Models ===" -ForegroundColor Cyan
