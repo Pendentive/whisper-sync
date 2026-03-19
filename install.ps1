@@ -318,7 +318,18 @@ lnk.Save
 
 Section "Downloading Models"
 
-RunWithProgress "Downloading transcription models" $VenvPython "-c ""from whisper_sync.model_status import bootstrap_models; from whisper_sync import config; bootstrap_models(config.load())"""
+# Write a temp script so we don't fight PowerShell quote escaping
+$bootstrapScript = "$env:TEMP\ws-bootstrap.py"
+@"
+import warnings, os
+warnings.filterwarnings('ignore')
+os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
+from whisper_sync.model_status import bootstrap_models
+from whisper_sync import config
+bootstrap_models(config.load())
+"@ | Out-File -Encoding UTF8 $bootstrapScript
+RunWithProgress "Downloading transcription models" $VenvPython $bootstrapScript
+Remove-Item $bootstrapScript -ErrorAction SilentlyContinue
 Ok "Models cached"
 
 # ── Done ──
