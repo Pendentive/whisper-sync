@@ -130,7 +130,7 @@ if (-not (Test-Path $markerPath)) {
 Write-Host ""
 Write-Host "=== Verification ===" -ForegroundColor Cyan
 
-$cudaCheck = & $VenvPython -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"N/A\"}')" 2>&1
+$cudaCheck = & $VenvPython -c "import torch; avail = torch.cuda.is_available(); name = torch.cuda.get_device_name(0) if avail else 'N/A'; print('CUDA:', avail, '  Device:', name)" 2>&1
 Write-Host "  $cudaCheck"
 
 $wxCheck = & $VenvPython -c "import whisperx; print('whisperX: OK')" 2>&1
