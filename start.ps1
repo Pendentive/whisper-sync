@@ -29,11 +29,15 @@ if ($existing) {
 }
 
 # Find orphan workers: multiprocessing.spawn children of whisper_sync parents,
-# OR multiprocessing.spawn processes using the whisper-env python (parent may be dead)
+# OR multiprocessing.spawn processes using the whisper-env python (parent may be dead),
+# OR multiprocessing.spawn processes whose parent PID no longer exists (dead parent = orphan).
+# Note: Windows multiprocessing.spawn uses the system python, not the venv python,
+# so we can't rely on the venv path alone.
 $orphans = $allPython | Where-Object {
     $_.CommandLine -match 'multiprocessing\.spawn' -and (
         $_.ParentProcessId -in $parentPids -or
-        $_.CommandLine -match [regex]::Escape($VenvPythonFull)
+        $_.CommandLine -match [regex]::Escape($VenvPythonFull) -or
+        (-not (Get-Process -Id $_.ParentProcessId -ErrorAction SilentlyContinue))
     )
 }
 
