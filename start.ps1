@@ -5,8 +5,12 @@
 
 param([switch]$Watchdog)
 
-# Find venv: check sibling (standalone repo) then parent (embedded in scripts/)
-$VenvPython = "$PSScriptRoot\..\whisper-env\Scripts\python.exe"
+# Find venv: check same dir (standalone), then parent (embedded scripts/whisper_sync/),
+# then grandparent (legacy layout)
+$VenvPython = "$PSScriptRoot\whisper-env\Scripts\python.exe"
+if (-not (Test-Path $VenvPython)) {
+    $VenvPython = "$PSScriptRoot\..\whisper-env\Scripts\python.exe"
+}
 if (-not (Test-Path $VenvPython)) {
     $VenvPython = "$PSScriptRoot\..\..\whisper-env\Scripts\python.exe"
 }

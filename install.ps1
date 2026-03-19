@@ -107,9 +107,12 @@ Write-Host "Upgrading pip..." -ForegroundColor Green
 & $VenvPython -m pip install --upgrade pip --quiet 2>&1 | Out-Null
 
 Write-Host "Installing dependencies (this may take a few minutes)..." -ForegroundColor Green
+# GIT_TERMINAL_PROMPT=0 prevents git auth popups from pip's internal git operations
+$env:GIT_TERMINAL_PROMPT = "0"
 & $VenvPip install -r $RequirementsFile --quiet --progress-bar on 2>&1 | ForEach-Object {
     if ($_ -match "Successfully installed") { Write-Host "  $_" -ForegroundColor Gray }
 }
+$env:GIT_TERMINAL_PROMPT = $null
 
 # ── Step 5: Install CUDA PyTorch ──
 
@@ -183,16 +186,16 @@ $defaultOut = "$ScriptRoot\transcriptions"
 Write-Host "Where should meeting recordings be saved?" -ForegroundColor White
 Write-Host "  Default: $defaultOut" -ForegroundColor Gray
 Write-Host "  Tip: paste a full path like C:\Users\you\Documents\meetings" -ForegroundColor Gray
-$customOut = Read-Host "  Press Enter for default, or paste an absolute path"
-if ($customOut -and $customOut.Trim()) {
-    $outputDir = $customOut.Trim()
-    # Validate: must be absolute or a known shell folder
-    if (-not [System.IO.Path]::IsPathRooted($outputDir)) {
-        Write-Host "  [WARN] '$outputDir' is not an absolute path. Using default instead." -ForegroundColor Yellow
+$outputDir = $null
+while (-not $outputDir) {
+    $customOut = Read-Host "  Press Enter for default, or paste an absolute path"
+    if (-not $customOut -or -not $customOut.Trim()) {
         $outputDir = $defaultOut
+    } elseif ([System.IO.Path]::IsPathRooted($customOut.Trim())) {
+        $outputDir = $customOut.Trim()
+    } else {
+        Write-Host "  [WARN] '$($customOut.Trim())' is not an absolute path. Please use a full path (e.g. C:\...)." -ForegroundColor Yellow
     }
-} else {
-    $outputDir = $defaultOut
 }
 # Write config.json without BOM (Python json.load chokes on BOM)
 $configPath = "$PkgDir\config.json"
