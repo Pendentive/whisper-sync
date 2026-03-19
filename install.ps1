@@ -297,8 +297,16 @@ Write-Host ""
 Write-Host "  Recordings save to: " -NoNewline -ForegroundColor Gray; Write-Host "$outputDir" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  =============================================" -ForegroundColor DarkCyan
-Write-Host "    " -NoNewline; Write-Host "Everything runs locally on your GPU." -ForegroundColor Green
-Write-Host "    " -NoNewline; Write-Host "No cloud. No subscriptions. Your data stays yours." -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "  " -NoNewline; Write-Host "100% LOCAL (your GPU)" -ForegroundColor Green -NoNewline; Write-Host "       " -NoNewline; Write-Host "CLOUD (optional)" -ForegroundColor DarkYellow
+Write-Host "    Dictation" -NoNewline -ForegroundColor Gray; Write-Host "                    Meeting minutes" -ForegroundColor DarkGray
+Write-Host "    Meeting transcription" -NoNewline -ForegroundColor Gray; Write-Host "        (via Claude CLI)" -ForegroundColor DarkGray
+Write-Host "    Speaker identification" -ForegroundColor Gray
+Write-Host "    Audio capture" -ForegroundColor Gray
+Write-Host ""
+Write-Host "  " -NoNewline; Write-Host "Audio never leaves your machine." -ForegroundColor Green
+Write-Host "  " -NoNewline; Write-Host "Only meeting text is sent if you opt into minutes." -ForegroundColor DarkGray
+Write-Host ""
 Write-Host "  =============================================" -ForegroundColor DarkCyan
 Write-Host ""
 
