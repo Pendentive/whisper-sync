@@ -5,11 +5,14 @@
 
 param([switch]$Watchdog)
 
+# Find venv: check sibling (standalone repo) then parent (embedded in scripts/)
 $VenvPython = "$PSScriptRoot\..\whisper-env\Scripts\python.exe"
+if (-not (Test-Path $VenvPython)) {
+    $VenvPython = "$PSScriptRoot\..\..\whisper-env\Scripts\python.exe"
+}
 
 if (-not (Test-Path $VenvPython)) {
-    Write-Host "WhisperX venv not found. Run setup first:" -ForegroundColor Red
-    Write-Host "  powershell -ExecutionPolicy Bypass -File scripts/whisper_sync/setup-env.ps1" -ForegroundColor Yellow
+    Write-Host "WhisperX venv not found. Run install.ps1 first." -ForegroundColor Red
     exit 1
 }
 
@@ -52,7 +55,15 @@ if ($allToKill) {
     Start-Sleep -Seconds 3
 }
 
-Push-Location "$PSScriptRoot\.."
+# Determine working directory: if whisper_sync/ is in $PSScriptRoot (standalone repo),
+# use $PSScriptRoot. If it's in the parent (embedded in scripts/whisper_sync/), use parent.
+if (Test-Path "$PSScriptRoot\whisper_sync\__init__.py") {
+    $WorkDir = $PSScriptRoot
+} else {
+    $WorkDir = "$PSScriptRoot\.."
+}
+
+Push-Location $WorkDir
 if ($Watchdog) {
     & $VenvPython -m whisper_sync.watchdog
 } else {
