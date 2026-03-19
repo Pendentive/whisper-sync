@@ -402,6 +402,14 @@ Write-Host "  " -NoNewline; Write-Host "Audio never leaves your machine." -Foreg
 Write-Host ""
 Write-Host "  =============================================" -ForegroundColor DarkCyan
 Write-Host ""
+Write-Host "  " -NoNewline; Write-Host "NOTE:" -ForegroundColor Yellow -NoNewline; Write-Host " WhisperSync starts with the " -NoNewline -ForegroundColor DarkGray; Write-Host "base" -NoNewline -ForegroundColor White; Write-Host " model (fast," -ForegroundColor DarkGray
+Write-Host "  good for quick dictation). For " -NoNewline -ForegroundColor DarkGray; Write-Host "best quality" -NoNewline -ForegroundColor Green; Write-Host ", download" -ForegroundColor DarkGray
+Write-Host "  the " -NoNewline -ForegroundColor DarkGray; Write-Host "large-v3" -NoNewline -ForegroundColor Cyan; Write-Host " model (~3 GB) when you're ready:" -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "    Right-click tray icon" -NoNewline -ForegroundColor Yellow; Write-Host " > " -NoNewline -ForegroundColor DarkGray; Write-Host "Settings" -NoNewline -ForegroundColor White; Write-Host " > " -NoNewline -ForegroundColor DarkGray; Write-Host "Download large-v3" -ForegroundColor White
+Write-Host ""
+Write-Host "  =============================================" -ForegroundColor DarkCyan
+Write-Host ""
 
 } catch {
     Write-Host ""
