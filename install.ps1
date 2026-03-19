@@ -216,14 +216,22 @@ $outputDir = $null
 while (-not $outputDir) {
     $customOut = Prompt "Press Enter for default, or paste a full path"
     if (-not $customOut -or -not $customOut.Trim()) {
-        $outputDir = $defaultOut
+        $candidate = $defaultOut
     } elseif ([System.IO.Path]::IsPathRooted($customOut.Trim())) {
-        $outputDir = $customOut.Trim()
+        $candidate = $customOut.Trim()
     } else {
         Warn "'$($customOut.Trim())' is not a full path - use something like C:\..."
+        continue
+    }
+    # Validate we can create/access the folder
+    try {
+        New-Item -ItemType Directory -Path $candidate -Force -ErrorAction Stop | Out-Null
+        $outputDir = $candidate
+    } catch {
+        Warn "Can't use that path: $_"
+        Info "Try a different folder (e.g. C:\Users\$env:USERNAME\Documents\whispersync-meetings)"
     }
 }
-New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 $configPath = "$PkgDir\config.json"
 $configJson = "{`n  `"output_dir`": `"$($outputDir -replace '\\', '/')`"`n}"
 [System.IO.File]::WriteAllText($configPath, $configJson, (New-Object System.Text.UTF8Encoding $false))
