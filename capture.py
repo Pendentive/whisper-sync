@@ -59,6 +59,7 @@ class AudioRecorder:
         self._speaker_stream = None
         self._recording = False
         self._lock = threading.Lock()
+        self._disk_only = False
         self._mic_writer: StreamingWavWriter | None = None
         self._speaker_writer: StreamingWavWriter | None = None
         # PyAudioWPatch loopback state
@@ -69,7 +70,8 @@ class AudioRecorder:
     def _mic_callback(self, indata, frames, time_info, status):
         try:
             if self._recording:
-                self._mic_data.append(indata.copy())
+                if not self._disk_only:
+                    self._mic_data.append(indata.copy())
                 if self._mic_writer is not None:
                     self._mic_writer.write(indata)
         except Exception as e:
@@ -200,7 +202,9 @@ class AudioRecorder:
             self._close_pyaudio()
 
         result = {}
-        if self._mic_data:
+        if self._disk_only and self._mic_writer is not None:
+            result["mic_path"] = self._mic_writer.path
+        elif self._mic_data:
             result["mic"] = np.concatenate(self._mic_data, axis=0)
         if self._speaker_data:
             raw = np.concatenate(self._speaker_data, axis=0)
@@ -220,14 +224,16 @@ class AudioRecorder:
     def is_recording(self) -> bool:
         return self._recording
 
-    def start_streaming(self, mic_path, speaker_path=None):
+    def start_streaming(self, mic_path, speaker_path=None, disk_only=False):
         """Open streaming WAV writers for crash safety during meeting recording.
 
-        Only the mic stream gets crash-safe streaming writes. The speaker
-        loopback data (captured at native rate via PyAudioWPatch) is held
-        in memory and resampled on stop. On crash, the mic recording is
-        preserved — that alone produces usable transcriptions.
+        Args:
+            mic_path: Path for mic WAV file.
+            speaker_path: Optional path for speaker WAV file.
+            disk_only: If True, skip RAM accumulation — audio lives only on disk.
+                Use for long meetings to prevent MemoryError.
         """
+        self._disk_only = disk_only
         self._mic_writer = StreamingWavWriter(mic_path, channels=1, rate=self.sample_rate)
 
     def stop_streaming(self):

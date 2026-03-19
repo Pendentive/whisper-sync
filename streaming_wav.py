@@ -70,6 +70,22 @@ class StreamingWavWriter:
             self._file.close()
             self._file = None
 
+    def read_audio(self) -> np.ndarray:
+        """Read the finalized WAV file back as a float32 numpy array.
+
+        Must be called after close(). Returns 1D float32 array normalized to [-1, 1].
+        """
+        return self.read_audio_from(self._path)
+
+    @staticmethod
+    def read_audio_from(path) -> np.ndarray:
+        """Read any WAV file as float32 numpy array."""
+        import wave
+        with wave.open(str(path), "rb") as wf:
+            raw = wf.readframes(wf.getnframes())
+            int_data = np.frombuffer(raw, dtype=np.int16)
+            return int_data.astype(np.float32) / 32768.0
+
     @property
     def path(self) -> Path:
         return self._path
