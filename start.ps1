@@ -19,7 +19,7 @@ if (-not (Test-Path $VenvPython)) {
 # Kill any existing WhisperSync instances before starting a new one.
 # Two passes:
 #   1. Processes with 'whisper_sync' in the command line (main + watchdog)
-#   2. Orphan multiprocessing.spawn workers — these survive after the parent dies
+#   2. Orphan multiprocessing.spawn workers - these survive after the parent dies
 #      and hold GPU/MKL memory. We match them by parent PID (if parent is alive)
 #      OR by the venv python path (catches orphans whose parent already died).
 $VenvPythonFull = (Resolve-Path $VenvPython -ErrorAction SilentlyContinue).Path

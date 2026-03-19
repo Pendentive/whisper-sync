@@ -1,4 +1,4 @@
-# WhisperSync installer — creates venv, detects GPU, installs CUDA PyTorch + dependencies
+# WhisperSync installer - creates venv, detects GPU, installs CUDA PyTorch + dependencies
 # Usage: powershell -ExecutionPolicy Bypass -File install.ps1
 
 $ScriptRoot = $PSScriptRoot
@@ -166,7 +166,7 @@ if (Test-Path $hfTokenFile) {
         Write-Host "[OK] Token saved to $hfTokenFile" -ForegroundColor Green
     } else {
         Write-Host "[SKIP] No token entered. Meeting mode will not have speaker identification." -ForegroundColor Yellow
-        Write-Host "       You can add it later — see README.md for instructions." -ForegroundColor Yellow
+        Write-Host "       You can add it later - see README.md for instructions." -ForegroundColor Yellow
     }
 }
 
@@ -175,7 +175,7 @@ if (Test-Path $hfTokenFile) {
 $LauncherPath = "$ScriptRoot\start.ps1"
 $IconPath = "$PkgDir\whisper-capture.ico"
 
-# Desktop shortcut (always offered first — this is how users launch the app)
+# Desktop shortcut (always offered first - this is how users launch the app)
 Write-Host ""
 $createDesktop = Read-Host "Create a Desktop shortcut to launch WhisperSync? (Y/n)"
 if ($createDesktop -ne "n") {
@@ -189,7 +189,7 @@ lnk.TargetPath = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 lnk.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File ""$LauncherPath"""
 lnk.WorkingDirectory = "$ScriptRoot"
 lnk.WindowStyle = 7
-lnk.Description = "WhisperSync — local speech-to-text"
+lnk.Description = "WhisperSync - local speech-to-text"
 lnk.IconLocation = "$IconPath, 0"
 lnk.Save
 "@ | Out-File -Encoding ASCII $VbsTemp
@@ -211,7 +211,7 @@ lnk.TargetPath = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 lnk.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File ""$LauncherPath"""
 lnk.WorkingDirectory = "$ScriptRoot"
 lnk.WindowStyle = 7
-lnk.Description = "WhisperSync — local speech-to-text"
+lnk.Description = "WhisperSync - local speech-to-text"
 lnk.IconLocation = "$IconPath, 0"
 lnk.Save
 "@ | Out-File -Encoding ASCII $VbsTemp
