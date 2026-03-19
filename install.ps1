@@ -104,10 +104,12 @@ $VenvPython = "$VenvPath\Scripts\python.exe"
 $VenvPip = "$VenvPath\Scripts\pip.exe"
 
 Write-Host "Upgrading pip..." -ForegroundColor Green
-& $VenvPython -m pip install --upgrade pip --quiet
+& $VenvPython -m pip install --upgrade pip --quiet 2>&1 | Out-Null
 
-Write-Host "Installing dependencies..." -ForegroundColor Green
-& $VenvPip install -r $RequirementsFile
+Write-Host "Installing dependencies (this may take a few minutes)..." -ForegroundColor Green
+& $VenvPip install -r $RequirementsFile --quiet --progress-bar on 2>&1 | ForEach-Object {
+    if ($_ -match "Successfully installed") { Write-Host "  $_" -ForegroundColor Gray }
+}
 
 # ── Step 5: Install CUDA PyTorch ──
 
@@ -115,7 +117,9 @@ if ($cudaVersion) {
     Write-Host ""
     Write-Host "Installing PyTorch with $cudaVersion..." -ForegroundColor Green
     Write-Host "(This overrides the CPU-only torch that whisperX installs)" -ForegroundColor Gray
-    & $VenvPip install torch torchaudio --index-url "https://download.pytorch.org/whl/$cudaVersion" --force-reinstall --no-deps
+    & $VenvPip install torch torchaudio --index-url "https://download.pytorch.org/whl/$cudaVersion" --force-reinstall --no-deps --quiet --progress-bar on 2>&1 | ForEach-Object {
+        if ($_ -match "Successfully installed") { Write-Host "  $_" -ForegroundColor Gray }
+    }
 }
 
 # ── Step 6: Create .standalone marker ──
@@ -178,16 +182,22 @@ Write-Host "=== Recording Output ===" -ForegroundColor Cyan
 $defaultOut = "$ScriptRoot\transcriptions"
 Write-Host "Where should meeting recordings be saved?" -ForegroundColor White
 Write-Host "  Default: $defaultOut" -ForegroundColor Gray
+Write-Host "  Tip: paste a full path like C:\Users\you\Documents\meetings" -ForegroundColor Gray
 $customOut = Read-Host "  Press Enter for default, or paste an absolute path"
 if ($customOut -and $customOut.Trim()) {
     $outputDir = $customOut.Trim()
+    # Validate: must be absolute or a known shell folder
+    if (-not [System.IO.Path]::IsPathRooted($outputDir)) {
+        Write-Host "  [WARN] '$outputDir' is not an absolute path. Using default instead." -ForegroundColor Yellow
+        $outputDir = $defaultOut
+    }
 } else {
     $outputDir = $defaultOut
 }
-# Write config.json with the chosen output_dir
+# Write config.json without BOM (Python json.load chokes on BOM)
 $configPath = "$PkgDir\config.json"
-$configContent = @{ output_dir = $outputDir } | ConvertTo-Json
-$configContent | Out-File -Encoding UTF8 $configPath
+$configJson = "{`n  `"output_dir`": `"$($outputDir -replace '\\', '/')`"`n}"
+[System.IO.File]::WriteAllText($configPath, $configJson, (New-Object System.Text.UTF8Encoding $false))
 Write-Host "[OK] Recordings will save to: $outputDir" -ForegroundColor Green
 
 # ── Step 10: Shortcuts ──
