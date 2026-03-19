@@ -12,6 +12,7 @@
   "mic_device": null,
   "speaker_device": null,
   "sample_rate": 16000,
+  "batch_size": "auto",
   "use_system_devices": true,
   "left_click": "meeting",
   "middle_click": "dictation"

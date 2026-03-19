@@ -23,6 +23,82 @@ _align_model = None
 _align_metadata = None
 _diarize_pipeline = None
 _last_device = None
+_base_batch_size = None  # Set on first use via _get_base_batch_size()
+
+
+def _get_base_batch_size() -> int:
+    """Determine base batch_size from available GPU VRAM.
+
+    Tiers:
+        CPU:    16  (uses system RAM, no VRAM constraint)
+        ≤8GB:   4   (~3GB model + limited headroom)
+        ≤12GB:  8   (~3GB model + moderate headroom)
+        >12GB:  16  (plenty of room)
+    """
+    global _base_batch_size
+    if _base_batch_size is not None:
+        return _base_batch_size
+
+    import torch
+    if not torch.cuda.is_available():
+        _base_batch_size = 16
+        return _base_batch_size
+
+    props = torch.cuda.get_device_properties(0)
+    total_gb = props.total_memory / (1024 ** 3)
+    if total_gb <= 8:
+        _base_batch_size = 4
+    elif total_gb <= 12:
+        _base_batch_size = 8
+    else:
+        _base_batch_size = 16
+
+    print(f"[WhisperSync] GPU: {props.name} ({total_gb:.1f} GB) — base batch_size={_base_batch_size}")
+    return _base_batch_size
+
+
+def _compute_batch_size(audio_np: np.ndarray, base: int) -> int:
+    """Reduce batch_size for long audio to prevent OOM.
+
+    Args:
+        audio_np: Audio array at 16kHz.
+        base: Base batch_size from VRAM tier.
+
+    Returns:
+        Adjusted batch_size.
+    """
+    duration_s = len(audio_np) / 16000  # 16kHz sample rate
+    if duration_s > 180:
+        return max(1, base // 4)
+    elif duration_s > 60:
+        return max(2, base // 2)
+    return base
+
+
+def _transcribe_with_retry(model, audio, batch_size: int, language: str,
+                           max_retries: int = 3) -> dict:
+    """Transcribe with OOM catch-and-retry at decreasing batch sizes."""
+    import torch
+    for attempt in range(max_retries + 1):
+        try:
+            return model.transcribe(audio, batch_size=batch_size, language=language)
+        except RuntimeError as e:
+            if "out of memory" not in str(e).lower() or attempt == max_retries:
+                raise
+            torch.cuda.empty_cache()
+            batch_size = max(1, batch_size // 2)
+            print(f"[WhisperSync] CUDA OOM — retrying with batch_size={batch_size}")
+    raise RuntimeError("Exhausted OOM retries")
+
+
+def _resolve_batch_size(audio_np: np.ndarray) -> int:
+    """Get the effective batch_size: config override or adaptive."""
+    cfg = config.load()
+    cfg_batch = cfg.get("batch_size", "auto")
+    if cfg_batch != "auto":
+        return int(cfg_batch)
+    base = _get_base_batch_size()
+    return _compute_batch_size(audio_np, base)
 
 
 def _get_device():
@@ -118,6 +194,9 @@ def preload(model_name: str = None, compute_type: str = None, language: str = No
     compute_type = compute_type or cfg["compute_type"]
     language = language or cfg["language"]
 
+    # Detect GPU and set adaptive batch_size early so it's logged at startup
+    _get_base_batch_size()
+
     with _lock:
         _load_whisper_model(model_name, compute_type, language)
         _load_align_model(language)
@@ -149,14 +228,15 @@ def transcribe_fast(audio_np: np.ndarray, model_override: str = None) -> str:
         audio_np = audio_np.astype(np.float32) / 32768.0
     audio_np = np.ascontiguousarray(audio_np.flatten(), dtype=np.float32)
 
-    print(f"[WhisperSync] Transcribing fast ({model_name})...")
-    result = model.transcribe(audio_np, batch_size=16, language=language)
+    batch = _resolve_batch_size(audio_np)
+    print(f"[WhisperSync] Transcribing fast ({model_name}, batch={batch})...")
+    result = _transcribe_with_retry(model, audio_np, batch, language)
 
     return " ".join(seg.get("text", "") for seg in result.get("segments", [])).strip()
 
 
 def transcribe(audio_path: str, diarize: bool = False, model_override: str = None) -> dict:
-    """Transcribe audio file using in-process whisperX.
+    """Transcribe audio file using in-process whisperX (monolithic, for backward compat).
 
     Args:
         audio_path: Path to WAV file.
@@ -169,6 +249,18 @@ def transcribe(audio_path: str, diarize: bool = False, model_override: str = Non
             'segments': list of {speaker, start, end, text} (if diarize=True)
             'json_path': path to raw whisperX JSON output (if diarize=True)
     """
+    ctx = stage_prepare(audio_path, model_override)
+    result = stage_transcribe(ctx)
+    result = stage_align(ctx, result)
+    diarize_segments = stage_diarize(ctx) if diarize else None
+    return stage_finalize(ctx, result, diarize_segments)
+
+
+# --- Staged pipeline (used by worker for inter-stage priority checks) ---
+
+def stage_prepare(audio_path: str, model_override: str = None) -> dict:
+    """Load audio and models. Returns context dict for subsequent stages."""
+    import os
     import whisperx
 
     cfg = config.load()
@@ -176,39 +268,63 @@ def transcribe(audio_path: str, diarize: bool = False, model_override: str = Non
     compute_type = cfg["compute_type"]
     model_name = model_override or cfg["model"]
 
+    # Normalize path for Windows — ffmpeg (used by diarization) needs native separators
+    audio_path = os.path.normpath(audio_path)
+
     with _lock:
         model = _load_whisper_model(model_name, compute_type, language)
         align_model, align_metadata = _load_align_model(language)
 
-    # Load audio
     audio = whisperx.load_audio(audio_path)
 
-    # Transcribe
-    print(f"[WhisperSync] Transcribing ({model_name})...")
-    result = model.transcribe(audio, batch_size=16, language=language)
+    return {
+        "audio": audio,
+        "audio_path": audio_path,
+        "model": model,
+        "align_model": align_model,
+        "align_metadata": align_metadata,
+        "language": language,
+        "model_name": model_name,
+    }
 
-    # Align
+
+def stage_transcribe(ctx: dict) -> dict:
+    """Stage 1: Transcribe audio → segments. The longest stage."""
+    batch = _resolve_batch_size(ctx["audio"])
+    print(f"[WhisperSync] Transcribing ({ctx['model_name']}, batch={batch})...")
+    return _transcribe_with_retry(ctx["model"], ctx["audio"], batch, ctx["language"])
+
+
+def stage_align(ctx: dict, result: dict) -> dict:
+    """Stage 2: Align segments → word-level timestamps."""
+    import whisperx
     print("[WhisperSync] Aligning...")
-    result = whisperx.align(
-        result["segments"], align_model, align_metadata, audio, _get_device(),
-        return_char_alignments=False,
+    return whisperx.align(
+        result["segments"], ctx["align_model"], ctx["align_metadata"],
+        ctx["audio"], _get_device(), return_char_alignments=False,
     )
 
-    # Diarize if requested
-    if diarize:
-        with _lock:
-            pipeline = _load_diarize_pipeline()
-        print("[WhisperSync] Diarizing...")
-        diarize_segments = pipeline(audio_path)
+
+def stage_diarize(ctx: dict) -> dict:
+    """Stage 3: Run speaker diarization pipeline."""
+    with _lock:
+        pipeline = _load_diarize_pipeline()
+    print("[WhisperSync] Diarizing...")
+    return pipeline(ctx["audio_path"])
+
+
+def stage_finalize(ctx: dict, result: dict, diarize_segments=None) -> dict:
+    """Stage 4: Assign speakers, save JSON, build output dict."""
+    import whisperx
+
+    if diarize_segments is not None:
         result = whisperx.assign_word_speakers(diarize_segments, result)
 
-    # Build output
     text = " ".join(seg.get("text", "") for seg in result.get("segments", []))
     output = {"text": text.strip()}
 
-    if diarize:
-        # Save JSON next to the audio file
-        audio_p = Path(audio_path)
+    if diarize_segments is not None:
+        audio_p = Path(ctx["audio_path"])
         json_path = audio_p.parent / "transcript.json"
         with open(json_path, "w") as f:
             json.dump(result, f, indent=2, default=str)
