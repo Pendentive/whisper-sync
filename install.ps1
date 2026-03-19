@@ -438,15 +438,14 @@ Write-Host "  =============================================" -ForegroundColor Da
 Write-Host "  " -NoNewline; Write-Host "BENCHMARK" -ForegroundColor Cyan -NoNewline; Write-Host " (optional)" -ForegroundColor DarkGray
 Write-Host "  =============================================" -ForegroundColor DarkCyan
 Write-Host ""
-Write-Host "  Want to see how fast dictation is on your GPU?" -ForegroundColor White
-Write-Host "  Runs a quick test with each installed model and" -ForegroundColor DarkGray
-Write-Host "  shows turnaround time so you can pick your favorite." -ForegroundColor DarkGray
+Write-Host "  Let's compare models on your GPU! Quick test to see" -ForegroundColor White
+Write-Host "  turnaround times so you can pick your sweet spot." -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "  " -NoNewline; Write-Host "(For meetings, always use the best model -" -ForegroundColor DarkGray
-Write-Host "  " -NoNewline; Write-Host "speed doesn't matter, accuracy does.)" -ForegroundColor DarkGray
+Write-Host "  " -NoNewline; Write-Host "(For meetings, always go with the best model -" -ForegroundColor DarkGray
+Write-Host "  " -NoNewline; Write-Host "accuracy matters more than speed there.)" -ForegroundColor DarkGray
 Write-Host ""
-$runBenchmark = Prompt "Run benchmark now? (y/N)"
-if ($runBenchmark -eq "y") {
+$runBenchmark = Prompt "Ready? (Y/n)"
+if ($runBenchmark -ne "n") {
     Write-Host ""
     Step 12 "Running benchmark..."
     $benchScript = "$env:TEMP\ws-bench.py"
