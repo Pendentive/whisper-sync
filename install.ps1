@@ -18,28 +18,23 @@ function Section($text) {
     Write-Host "  --- " -NoNewline -ForegroundColor DarkGray; Write-Host $text -NoNewline -ForegroundColor Cyan; Write-Host " ---" -ForegroundColor DarkGray
     Write-Host ""
 }
-function RunWithProgress($activity, $command, $arguments) {
-    # Run a command silently while showing a PowerShell progress bar
-    $proc = Start-Process -FilePath $command -ArgumentList $arguments `
-        -NoNewWindow -RedirectStandardOutput "$env:TEMP\ws-stdout.log" `
-        -RedirectStandardError "$env:TEMP\ws-stderr.log" -PassThru
-    $spinner = @("|", "/", "-", "\")
-    $i = 0
-    while (-not $proc.HasExited) {
-        $pct = [math]::Min(95, $i * 2)  # creep toward 95%, never hit 100 until done
-        Write-Progress -Activity $activity -Status "$($spinner[$i % 4]) Installing..." -PercentComplete $pct
-        Start-Sleep -Milliseconds 500
-        $i++
+function RunSilent($activity, $command, [string[]]$arguments) {
+    # Run a command with -qq (silent) and show a simple waiting message.
+    # Output goes to temp files for error capture. No Start-Process or Start-Job
+    # needed — runs inline so env vars and paths are inherited correctly.
+    Write-Host "      " -NoNewline; Write-Host "..." -NoNewline -ForegroundColor DarkGray
+    $errFile = "$env:TEMP\ws-err-$([guid]::NewGuid().ToString('N').Substring(0,8)).log"
+    & $command @arguments 2> $errFile
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        Write-Host " failed" -ForegroundColor Red
+        $errContent = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
+        if ($errContent) { Write-Host $errContent -ForegroundColor Red }
+        Remove-Item $errFile -ErrorAction SilentlyContinue
+        throw "$activity failed (exit code $exitCode)"
     }
-    Write-Progress -Activity $activity -Status "Done" -PercentComplete 100 -Completed
-    if ($proc.ExitCode -ne 0) {
-        $errLog = Get-Content "$env:TEMP\ws-stderr.log" -Raw -ErrorAction SilentlyContinue
-        $outLog = Get-Content "$env:TEMP\ws-stdout.log" -Raw -ErrorAction SilentlyContinue
-        if ($errLog) { Write-Host $errLog -ForegroundColor Red }
-        if ($outLog -and $outLog -match "ERROR") { Write-Host $outLog -ForegroundColor Red }
-        throw "Command failed with exit code $($proc.ExitCode)"
-    }
-    Remove-Item "$env:TEMP\ws-stdout.log", "$env:TEMP\ws-stderr.log" -ErrorAction SilentlyContinue
+    Write-Host " done" -ForegroundColor Green
+    Remove-Item $errFile -ErrorAction SilentlyContinue
 }
 
 try {
@@ -156,14 +151,14 @@ $prevGitPrompt = $env:GIT_TERMINAL_PROMPT
 $prevGitAskpass = $env:GIT_ASKPASS
 $env:GIT_TERMINAL_PROMPT = "0"
 $env:GIT_ASKPASS = ""
-RunWithProgress "Installing Python dependencies" $VenvPip "install -r $RequirementsFile -qq"
+RunSilent "Dependencies" $VenvPip @("install", "-r", $RequirementsFile, "-qq")
 Ok "Dependencies installed"
 
 # ── Step 5: Install CUDA PyTorch ──
 
 if ($cudaVersion) {
     Step 5 "Installing PyTorch ($cudaVersion)..."
-    RunWithProgress "Installing PyTorch (GPU)" $VenvPip "install torch torchaudio --index-url https://download.pytorch.org/whl/$cudaVersion --force-reinstall --no-deps -qq"
+    RunSilent "PyTorch GPU" $VenvPip @("install", "torch", "torchaudio", "--index-url", "https://download.pytorch.org/whl/$cudaVersion", "--force-reinstall", "--no-deps", "-qq")
     Ok "PyTorch GPU installed"
 } else {
     Step 5 "Skipping GPU PyTorch (no GPU detected)"
@@ -328,7 +323,7 @@ from whisper_sync.model_status import bootstrap_models
 from whisper_sync import config
 bootstrap_models(config.load())
 "@ | Out-File -Encoding UTF8 $bootstrapScript
-RunWithProgress "Downloading transcription models" $VenvPython $bootstrapScript
+RunSilent "Models" $VenvPython @($bootstrapScript)
 Remove-Item $bootstrapScript -ErrorAction SilentlyContinue
 Ok "Models cached"
 
