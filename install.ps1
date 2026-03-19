@@ -246,8 +246,15 @@ while (-not $outputDir) {
     }
     # Validate we can create/access the folder
     try {
-        New-Item -ItemType Directory -Path $candidate -Force -ErrorAction Stop | Out-Null
-        $outputDir = $candidate
+        if (-not (Test-Path $candidate)) {
+            New-Item -ItemType Directory -Path $candidate -Force -ErrorAction Stop | Out-Null
+        }
+        # Verify it's actually a directory we can write to
+        if (Test-Path $candidate -PathType Container) {
+            $outputDir = $candidate
+        } else {
+            Warn "That path exists but is not a folder"
+        }
     } catch {
         Warn "Can't use that path: $_"
         Info "Try a different folder (e.g. C:\Users\$env:USERNAME\Documents\whispersync-meetings)"
