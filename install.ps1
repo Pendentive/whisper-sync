@@ -354,109 +354,42 @@ Write-Host "    Audio capture" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  " -NoNewline; Write-Host "Audio never leaves your machine." -ForegroundColor Green
 Write-Host ""
+
+# ── Get Started (no gate - always shown) ──
+
+Write-Host "  =============================================" -ForegroundColor DarkCyan
+Write-Host "  " -NoNewline; Write-Host "GET STARTED" -ForegroundColor Cyan -NoNewline; Write-Host "  Record your first dictation and meeting!" -ForegroundColor White
 Write-Host "  =============================================" -ForegroundColor DarkCyan
 Write-Host ""
-
-# ── How It Works (gated) ──
-
-$showHow = Prompt "Want to see how it works? (Y/n)"
-if ($showHow -ne "n") {
-    Write-Host ""
-    Write-Host "  =============================================" -ForegroundColor DarkCyan
-    Write-Host "  " -NoNewline; Write-Host "HOW IT WORKS" -ForegroundColor Cyan
-    Write-Host "  =============================================" -ForegroundColor DarkCyan
-    Write-Host ""
-    Write-Host "  " -NoNewline; Write-Host "DICTATION" -ForegroundColor Magenta -NoNewline; Write-Host "  voice-to-text anywhere" -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "      " -NoNewline; Write-Host "Start recording    " -ForegroundColor White; Write-Host "      " -NoNewline; Write-Host "Ctrl+Shift+Space" -ForegroundColor Yellow
-    Write-Host "      " -NoNewline; Write-Host "Stop & paste       " -ForegroundColor White; Write-Host "      " -NoNewline; Write-Host "Ctrl+Shift+Space" -ForegroundColor Yellow -NoNewline; Write-Host " (same key)" -ForegroundColor DarkGray
-    Write-Host "      " -NoNewline; Write-Host "Cancel             " -ForegroundColor White; Write-Host "      " -NoNewline; Write-Host "Left-click" -ForegroundColor Yellow -NoNewline; Write-Host " the tray icon" -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "      Text goes into the " -NoNewline -ForegroundColor DarkGray; Write-Host "focused text field" -NoNewline -ForegroundColor White; Write-Host " (editor," -ForegroundColor DarkGray
-    Write-Host "      browser, chat, etc). If nothing is focused, it's" -ForegroundColor DarkGray
-    Write-Host "      copied to your " -NoNewline -ForegroundColor DarkGray; Write-Host "clipboard" -ForegroundColor White -NoNewline; Write-Host " instead." -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "  - - - - - - - - - - - - - - - - - - - - - -" -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "  " -NoNewline; Write-Host "MEETING" -ForegroundColor Magenta -NoNewline; Write-Host "    record, transcribe, identify speakers" -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "      " -NoNewline; Write-Host "Start recording    " -ForegroundColor White; Write-Host "      " -NoNewline; Write-Host "Ctrl+Shift+M" -ForegroundColor Yellow
-    Write-Host "      " -NoNewline; Write-Host "    or             " -ForegroundColor DarkGray; Write-Host "      " -NoNewline; Write-Host "Left-click" -ForegroundColor Yellow -NoNewline; Write-Host " the tray icon" -ForegroundColor DarkGray
-    Write-Host "      " -NoNewline; Write-Host "Stop & save        " -ForegroundColor White; Write-Host "      " -NoNewline; Write-Host "Ctrl+Shift+M" -ForegroundColor Yellow -NoNewline; Write-Host " (same key)" -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "      Records " -NoNewline -ForegroundColor DarkGray; Write-Host "your mic + system audio" -NoNewline -ForegroundColor White; Write-Host " (what you hear)." -ForegroundColor DarkGray
-    Write-Host "      Works with any meeting on your computer:" -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "        " -NoNewline; Write-Host "Zoom" -NoNewline -ForegroundColor White; Write-Host ", " -NoNewline -ForegroundColor DarkGray; Write-Host "Google Meet" -NoNewline -ForegroundColor White; Write-Host ", " -NoNewline -ForegroundColor DarkGray; Write-Host "Teams" -NoNewline -ForegroundColor White; Write-Host ", " -NoNewline -ForegroundColor DarkGray; Write-Host "phone calls" -ForegroundColor White
-    Write-Host "        " -NoNewline; Write-Host "In-person" -NoNewline -ForegroundColor White; Write-Host " (picks up your mic)" -ForegroundColor DarkGray
-    Write-Host "        " -NoNewline; Write-Host "Any audio" -NoNewline -ForegroundColor White; Write-Host " playing through your speakers" -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "      After you stop, you name the meeting and get a full" -ForegroundColor DarkGray
-    Write-Host "      transcript with " -NoNewline -ForegroundColor DarkGray; Write-Host "speaker labels" -NoNewline -ForegroundColor White; Write-Host ". WhisperSync " -NoNewline -ForegroundColor DarkGray; Write-Host "learns" -ForegroundColor Green
-    Write-Host "      " -NoNewline; Write-Host "speakers over time" -NoNewline -ForegroundColor Green; Write-Host " - the more you use it, the better" -ForegroundColor DarkGray
-    Write-Host "      it gets at recognizing who's talking." -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "      " -NoNewline; Write-Host "*" -ForegroundColor DarkYellow -NoNewline; Write-Host " Bonus:" -NoNewline -ForegroundColor DarkCyan; Write-Host " With Claude CLI, you also get auto-generated" -ForegroundColor DarkGray
-    Write-Host "        " -NoNewline; Write-Host "meeting minutes" -NoNewline -ForegroundColor White; Write-Host " and " -NoNewline -ForegroundColor DarkGray; Write-Host "action items" -NoNewline -ForegroundColor White; Write-Host " " -NoNewline; Write-Host "*" -ForegroundColor DarkYellow
-    Write-Host ""
-    Write-Host "  - - - - - - - - - - - - - - - - - - - - - -" -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "  " -NoNewline; Write-Host "TRAY ICON" -ForegroundColor Magenta
-    Write-Host ""
-    Write-Host "      " -NoNewline; Write-Host "Gray " -ForegroundColor Gray -NoNewline; Write-Host " Ready" -ForegroundColor DarkGray -NoNewline; Write-Host "         " -NoNewline; Write-Host "Red " -ForegroundColor Red -NoNewline; Write-Host " Recording (live!)" -ForegroundColor DarkGray
-    Write-Host "      " -NoNewline; Write-Host "Amber" -ForegroundColor DarkYellow -NoNewline; Write-Host " Transcribing" -ForegroundColor DarkGray -NoNewline; Write-Host "   " -NoNewline; Write-Host "Green " -ForegroundColor Green -NoNewline; Write-Host "Done" -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "      " -NoNewline; Write-Host "Left-click " -ForegroundColor Yellow -NoNewline; Write-Host "= start/cancel meeting" -ForegroundColor DarkGray
-    Write-Host "      " -NoNewline; Write-Host "Right-click" -ForegroundColor Yellow -NoNewline; Write-Host " = settings, model downloads, hotkeys" -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "  =============================================" -ForegroundColor DarkCyan
-}
-
-# ── Get Started (gated) ──
-
+Write-Host "  " -NoNewline; Write-Host "Try Dictation:" -ForegroundColor Magenta
 Write-Host ""
-$showStart = Prompt "Want a quick getting started walkthrough? (Y/n)"
-if ($showStart -ne "n") {
-    Write-Host ""
-    Write-Host "  =============================================" -ForegroundColor DarkCyan
-    Write-Host "  " -NoNewline; Write-Host "GET STARTED" -ForegroundColor Cyan
-    Write-Host "  =============================================" -ForegroundColor DarkCyan
-    Write-Host ""
-    Write-Host "  " -NoNewline; Write-Host "Try Dictation:" -ForegroundColor Magenta
-    Write-Host ""
-    Write-Host "    " -NoNewline; Write-Host "1." -ForegroundColor Cyan -NoNewline; Write-Host " Click any text box" -NoNewline -ForegroundColor White; Write-Host " (Notepad, browser, chat)" -ForegroundColor DarkGray
-    Write-Host "    " -NoNewline; Write-Host "2." -ForegroundColor Cyan -NoNewline; Write-Host " Press " -NoNewline -ForegroundColor DarkGray; Write-Host "Ctrl+Shift+Space" -ForegroundColor Yellow -NoNewline; Write-Host " and say your favorite quote" -ForegroundColor White
-    Write-Host "    " -NoNewline; Write-Host "3." -ForegroundColor Cyan -NoNewline; Write-Host " Press " -NoNewline -ForegroundColor DarkGray; Write-Host "Ctrl+Shift+Space" -ForegroundColor Yellow -NoNewline; Write-Host " again" -ForegroundColor DarkGray
-    Write-Host "    " -NoNewline; Write-Host "4." -ForegroundColor Cyan -NoNewline; Write-Host " Voila! " -NoNewline -ForegroundColor Green; Write-Host "Your words appear right where you clicked." -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "  " -NoNewline; Write-Host "Try a Meeting:" -ForegroundColor Magenta
-    Write-Host ""
-    Write-Host "    " -NoNewline; Write-Host "1." -ForegroundColor Cyan -NoNewline; Write-Host " Find the " -NoNewline -ForegroundColor DarkGray; Write-Host "gray circle" -NoNewline -ForegroundColor White; Write-Host " in your system tray (bottom-right)" -ForegroundColor DarkGray
-    Write-Host "    " -NoNewline; Write-Host "2." -ForegroundColor Cyan -NoNewline; Write-Host " Left-click it " -NoNewline -ForegroundColor Yellow; Write-Host "(it turns " -NoNewline -ForegroundColor DarkGray; Write-Host "red" -NoNewline -ForegroundColor Red; Write-Host " - you're recording!)" -ForegroundColor DarkGray
-    Write-Host "    " -NoNewline; Write-Host "3." -ForegroundColor Cyan -NoNewline; Write-Host " Talk, play a video, join a call - it hears everything" -ForegroundColor White
-    Write-Host "    " -NoNewline; Write-Host "4." -ForegroundColor Cyan -NoNewline; Write-Host " Left-click again" -NoNewline -ForegroundColor Yellow; Write-Host " and follow the save dialog" -ForegroundColor DarkGray
-    Write-Host "    " -NoNewline; Write-Host "5." -ForegroundColor Cyan -NoNewline; Write-Host " Done! " -NoNewline -ForegroundColor Green; Write-Host "Transcript with speaker names in your folder." -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "  =============================================" -ForegroundColor DarkCyan
-}
-
-# ── Benchmark ──
-
+Write-Host "    " -NoNewline; Write-Host "1." -ForegroundColor Cyan -NoNewline; Write-Host " Click any text box" -NoNewline -ForegroundColor White; Write-Host " (Notepad, browser, chat)" -ForegroundColor DarkGray
+Write-Host "    " -NoNewline; Write-Host "2." -ForegroundColor Cyan -NoNewline; Write-Host " Press " -NoNewline -ForegroundColor DarkGray; Write-Host "Ctrl+Shift+Space" -ForegroundColor Yellow -NoNewline; Write-Host " and say your favorite quote" -ForegroundColor White
+Write-Host "    " -NoNewline; Write-Host "3." -ForegroundColor Cyan -NoNewline; Write-Host " Press " -NoNewline -ForegroundColor DarkGray; Write-Host "Ctrl+Shift+Space" -ForegroundColor Yellow -NoNewline; Write-Host " again" -ForegroundColor DarkGray
+Write-Host "    " -NoNewline; Write-Host "4." -ForegroundColor Cyan -NoNewline; Write-Host " Voila! " -NoNewline -ForegroundColor Green; Write-Host "Your words appear right where you clicked." -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "  " -NoNewline; Write-Host "NOTE:" -ForegroundColor Yellow -NoNewline; Write-Host " WhisperSync starts with the " -NoNewline -ForegroundColor DarkGray; Write-Host "base" -NoNewline -ForegroundColor White; Write-Host " model (fast," -ForegroundColor DarkGray
-Write-Host "  good for quick dictation). For " -NoNewline -ForegroundColor DarkGray; Write-Host "best quality" -NoNewline -ForegroundColor Green; Write-Host ", download" -ForegroundColor DarkGray
-Write-Host "  the " -NoNewline -ForegroundColor DarkGray; Write-Host "large-v3" -NoNewline -ForegroundColor Cyan; Write-Host " model (~3 GB) when you're ready:" -ForegroundColor DarkGray
-Write-Host "    " -NoNewline; Write-Host "Right-click tray icon" -NoNewline -ForegroundColor Yellow; Write-Host " > " -NoNewline -ForegroundColor DarkGray; Write-Host "Settings" -NoNewline -ForegroundColor White; Write-Host " > " -NoNewline -ForegroundColor DarkGray; Write-Host "Download large-v3" -ForegroundColor White
+Write-Host "  " -NoNewline; Write-Host "Try a Meeting:" -ForegroundColor Magenta
 Write-Host ""
+Write-Host "    " -NoNewline; Write-Host "1." -ForegroundColor Cyan -NoNewline; Write-Host " Find the " -NoNewline -ForegroundColor DarkGray; Write-Host "gray circle" -NoNewline -ForegroundColor White; Write-Host " in your system tray (bottom-right)" -ForegroundColor DarkGray
+Write-Host "    " -NoNewline; Write-Host "2." -ForegroundColor Cyan -NoNewline; Write-Host " Left-click it " -NoNewline -ForegroundColor Yellow; Write-Host "(it turns " -NoNewline -ForegroundColor DarkGray; Write-Host "red" -NoNewline -ForegroundColor Red; Write-Host " - you're recording!)" -ForegroundColor DarkGray
+Write-Host "    " -NoNewline; Write-Host "3." -ForegroundColor Cyan -NoNewline; Write-Host " Talk, play a video, join a call - it hears everything" -ForegroundColor White
+Write-Host "    " -NoNewline; Write-Host "4." -ForegroundColor Cyan -NoNewline; Write-Host " Left-click again" -NoNewline -ForegroundColor Yellow; Write-Host " and follow the save dialog" -ForegroundColor DarkGray
+Write-Host "    " -NoNewline; Write-Host "5." -ForegroundColor Cyan -NoNewline; Write-Host " Done! " -NoNewline -ForegroundColor Green; Write-Host "Transcript with speaker names in your folder." -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "    " -NoNewline; Write-Host "   " -NoNewline; Write-Host "*" -ForegroundColor DarkYellow -NoNewline; Write-Host " With " -NoNewline -ForegroundColor DarkCyan; Write-Host "Cloud AI" -NoNewline -ForegroundColor Cyan; Write-Host " (Claude CLI), minutes are automatically" -ForegroundColor DarkCyan
+Write-Host "    " -NoNewline; Write-Host "     generated with " -NoNewline -ForegroundColor DarkCyan; Write-Host "action items" -NoNewline -ForegroundColor White; Write-Host " and " -NoNewline -ForegroundColor DarkCyan; Write-Host "summaries" -NoNewline -ForegroundColor White; Write-Host " " -NoNewline; Write-Host "*" -ForegroundColor DarkYellow
+Write-Host ""
+
+# ── Benchmark (first gate) ──
+
 Write-Host "  =============================================" -ForegroundColor DarkCyan
 Write-Host "  " -NoNewline; Write-Host "BENCHMARK" -ForegroundColor Cyan -NoNewline; Write-Host "  Let's compare models on your GPU!" -ForegroundColor White
 Write-Host "  =============================================" -ForegroundColor DarkCyan
 Write-Host ""
-Write-Host "  Quick test to see turnaround times so you can" -ForegroundColor DarkGray
-Write-Host "  pick your sweet spot." -ForegroundColor DarkGray
-Write-Host ""
-Write-Host "  " -NoNewline; Write-Host "(For meetings, always go with the best model -" -ForegroundColor DarkGray
-Write-Host "  " -NoNewline; Write-Host "accuracy matters more than speed there.)" -ForegroundColor DarkGray
+Write-Host "  Each model turns your speech into text at different" -ForegroundColor DarkGray
+Write-Host "  speeds. Faster models give quicker results, larger" -ForegroundColor DarkGray
+Write-Host "  models are more accurate. Let's see how they perform" -ForegroundColor DarkGray
+Write-Host "  on your hardware." -ForegroundColor DarkGray
 Write-Host ""
 $runBenchmark = Prompt "Ready? (Y/n)"
 if ($runBenchmark -ne "n") {
@@ -494,6 +427,81 @@ print()
     & $VenvPython $benchScript
     Remove-Item $benchScript -ErrorAction SilentlyContinue
     Ok "Benchmark complete"
+    Write-Host ""
+    Write-Host "  I recommend always using the " -NoNewline -ForegroundColor DarkGray; Write-Host "best model for meetings" -NoNewline -ForegroundColor White; Write-Host " -" -ForegroundColor DarkGray
+    Write-Host "  accuracy matters. For dictation, use what feels right" -ForegroundColor DarkGray
+    Write-Host "  based on the speeds above." -ForegroundColor DarkGray
+    Write-Host ""
+    $setModel = Prompt "Set both to large-v3? (Y/n)"
+    if ($setModel -ne "n") {
+        $modelCfgPath = "$PkgDir\config.json"
+        $existingCfg = @{}
+        if (Test-Path $modelCfgPath) {
+            $existingCfg = Get-Content $modelCfgPath -Raw | ConvertFrom-Json
+            # Convert PSObject to hashtable
+            $ht = @{}; $existingCfg.PSObject.Properties | ForEach-Object { $ht[$_.Name] = $_.Value }; $existingCfg = $ht
+        }
+        $existingCfg["model"] = "large-v3"
+        $existingCfg["dictation_model"] = "large-v3"
+        $cfgJson = $existingCfg | ConvertTo-Json
+        [System.IO.File]::WriteAllText($modelCfgPath, $cfgJson, (New-Object System.Text.UTF8Encoding $false))
+        Ok "Models set to large-v3"
+    }
+}
+
+# ── How It Works (gated) ──
+
+Write-Host ""
+Write-Host "  =============================================" -ForegroundColor DarkCyan
+Write-Host ""
+$showHow = Prompt "See how it all works? (Y/n)"
+if ($showHow -ne "n") {
+    Write-Host ""
+    Write-Host "  =============================================" -ForegroundColor DarkCyan
+    Write-Host "  " -NoNewline; Write-Host "HOW IT WORKS" -ForegroundColor Cyan
+    Write-Host "  =============================================" -ForegroundColor DarkCyan
+    Write-Host ""
+    Write-Host "  " -NoNewline; Write-Host "DICTATION" -ForegroundColor Magenta -NoNewline; Write-Host "  voice-to-text anywhere" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "      " -NoNewline; Write-Host "Start recording    " -ForegroundColor White; Write-Host "      " -NoNewline; Write-Host "Ctrl+Shift+Space" -ForegroundColor Yellow
+    Write-Host "      " -NoNewline; Write-Host "Stop & paste       " -ForegroundColor White; Write-Host "      " -NoNewline; Write-Host "Ctrl+Shift+Space" -ForegroundColor Yellow -NoNewline; Write-Host " (same key)" -ForegroundColor DarkGray
+    Write-Host "      " -NoNewline; Write-Host "Cancel             " -ForegroundColor White; Write-Host "      " -NoNewline; Write-Host "Left-click" -ForegroundColor Yellow -NoNewline; Write-Host " the tray icon" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "      Text goes into the " -NoNewline -ForegroundColor DarkGray; Write-Host "focused text field" -NoNewline -ForegroundColor White; Write-Host " (editor," -ForegroundColor DarkGray
+    Write-Host "      browser, chat, etc). If nothing is focused, it's" -ForegroundColor DarkGray
+    Write-Host "      copied to your " -NoNewline -ForegroundColor DarkGray; Write-Host "clipboard" -ForegroundColor White -NoNewline; Write-Host " instead." -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "  - - - - - - - - - - - - - - - - - - - - - -" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "  " -NoNewline; Write-Host "MEETING" -ForegroundColor Magenta -NoNewline; Write-Host "    record, transcribe, identify speakers" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "      " -NoNewline; Write-Host "Start recording    " -ForegroundColor White; Write-Host "      " -NoNewline; Write-Host "Ctrl+Shift+M" -ForegroundColor Yellow
+    Write-Host "      " -NoNewline; Write-Host "    or             " -ForegroundColor DarkGray; Write-Host "      " -NoNewline; Write-Host "Left-click" -ForegroundColor Yellow -NoNewline; Write-Host " the tray icon" -ForegroundColor DarkGray
+    Write-Host "      " -NoNewline; Write-Host "Stop & save        " -ForegroundColor White; Write-Host "      " -NoNewline; Write-Host "Ctrl+Shift+M" -ForegroundColor Yellow -NoNewline; Write-Host " (same key)" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "      Records " -NoNewline -ForegroundColor DarkGray; Write-Host "your mic + system audio" -NoNewline -ForegroundColor White; Write-Host " (what you hear)." -ForegroundColor DarkGray
+    Write-Host "      Works with any meeting on your computer:" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "        " -NoNewline; Write-Host "Zoom" -NoNewline -ForegroundColor White; Write-Host ", " -NoNewline -ForegroundColor DarkGray; Write-Host "Google Meet" -NoNewline -ForegroundColor White; Write-Host ", " -NoNewline -ForegroundColor DarkGray; Write-Host "Teams" -NoNewline -ForegroundColor White; Write-Host ", " -NoNewline -ForegroundColor DarkGray; Write-Host "phone calls" -ForegroundColor White
+    Write-Host "        " -NoNewline; Write-Host "In-person" -NoNewline -ForegroundColor White; Write-Host " (picks up your mic)" -ForegroundColor DarkGray
+    Write-Host "        " -NoNewline; Write-Host "Any audio" -NoNewline -ForegroundColor White; Write-Host " playing through your speakers" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "      After you stop, you name the meeting and get a full" -ForegroundColor DarkGray
+    Write-Host "      transcript with " -NoNewline -ForegroundColor DarkGray; Write-Host "speaker labels" -NoNewline -ForegroundColor White; Write-Host ". WhisperSync " -NoNewline -ForegroundColor DarkGray; Write-Host "learns" -ForegroundColor Green
+    Write-Host "      " -NoNewline; Write-Host "speakers over time" -NoNewline -ForegroundColor Green; Write-Host " - the more you use it, the better" -ForegroundColor DarkGray
+    Write-Host "      it gets at recognizing who's talking." -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "  - - - - - - - - - - - - - - - - - - - - - -" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "  " -NoNewline; Write-Host "TRAY ICON" -ForegroundColor Magenta
+    Write-Host ""
+    Write-Host "      " -NoNewline; Write-Host "Gray " -ForegroundColor Gray -NoNewline; Write-Host " Ready" -ForegroundColor DarkGray -NoNewline; Write-Host "         " -NoNewline; Write-Host "Red " -ForegroundColor Red -NoNewline; Write-Host " Recording (live!)" -ForegroundColor DarkGray
+    Write-Host "      " -NoNewline; Write-Host "Amber" -ForegroundColor DarkYellow -NoNewline; Write-Host " Transcribing" -ForegroundColor DarkGray -NoNewline; Write-Host "   " -NoNewline; Write-Host "Green " -ForegroundColor Green -NoNewline; Write-Host "Done" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "      " -NoNewline; Write-Host "Left-click " -ForegroundColor Yellow -NoNewline; Write-Host "= start/cancel meeting" -ForegroundColor DarkGray
+    Write-Host "      " -NoNewline; Write-Host "Right-click" -ForegroundColor Yellow -NoNewline; Write-Host " = settings, model downloads, hotkeys" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "  =============================================" -ForegroundColor DarkCyan
 }
 
 Write-Host ""
