@@ -107,9 +107,7 @@ Write-Host "Upgrading pip..." -ForegroundColor Green
 & $VenvPython -m pip install --upgrade pip --quiet 2>&1 | Out-Null
 
 Write-Host "Installing dependencies (this may take a few minutes)..." -ForegroundColor Green
-Write-Host ""
-& $VenvPip install -r $RequirementsFile --progress-bar on
-Write-Host ""
+& $VenvPip install -r $RequirementsFile --quiet --progress-bar on
 
 # ── Step 5: Install CUDA PyTorch ──
 
@@ -117,7 +115,7 @@ if ($cudaVersion) {
     Write-Host ""
     Write-Host "Installing PyTorch with $cudaVersion..." -ForegroundColor Green
     Write-Host "(This overrides the CPU-only torch that whisperX installs)" -ForegroundColor Gray
-    & $VenvPip install torch torchaudio --index-url "https://download.pytorch.org/whl/$cudaVersion" --force-reinstall --no-deps --progress-bar on
+    & $VenvPip install torch torchaudio --index-url "https://download.pytorch.org/whl/$cudaVersion" --force-reinstall --no-deps --quiet --progress-bar on
 }
 
 # ── Step 6: Create .standalone marker ──
