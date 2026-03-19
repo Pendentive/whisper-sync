@@ -139,8 +139,25 @@ class WhisperSync:
             if self.mode in ("done", "error", None):
                 self.mode = None
                 self._update_icon()
+            else:
+                logger.debug(f"_schedule_idle: skipped reset — mode is '{self.mode}' (not terminal)")
 
         threading.Thread(target=_reset, daemon=True).start()
+
+    @staticmethod
+    def _safe_unlink(path: Path, retries: int = 2, delay: float = 0.5):
+        """Delete a file, retrying on PermissionError (Windows file locking)."""
+        import time
+        for attempt in range(retries + 1):
+            try:
+                if path and path.exists():
+                    path.unlink(missing_ok=True)
+                return
+            except PermissionError:
+                if attempt < retries:
+                    time.sleep(delay)
+                else:
+                    logger.debug(f"Could not delete {path} — will clean up on next restart")
 
     def _flash_queued(self):
         """Rapid amber flash to indicate dictation is queued behind a meeting stage."""
@@ -220,8 +237,8 @@ class WhisperSync:
                 if text:
                     dictation_log.append(text, t2 - t0)
                 # Success — remove crash-safety WAV (text is in the .md log)
-                if self._dictation_wav_path and self._dictation_wav_path.exists():
-                    self._dictation_wav_path.unlink(missing_ok=True)
+                self.recorder.stop_streaming()  # defensive: ensure writer closed
+                self._safe_unlink(self._dictation_wav_path)
                 self.mode = "done"
                 self._update_icon()
             except WorkerCrashedError:
