@@ -25,7 +25,7 @@ function RunSilent($activity, $command, [string[]]$arguments) {
     $errFile = "$env:TEMP\ws-err-$([guid]::NewGuid().ToString('N').Substring(0,8)).log"
     $outFile = "$env:TEMP\ws-out-$([guid]::NewGuid().ToString('N').Substring(0,8)).log"
     $proc = Start-Process -FilePath $command -ArgumentList $arguments `
-        -NoNewWindow -Wait -PassThru `
+        -NoNewWindow -Wait -PassThru -WorkingDirectory $ScriptRoot `
         -RedirectStandardOutput $outFile -RedirectStandardError $errFile
     if ($proc.ExitCode -ne 0) {
         Write-Host " failed" -ForegroundColor Red
