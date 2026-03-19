@@ -40,6 +40,9 @@ $pyFiles = @(
     "dictation_log.py",
     "streaming_wav.py",
     "crash_diagnostics.py",
+    "watchdog.py",
+    "worker.py",
+    "worker_manager.py",
     "whisper-capture.ico"
 )
 

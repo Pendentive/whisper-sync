@@ -1,11 +1,13 @@
 # WhisperSync installer — creates venv, detects GPU, installs CUDA PyTorch + dependencies
 # Usage: powershell -ExecutionPolicy Bypass -File install.ps1
 
-$ErrorActionPreference = "Stop"
 $ScriptRoot = $PSScriptRoot
 $PkgDir = "$ScriptRoot\whisper_sync"
 $VenvPath = "$ScriptRoot\whisper-env"
 $RequirementsFile = "$ScriptRoot\requirements.txt"
+
+try {
+$ErrorActionPreference = "Stop"
 
 Write-Host ""
 Write-Host "=== WhisperSync Installer ===" -ForegroundColor Cyan
@@ -234,3 +236,16 @@ Write-Host "To launch WhisperSync:" -ForegroundColor White
 Write-Host "  Double-click the WhisperSync shortcut on your Desktop" -ForegroundColor Yellow
 Write-Host "  Or run: powershell -ExecutionPolicy Bypass -File start.ps1" -ForegroundColor Gray
 Write-Host ""
+
+} catch {
+    Write-Host ""
+    Write-Host "=== INSTALLATION FAILED ===" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Error: $_" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "If this keeps happening, screenshot this window and send it to Colby." -ForegroundColor Yellow
+    Write-Host ""
+}
+
+Write-Host "Press any key to close..." -ForegroundColor Gray
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")

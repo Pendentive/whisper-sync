@@ -91,14 +91,20 @@ def fix_orphan(path: Path | str, rate: int = 16000, channels: int = 1) -> float 
 
     file_size = path.stat().st_size
     if file_size <= 44:
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink(missing_ok=True)
+        except PermissionError:
+            pass  # file still locked by dying process — skip cleanup
         return None
 
     data_size = file_size - 44
     duration = data_size / (rate * channels * 2)  # int16 = 2 bytes
 
     if duration < 5.0:
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink(missing_ok=True)
+        except PermissionError:
+            pass
         return None
 
     # Rewrite header in place
@@ -128,4 +134,7 @@ def cleanup_temp_files(meeting_dir: Path) -> None:
     """Delete temp WAV files in the meeting data directory."""
     for name in ("mic-temp.wav", "speaker-temp.wav"):
         p = meeting_dir / name
-        p.unlink(missing_ok=True)
+        try:
+            p.unlink(missing_ok=True)
+        except PermissionError:
+            pass  # file still locked — will be cleaned up next restart

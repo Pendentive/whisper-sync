@@ -39,5 +39,9 @@ def summarizing_icon() -> Image.Image:
     return _circle_icon("#AA44FF")  # Purple — Claude generating minutes
 
 
+def queued_icon() -> Image.Image:
+    return _circle_icon("#FF8800")  # Amber — dictation queued behind meeting
+
+
 def error_icon() -> Image.Image:
     return _circle_icon("#FF44FF")  # Magenta — error

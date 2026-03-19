@@ -3,6 +3,7 @@ whisperx
 
 # Audio capture (WhisperSync)
 sounddevice
+pyaudiowpatch
 pystray
 Pillow
 keyboard

@@ -14,26 +14,38 @@ if (-not (Test-Path $VenvPython)) {
 }
 
 # Kill any existing WhisperSync instances before starting a new one.
-# Matches processes running whisper_sync or whisper_sync.watchdog from either
-# the venv python or the system python. Skips unrelated python processes.
-# Also kills orphan worker subprocesses spawned via multiprocessing.spawn —
-# these don't contain 'whisper_sync' in their command line, so we find them
-# by matching child processes whose parent is a whisper_sync process.
+# Two passes:
+#   1. Processes with 'whisper_sync' in the command line (main + watchdog)
+#   2. Orphan multiprocessing.spawn workers — these survive after the parent dies
+#      and hold GPU/MKL memory. We match them by parent PID (if parent is alive)
+#      OR by the venv python path (catches orphans whose parent already died).
 $VenvPythonFull = (Resolve-Path $VenvPython -ErrorAction SilentlyContinue).Path
-$existing = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -match 'whisper_sync' }
+$allPython = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue
+
+$existing = $allPython | Where-Object { $_.CommandLine -match 'whisper_sync' }
+$parentPids = @()
 if ($existing) {
     $parentPids = $existing | ForEach-Object { $_.ProcessId }
-    # Find orphan worker subprocesses (multiprocessing.spawn children of whisper_sync)
-    $orphans = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -match 'multiprocessing' -and $_.ParentProcessId -in $parentPids }
-    $allToKill = @($existing) + @($orphans) | Select-Object -Unique -Property ProcessId
+}
+
+# Find orphan workers: multiprocessing.spawn children of whisper_sync parents,
+# OR multiprocessing.spawn processes using the whisper-env python (parent may be dead)
+$orphans = $allPython | Where-Object {
+    $_.CommandLine -match 'multiprocessing\.spawn' -and (
+        $_.ParentProcessId -in $parentPids -or
+        $_.CommandLine -match [regex]::Escape($VenvPythonFull)
+    )
+}
+
+$allToKill = @($existing) + @($orphans) | Where-Object { $_ -ne $null } |
+    Select-Object -Unique -Property ProcessId
+if ($allToKill) {
     $count = ($allToKill | Measure-Object).Count
     Write-Host "Killing $count existing WhisperSync process(es)..." -ForegroundColor Yellow
     foreach ($proc in $allToKill) {
         Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
     }
-    Start-Sleep -Seconds 2
+    Start-Sleep -Seconds 3
 }
 
 Push-Location "$PSScriptRoot\.."
