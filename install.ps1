@@ -302,11 +302,12 @@ if ($createStartup -ne "n") {
 
 Section "Downloading Models"
 
-$bootstrapScript = "$env:TEMP\ws-bootstrap.py"
+$bootstrapScript = "$ScriptRoot\ws-bootstrap.py"
 $bootstrapCode = @"
-import warnings, os
+import warnings, os, sys
 warnings.filterwarnings('ignore')
 os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from whisper_sync.model_status import bootstrap_models
 from whisper_sync import config
 bootstrap_models(config.load())
@@ -381,11 +382,12 @@ $runBenchmark = Prompt "Ready? (Y/n)"
 if ($runBenchmark -ne "n") {
     Write-Host ""
     Step 12 "Running benchmark..."
-    $benchScript = "$env:TEMP\ws-bench.py"
+    $benchScript = "$ScriptRoot\ws-bench.py"
     $benchCode = @"
-import warnings, os, time, numpy as np
+import warnings, os, sys, time, numpy as np
 warnings.filterwarnings('ignore')
 os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from whisper_sync.transcribe import _load_whisper_model, _get_device
 from whisper_sync import config
 cfg = config.load()
