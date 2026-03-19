@@ -720,6 +720,40 @@ Main Process (__main__.py)          Worker Process (worker.py)
 - Worker sends `{"type": "ready"}` after model preload completes
 - If worker dies (segfault), `worker_manager` detects via `is_alive()` and can respawn
 
+### GPU Memory Resilience
+
+WhisperSync adapts to your GPU automatically. Three layers prevent CUDA out-of-memory crashes:
+
+1. **VRAM-tier batch sizing** — At startup, detects total GPU memory and sets a safe `batch_size`:
+   - 8 GB or less: `batch_size=4`
+   - 8–12 GB: `batch_size=8`
+   - 12 GB+: `batch_size=16`
+   - CPU mode: `batch_size=16` (uses system RAM, not VRAM)
+
+2. **Audio-length reduction** — Long recordings get a smaller batch_size to avoid OOM:
+   - Under 60s: use base batch_size
+   - 60–180s: halve the batch_size
+   - Over 180s: quarter the batch_size
+
+3. **OOM catch-and-retry** — If CUDA still runs out of memory, the error is caught, `torch.cuda.empty_cache()` reclaims fragmented VRAM, and the transcription retries at half batch_size. Up to 3 retries before falling back to crash recovery.
+
+You can override auto-detection by setting `"batch_size": 8` (or any integer) in `config.json`. Set `"batch_size": "auto"` to re-enable adaptive sizing.
+
+### Meeting Recording — Disk-Only Audio
+
+Meeting recordings use **disk-only** audio capture. The mic callback streams audio to a WAV file on disk in real-time but does NOT accumulate audio in RAM. This prevents `MemoryError` crashes on long meetings (previously, a 90-minute meeting would consume ~700 MB of RAM for audio data alone).
+
+When the meeting stops, the streaming WAV is either moved directly to the output folder (mic-only) or read back and merged with speaker loopback audio (stereo).
+
+Dictation mode still uses RAM (recordings are short — typically under 30 seconds).
+
+### Orphan Worker Cleanup
+
+On Windows, `multiprocessing.spawn` workers can survive after the parent process dies, leaking GPU memory. The `start.ps1` script kills orphans on every launch using three detection methods:
+- Parent PID matches a live `whisper_sync` process
+- Command line references the venv python path
+- Parent PID no longer exists (dead parent = orphan)
+
 ---
 
 ## Dependency Deep Dive

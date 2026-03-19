@@ -43,6 +43,11 @@ $pyFiles = @(
     "watchdog.py",
     "worker.py",
     "worker_manager.py",
+    "speakers.py",
+    "speaker_prompt.md",
+    "minutes_prompt.md",
+    "split_meeting.py",
+    "rebuild_index.py",
     "whisper-capture.ico"
 )
 
