@@ -107,6 +107,12 @@ Write-Host "Upgrading pip..." -ForegroundColor Green
 & $VenvPython -m pip install --upgrade pip --quiet 2>&1 | Out-Null
 
 Write-Host "Installing dependencies (this may take a few minutes)..." -ForegroundColor Green
+# Suppress git credential popups during pip — pip installs from PyPI, not git repos.
+# A transitive dep (faster-whisper) may trigger a git check; suppressing is safe.
+$prevGitPrompt = $env:GIT_TERMINAL_PROMPT
+$prevGitAskpass = $env:GIT_ASKPASS
+$env:GIT_TERMINAL_PROMPT = "0"
+$env:GIT_ASKPASS = ""
 & $VenvPip install -r $RequirementsFile --quiet --progress-bar on
 
 # ── Step 5: Install CUDA PyTorch ──
@@ -117,6 +123,9 @@ if ($cudaVersion) {
     Write-Host "(This overrides the CPU-only torch that whisperX installs)" -ForegroundColor Gray
     & $VenvPip install torch torchaudio --index-url "https://download.pytorch.org/whl/$cudaVersion" --force-reinstall --no-deps --quiet --progress-bar on
 }
+# Restore git env
+$env:GIT_TERMINAL_PROMPT = $prevGitPrompt
+$env:GIT_ASKPASS = $prevGitAskpass
 
 # ── Step 6: Create .standalone marker ──
 
