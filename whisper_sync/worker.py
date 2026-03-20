@@ -91,6 +91,24 @@ def worker_main(request_queue, response_queue, cfg_snapshot: dict,
     # Enable faulthandler in child so segfaults are logged to stderr
     faulthandler.enable()
 
+    # Suppress known harmless warnings before any imports trigger them
+    import warnings
+    import logging
+    # torchcodec not installed — we don't use it, pyannote complains anyway
+    warnings.filterwarnings("ignore", message="torchcodec is not installed correctly",
+                            category=UserWarning, module=r"pyannote\.audio\.core\.io")
+    # TF32 disabled — pyannote's own ReproducibilityWarning, not a UserWarning
+    warnings.filterwarnings("ignore", message="TensorFloat-32.*has been disabled",
+                            module=r"pyannote\.audio\.utils\.reproducibility")
+    # std() degrees of freedom — numerical edge case in short audio segments
+    warnings.filterwarnings("ignore", message="std\\(\\): degrees of freedom is <= 0",
+                            category=UserWarning)
+    # Lightning checkpoint upgrade nag
+    logging.getLogger("lightning.pytorch.utilities.migration.utils").setLevel(logging.ERROR)
+    # whisperx verbose INFO messages (VAD, diarization loading)
+    logging.getLogger("whisperx.vads.pyannote").setLevel(logging.WARNING)
+    logging.getLogger("whisperx.diarize").setLevel(logging.WARNING)
+
     # Set model cache env vars before any torch/whisperx imports
     from .paths import get_model_cache
     _MODEL_CACHE = get_model_cache()
