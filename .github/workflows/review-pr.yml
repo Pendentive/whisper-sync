@@ -75,6 +75,70 @@ jobs:
 
             console.log(`PR classified as ${complexity}: ${changedFiles} files, ${changedLines} lines`);
 
+  docs-check:
+    runs-on: ubuntu-latest
+    needs: triage
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check docs freshness
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100
+            });
+
+            const warnings = [];
+
+            const addedPy = files
+              .filter(f => f.filename.endsWith('.py') && f.status === 'added')
+              .map(f => f.filename);
+
+            const removedPy = files
+              .filter(f => f.filename.endsWith('.py') && f.status === 'removed')
+              .map(f => f.filename);
+
+            const configChanged = files.some(
+              f => (f.filename.endsWith('config.py') || f.filename.endsWith('paths.py'))
+                && f.status !== 'removed'
+            );
+
+            if (addedPy.length > 0) {
+              const names = addedPy.map(f => `\`${f}\``).join(', ');
+              warnings.push(`New modules added: ${names} — consider updating docs/architecture section in CLAUDE.md`);
+            }
+
+            if (removedPy.length > 0) {
+              const names = removedPy.map(f => `\`${f}\``).join(', ');
+              warnings.push(`Modules removed: ${names} — consider updating docs/architecture section in CLAUDE.md`);
+            }
+
+            if (configChanged) {
+              warnings.push('Config or paths changed — verify CLAUDE.md config section is current');
+            }
+
+            if (warnings.length > 0) {
+              const body = [
+                '## Docs Freshness Check',
+                '',
+                ...warnings.map(w => `- ${w}`),
+                '',
+                'These are reminders, not blockers.'
+              ].join('\n');
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body: body
+              });
+            }
+
   review:
     runs-on: ubuntu-latest
     needs: triage
