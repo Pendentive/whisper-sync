@@ -2,6 +2,12 @@
 
 Local speech-to-text for Windows. GPU-accelerated transcription with speaker diarization, dictation mode, and meeting recording.
 
+## Key Documents
+
+- **`docs/ui-spec.md`** — UI component inventory, routing map, state machine, dialog patterns, extension points. **Read this before any UI change.**
+- **`docs/development.md`** — Local dev setup, debugging, common issues.
+- **`docs/plans/`** — Implementation plans for major features.
+
 ## Architecture
 
 ### Module Map
