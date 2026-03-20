@@ -16,7 +16,6 @@ jobs:
       complexity: ${{ steps.classify.outputs.complexity }}
       changed_files: ${{ steps.classify.outputs.changed_files }}
       changed_lines: ${{ steps.classify.outputs.changed_lines }}
-      file_list: ${{ steps.classify.outputs.file_list }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,8 +35,6 @@ jobs:
 
             const changedFiles = files.length;
             const changedLines = files.reduce((sum, f) => sum + f.additions + f.deletions, 0);
-            const fileList = files.map(f => `- \`${f.filename}\` (+${f.additions} -${f.deletions})`).join('\n');
-
             let complexity;
             if (changedLines > 200 || changedFiles > 5) {
               complexity = 'high';
@@ -50,7 +47,6 @@ jobs:
             core.setOutput('complexity', complexity);
             core.setOutput('changed_files', changedFiles);
             core.setOutput('changed_lines', changedLines);
-            core.setOutput('file_list', fileList);
 
             // Remove any existing complexity labels
             const labels = context.payload.pull_request.labels.map(l => l.name);
@@ -148,9 +144,18 @@ jobs:
         with:
           script: |
             const complexity = '${{ needs.triage.outputs.complexity }}';
-            const changedFiles = '${{ needs.triage.outputs.changed_files }}';
-            const changedLines = '${{ needs.triage.outputs.changed_lines }}';
-            const fileList = `${{ needs.triage.outputs.file_list }}`;
+
+            // Re-fetch files to avoid template literal injection from multiline outputs
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100
+            });
+
+            const changedFiles = files.length;
+            const changedLines = files.reduce((sum, f) => sum + f.additions + f.deletions, 0);
+            const fileList = files.map(f => `- \`${f.filename}\` (+${f.additions} -${f.deletions})`).join('\n');
 
             let body;
 
@@ -167,9 +172,9 @@ jobs:
               ].join('\n');
             } else {
               body = [
-                '## Automated review passed — low complexity change',
+                `## Automated Review — \`complexity:${complexity}\``,
                 '',
-                `**${changedLines} lines** changed across **${changedFiles} files** (\`complexity:${complexity}\`).`,
+                `**${changedLines} lines** changed across **${changedFiles} files**.`,
                 '',
                 '### Changed files',
                 fileList
