@@ -12,8 +12,7 @@ _VALID_KEYS = {
     "hotkeys", "paste_method", "language", "model", "dictation_model",
     "compute_type", "output_dir", "mic_device", "speaker_device",
     "sample_rate", "use_system_devices", "left_click", "middle_click",
-    "suppress_llm_warning", "github_repo", "github_poll_interval",
-    "github_notifications",
+    "suppress_llm_warning",
 }
 
 
@@ -54,3 +53,6 @@ def save(cfg: dict) -> None:
     with open(_USER, "w") as f:
         json.dump(clean, f, indent=2)
         f.write("\n")
+
+    from .logger import logger
+    logger.info(f"Config saved ({len(clean)} keys)")

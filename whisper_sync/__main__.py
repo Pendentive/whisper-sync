@@ -70,8 +70,6 @@ class WhisperSync:
         self._meeting_start_time: datetime | None = None
         dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
         self.worker = TranscriptionWorker(self.cfg, preload_model=dictation_model)
-        self._github_poller = None
-        self._github_prs = []
 
     def _update_icon(self):
         if self.tray is None:
@@ -1480,7 +1478,6 @@ class WhisperSync:
                 pystray.MenuItem(f"Output Folder ({self._truncate_path(self._output_dir())})",
                                  lambda: self._change_output_folder()),
             )),
-            *self._github_menu_items(),
             pystray.MenuItem("Restart", lambda: self._restart()),
             pystray.MenuItem("Quit", lambda: self.quit()),
         )
@@ -1495,83 +1492,6 @@ class WhisperSync:
     def _save_and_refresh(self):
         config.save(self.cfg)
         self._refresh_menu()
-
-    # --- GitHub PR Status ---
-
-    def _start_github_poller(self):
-        """Start the GitHub PR status poller if configured."""
-        repo = self.cfg.get("github_repo")
-        if not repo:
-            return
-
-        from .github_status import GitHubPoller
-        interval = self.cfg.get("github_poll_interval", 300)
-
-        def _on_change(old_prs, new_prs):
-            self._github_prs = new_prs
-            self._refresh_menu()
-            if not self.cfg.get("github_notifications", True):
-                return
-            # Notify on actionable changes
-            old_map = {pr.number: pr.review_state for pr in old_prs}
-            for pr in new_prs:
-                old_state = old_map.get(pr.number)
-                if old_state == pr.review_state:
-                    continue
-                if pr.review_state == "suggestions":
-                    self._notify(f"PR #{pr.number} needs attention: {pr.suggestion_count} suggestion(s)")
-                elif pr.review_state == "human-review":
-                    self._notify(f"PR #{pr.number} flagged for human review")
-
-        self._github_poller = GitHubPoller(
-            repo=repo, interval=interval, on_change=_on_change,
-        )
-        self._github_poller.start()
-        if self._github_poller.state.available:
-            self._github_prs = []
-
-    def _notify(self, message: str):
-        """Show a tray notification balloon."""
-        if self.tray:
-            try:
-                self.tray.notify(message, "WhisperSync")
-            except Exception:
-                logger.debug(f"Notification failed: {message}")
-
-    def _github_menu_items(self) -> list:
-        """Build menu items for GitHub PR status."""
-        repo = self.cfg.get("github_repo")
-        if not repo or not self._github_poller or not self._github_poller.state.available:
-            return []
-
-        items = [pystray.Menu.SEPARATOR]
-
-        prs = self._github_prs
-        if not prs:
-            items.append(pystray.MenuItem("GitHub (no open PRs)", None, enabled=False))
-        else:
-            label = f"GitHub ({len(prs)} open PR{'s' if len(prs) != 1 else ''})"
-            pr_items = []
-            for pr in prs:
-                pr_items.append(pystray.MenuItem(
-                    pr.display,
-                    self._cb(self._open_pr_url, pr.url),
-                ))
-            pr_items.append(pystray.Menu.SEPARATOR)
-            pr_items.append(pystray.MenuItem("Check now", lambda: self._github_poller.poll_now()))
-            pr_items.append(pystray.MenuItem(
-                "Open on GitHub",
-                self._cb(self._open_pr_url, f"https://github.com/{repo}/pulls"),
-            ))
-            items.append(pystray.MenuItem(label, pystray.Menu(*pr_items)))
-
-        return items
-
-    def _open_pr_url(self, url: str):
-        """Open a GitHub URL in the default browser."""
-        import webbrowser
-        if url:
-            webbrowser.open(url)
 
     def _show_error_popup(self, title: str, message: str):
         """Show a tkinter error dialog with the given message."""
@@ -1967,17 +1887,12 @@ class WhisperSync:
 
         threading.Thread(target=_wait_worker, daemon=True).start()
 
-        # Start GitHub PR status polling if configured
-        self._start_github_poller()
-
         try:
             self.tray.run()
         finally:
             # Always release keyboard hooks to prevent stuck modifier keys
             keyboard.unhook_all()
             self.worker.stop()
-            if self._github_poller:
-                self._github_poller.stop()
 
 
 def main():
