@@ -1,25 +1,11 @@
 # WhisperSync
 
-> **Status:** Active development, pre-1.0. Core features are stable and daily-driven. Expect breaking changes between releases.
-
 Hotkey-triggered audio capture and transcription that runs 100% locally on your GPU. Two modes:
 
 - **Dictation** — press a hotkey, speak, press again. Your words are transcribed and pasted into whatever app is focused. Sub-second turnaround with a fast model.
 - **Meeting recording** — press a hotkey to record your mic + system audio (what you hear). Press again to stop, name the meeting, and get a full transcript with speaker labels saved to disk.
 
 Runs as a system tray icon on Windows.
-
-### Features
-
-- **Instant dictation** -- press a hotkey, speak, text appears in any app (sub-second with fast models)
-- **Meeting recording** -- captures mic + system audio simultaneously via WASAPI loopback
-- **Speaker diarization** -- identifies who said what using pyannote speaker models
-- **Speaker identification** -- resolves SPEAKER_00/01 to real names via AI or manual mapping
-- **Meeting minutes** -- optional AI-generated action items, decisions, and topic summaries
-- **Crash-safe recording** -- streaming WAV writer survives process crashes; partial recordings are recoverable
-- **GPU-adaptive** -- auto-detects VRAM and adjusts batch size; OOM catch-and-retry with progressive reduction
-- **Fully offline** -- after initial model download, no network calls for transcription
-- **Configurable** -- hotkeys, models, paste method, audio devices, click actions, output directory
 
 **What runs where:**
 - **Dictation transcription** — 100% local GPU. No network calls.
@@ -1267,39 +1253,3 @@ If you need to edit Python files to fix an issue:
 3. **PyTorch override**: whisperX pulls CPU-only torch. The installer forces CUDA torch. If CUDA stops working, this override is the first thing to check.
 4. **Config merge**: Defaults + user overrides, deep merged. User config.json only contains changed keys. Deleting it resets everything.
 5. **Standalone marker**: The `.standalone` file determines path resolution. Without it, the app assumes it's running inside the development repo.
-
----
-
-## Architecture
-
-WhisperSync uses a two-process model: a main process handles the tray icon, hotkeys, and audio capture, while a separate worker subprocess runs the GPU-intensive WhisperX transcription engine. This isolation means CUDA segfaults in the worker do not kill the UI -- the worker is simply respawned.
-
-Key architectural components:
-- **Config system** -- three-tier merge: `config.defaults.json` (shipped) + `config.json` (user overrides) + runtime
-- **Path resolution** -- standalone mode (`.standalone` marker) vs repo mode for output directories
-- **Streaming WAV** -- crash-safe incremental disk writes during recording
-- **GPU memory resilience** -- VRAM-tier batch sizing, audio-length reduction, OOM catch-and-retry
-
-For the full module map, data flow diagrams, dependency tree, and coding conventions, see [CLAUDE.md](CLAUDE.md).
-
-For development setup, debugging, and common issues, see [docs/development.md](docs/development.md).
-
----
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for branch naming, PR process, commit message format, and label definitions.
-
----
-
-## Bug Reports
-
-File bug reports via [GitHub Issues](../../issues/new?template=bug-report.yml). Include your GPU model, Windows version, and the relevant log file from `whisper_sync/logs/app/`.
-
-Feature requests: [GitHub Issues](../../issues/new?template=feature-request.yml).
-
----
-
-## License
-
-License TBD.
