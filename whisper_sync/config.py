@@ -53,4 +53,6 @@ def save(cfg: dict) -> None:
     with open(_USER, "w") as f:
         json.dump(clean, f, indent=2)
         f.write("\n")
-    print(f"[WhisperSync] Config saved ({len(clean)} keys)")
+
+    from .logger import logger
+    logger.info(f"Config saved ({len(clean)} keys)")
