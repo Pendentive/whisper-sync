@@ -53,3 +53,6 @@ def save(cfg: dict) -> None:
     with open(_USER, "w") as f:
         json.dump(clean, f, indent=2)
         f.write("\n")
+
+    from .logger import logger
+    logger.info(f"Config saved ({len(clean)} keys)")
