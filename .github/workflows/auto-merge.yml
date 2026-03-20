@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     if: >
       github.event.review.user.login == 'copilot-pull-request-reviewer[bot]'
-      && github.event.review.state == 'APPROVED'
+      && (github.event.review.state == 'APPROVED' || github.event.review.state == 'COMMENTED')
     steps:
       - name: Check complexity and merge
         uses: actions/github-script@v7
@@ -43,25 +43,23 @@ jobs:
               return;
             }
 
-            // Check if Copilot had concerns (COMMENTED vs APPROVED)
-            const { data: reviews } = await github.rest.pulls.listReviews({
+            // Check if Copilot left inline suggestions (means it found issues)
+            const { data: reviewComments } = await github.rest.pulls.listReviewComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: prNumber
             });
 
-            const copilotReviews = reviews.filter(
-              r => r.user.login === 'copilot-pull-request-reviewer[bot]'
+            const copilotSuggestions = reviewComments.filter(
+              c => c.user.login === 'copilot-pull-request-reviewer[bot]'
             );
 
-            const hasApproval = copilotReviews.some(r => r.state === 'APPROVED');
-
-            if (!hasApproval) {
+            if (copilotSuggestions.length > 0) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: prNumber,
-                body: '## Auto-merge skipped\n\nCopilot reviewed but did not approve. Please address Copilot\'s suggestions before merging.'
+                body: `## Auto-merge skipped\n\nCopilot found ${copilotSuggestions.length} suggestion(s) that should be addressed before merging.\n\ncc @pendentive`
               });
               return;
             }
