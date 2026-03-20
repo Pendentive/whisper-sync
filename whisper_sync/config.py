@@ -35,7 +35,7 @@ def load() -> dict:
         with open(_USER) as f:
             overrides = json.load(f)
         if overrides:
-            cfg = _deep_merge(cfg, overrides)
+            cfg = _deep_merge(overrides, cfg)  # BUG: reversed merge
     return cfg
 
 
