@@ -1,0 +1,52 @@
+name: Auto-Fix via Copilot
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  assign-to-copilot:
+    runs-on: ubuntu-latest
+    if: github.event.label.name == 'auto-fix'
+    steps:
+      - name: Assign to Copilot coding agent
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+
+            // Comment that the agent is picking this up
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: [
+                '## Copilot Coding Agent Assigned',
+                '',
+                'This issue has been labeled `auto-fix`. Copilot will attempt to:',
+                '1. Read the issue description',
+                '2. Create a fix branch',
+                '3. Implement the fix following `CLAUDE.md` conventions',
+                '4. Open a PR for review',
+                '',
+                'The PR will go through the standard review pipeline (triage + Copilot Code Review).',
+                '',
+                'If the fix needs human intervention, it will be relabeled `manual-fix`.'
+              ].join('\n')
+            });
+
+            // Assign the issue to Copilot
+            // Copilot coding agent picks up assigned issues automatically
+            await github.rest.issues.addAssignees({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              assignees: ['Copilot']
+            });
+
+            console.log(`Issue #${issue.number} assigned to Copilot coding agent`);
