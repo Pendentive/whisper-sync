@@ -69,8 +69,8 @@ if (Test-Path "$PSScriptRoot\whisper_sync\__init__.py") {
 
 Push-Location $WorkDir
 if ($Watchdog) {
-    & $VenvPython -m whisper_sync.watchdog
+    & $VenvPython -W "ignore::UserWarning:pyannote" -m whisper_sync.watchdog
 } else {
-    & $VenvPython -m whisper_sync
+    & $VenvPython -W "ignore::UserWarning:pyannote" -m whisper_sync
 }
 Pop-Location
