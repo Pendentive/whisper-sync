@@ -10,8 +10,28 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .logger import logger
+
+
+def _find_gh() -> str:
+    """Find the gh CLI executable path."""
+    import shutil
+    gh = shutil.which("gh")
+    if gh:
+        return gh
+    # Common install locations on Windows
+    for path in [
+        r"C:\Program Files\GitHub CLI\gh.exe",
+        r"C:\Program Files (x86)\GitHub CLI\gh.exe",
+    ]:
+        if Path(path).exists():
+            return path
+    return "gh"  # Fallback to bare name
+
+
+_GH = _find_gh()
 
 
 @dataclass
@@ -50,7 +70,7 @@ def check_gh_available() -> bool:
     """Check if gh CLI is installed and authenticated."""
     try:
         result = subprocess.run(
-            ["gh", "auth", "status"],
+            [_GH, "auth", "status"],
             capture_output=True, text=True, timeout=10,
         )
         return result.returncode == 0
@@ -62,7 +82,7 @@ def poll_prs(repo: str) -> list[PRStatus]:
     """Fetch open PRs and their review status from GitHub."""
     try:
         result = subprocess.run(
-            ["gh", "pr", "list", "--repo", repo,
+            [_GH, "pr", "list", "--repo", repo,
              "--json", "number,title,state,url,labels,reviews,reviewRequests",
              "--limit", "10"],
             capture_output=True, text=True, timeout=15,
@@ -127,7 +147,7 @@ def _count_copilot_suggestions(repo: str, pr_number: int) -> int:
     """Count inline review comments from Copilot on a PR."""
     try:
         result = subprocess.run(
-            ["gh", "api", f"repos/{repo}/pulls/{pr_number}/comments",
+            [_GH, "api", f"repos/{repo}/pulls/{pr_number}/comments",
              "--jq", '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | length'],
             capture_output=True, text=True, timeout=10,
         )

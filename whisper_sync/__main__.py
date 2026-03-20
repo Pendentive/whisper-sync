@@ -1,8 +1,21 @@
 """WhisperSync entry point — tray icon + hotkey listener."""
 
 import faulthandler
+import logging
 import sys
 import threading
+import warnings
+
+# Suppress known harmless warnings before any imports trigger them
+warnings.filterwarnings("ignore", message="torchcodec is not installed correctly",
+                        category=UserWarning, module=r"pyannote\.audio\.core\.io")
+warnings.filterwarnings("ignore", message="TensorFloat-32.*has been disabled",
+                        module=r"pyannote\.audio\.utils\.reproducibility")
+warnings.filterwarnings("ignore", message="std\\(\\): degrees of freedom is <= 0",
+                        category=UserWarning)
+logging.getLogger("lightning.pytorch.utilities.migration.utils").setLevel(logging.ERROR)
+logging.getLogger("whisperx.vads.pyannote").setLevel(logging.WARNING)
+logging.getLogger("whisperx.diarize").setLevel(logging.WARNING)
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -1477,7 +1490,7 @@ class WhisperSync:
                 pystray.Menu.SEPARATOR,
                 *self._model_menu_items(),
                 pystray.Menu.SEPARATOR,
-                pystray.MenuItem(f"Output Folder ({self._truncate_path(self._output_dir())})",
+                pystray.MenuItem(f"Change Output Folder...\t{self._truncate_path(self._output_dir())}",
                                  lambda: self._change_output_folder()),
                 *self._github_menu_items(),
             )),
