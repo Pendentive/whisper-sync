@@ -1200,17 +1200,6 @@ class WhisperSync:
 
         threading.Thread(target=_post_record, daemon=True).start()
 
-    @staticmethod
-    def _truncate_path(p: Path, max_len: int = 40) -> str:
-        """Truncate a path for display in menus."""
-        s = str(p)
-        if len(s) <= max_len:
-            return s
-        parts = p.parts
-        if len(parts) <= 2:
-            return s
-        return f".../{'/'.join(parts[-2:])}"
-
     def _output_dir(self) -> Path:
         p = Path(self.cfg["output_dir"])
         if not p.is_absolute():
@@ -1474,9 +1463,6 @@ class WhisperSync:
                                  pystray.Menu(*meeting_model_items)),
                 pystray.Menu.SEPARATOR,
                 *self._model_menu_items(),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem(f"Output Folder ({self._truncate_path(self._output_dir())})",
-                                 lambda: self._change_output_folder()),
             )),
             pystray.MenuItem("Restart", lambda: self._restart()),
             pystray.MenuItem("Quit", lambda: self.quit()),
@@ -1509,133 +1495,6 @@ class WhisperSync:
         out = self._output_dir()
         out.mkdir(parents=True, exist_ok=True)
         subprocess.Popen(["explorer.exe", str(out)])
-
-    def _change_output_folder(self):
-        """Show folder picker, optionally move existing files, update config."""
-        import shutil
-
-        current = self._output_dir()
-        result = [None]  # None=cancelled, (Path, bool)=(new_path, move_files)
-        event = threading.Event()
-
-        def _show():
-            import tkinter as tk
-            from tkinter import filedialog
-
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes("-topmost", True)
-
-            new_dir = filedialog.askdirectory(
-                title="Choose output folder for recordings",
-                initialdir=str(current) if current.exists() else str(Path.home()),
-            )
-            root.destroy()
-
-            if not new_dir or Path(new_dir) == current:
-                event.set()
-                return
-
-            new_path = Path(new_dir)
-            # Check if current folder has files to move
-            has_files = current.exists() and any(current.iterdir())
-
-            if not has_files:
-                result[0] = (new_path, False)
-                event.set()
-                return
-
-            # Ask about moving files
-            move_result = [None]
-            move_event = threading.Event()
-
-            def _show_move_dialog():
-                dlg = tk.Tk()
-                dlg.title("WhisperSync")
-                self._style_window(dlg)
-                dlg.geometry("440x150")
-
-                bg = "#1e1e2e"
-                fg = "#cdd6f4"
-                fg_dim = "#6c7086"
-                accent = "#89b4fa"
-
-                tk.Label(dlg, text="Move Existing Recordings?",
-                         font=("Segoe UI", 11, "bold"), bg=bg, fg=fg).pack(pady=(14, 4))
-                tk.Label(dlg, text=f"Move files from current folder to new location?",
-                         font=("Segoe UI", 9), bg=bg, fg=fg_dim).pack(pady=(0, 4))
-                tk.Label(dlg, text=f"{current}",
-                         font=("Segoe UI", 8), bg=bg, fg=fg_dim).pack()
-                tk.Label(dlg, text=f"→ {new_path}",
-                         font=("Segoe UI", 8), bg=bg, fg=accent).pack(pady=(0, 6))
-
-                btn_frame = tk.Frame(dlg, bg=bg)
-                btn_frame.pack(pady=(6, 10))
-
-                def _move():
-                    move_result[0] = True
-                    dlg.destroy()
-
-                def _keep():
-                    move_result[0] = False
-                    dlg.destroy()
-
-                def _cancel():
-                    move_result[0] = None
-                    dlg.destroy()
-
-                dlg.bind("<Escape>", lambda e: _cancel())
-
-                self._flat_button(btn_frame, "Move Files", _move,
-                                  bg=accent, fg="#1e1e2e", hover_bg="#74c7ec",
-                                  bold=True).pack(side=tk.RIGHT, padx=6)
-                self._flat_button(btn_frame, "Keep in Place", _keep).pack(side=tk.RIGHT, padx=6)
-                self._flat_button(btn_frame, "Cancel", _cancel,
-                                  fg="#f38ba8").pack(side=tk.RIGHT, padx=6)
-
-                self._center_window(dlg)
-                dlg.protocol("WM_DELETE_WINDOW", _cancel)
-                dlg.mainloop()
-                move_event.set()
-
-            t2 = threading.Thread(target=_show_move_dialog, daemon=True)
-            t2.start()
-            move_event.wait(timeout=60)
-
-            if move_result[0] is None:
-                event.set()
-                return
-
-            result[0] = (new_path, move_result[0])
-            event.set()
-
-        t = threading.Thread(target=_show, daemon=True)
-        t.start()
-        event.wait(timeout=120)
-
-        if result[0] is None:
-            return
-
-        new_path, move_files = result[0]
-
-        if move_files:
-            try:
-                new_path.mkdir(parents=True, exist_ok=True)
-                for item in current.iterdir():
-                    dest = new_path / item.name
-                    if not dest.exists():
-                        shutil.move(str(item), str(dest))
-                    else:
-                        logger.warning(f"Skipped (already exists): {item.name}")
-                logger.info(f"Moved recordings from {current} → {new_path}")
-            except Exception as e:
-                logger.error(f"Failed to move files: {e}")
-                self._show_error_popup("Move Failed", f"Could not move files:\n{e}")
-                return
-
-        self.cfg["output_dir"] = str(new_path)
-        self._save_and_refresh()
-        logger.info(f"Output folder changed to: {new_path}")
 
     def _set_api_filter(self, api_name: str | None):
         self._api_filter = api_name
