@@ -68,9 +68,14 @@ if (Test-Path "$PSScriptRoot\whisper_sync\__init__.py") {
 }
 
 Push-Location $WorkDir
+# Suppress pyannote's torchcodec warning (fires at import time, can't be filtered in code).
+# torchcodec is optional — pyannote falls back to torchaudio which whisperX uses.
+# Also suppress the Lightning checkpoint upgrade nag.
+$env:PYTHONWARNINGS = "ignore::UserWarning:pyannote.audio.core.io,ignore::UserWarning:pyannote.audio.utils.reproducibility"
+
 if ($Watchdog) {
-    & $VenvPython -W "ignore::UserWarning:pyannote" -m whisper_sync.watchdog
+    & $VenvPython -m whisper_sync.watchdog
 } else {
-    & $VenvPython -W "ignore::UserWarning:pyannote" -m whisper_sync
+    & $VenvPython -m whisper_sync
 }
 Pop-Location
