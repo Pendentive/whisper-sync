@@ -15,5 +15,8 @@
   "batch_size": "auto",
   "use_system_devices": true,
   "left_click": "meeting",
-  "middle_click": "dictation"
+  "middle_click": "dictation",
+  "github_repo": null,
+  "github_poll_interval": 300,
+  "github_notifications": true
 }
