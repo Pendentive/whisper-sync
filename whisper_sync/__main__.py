@@ -1471,6 +1471,7 @@ class WhisperSync:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Open Output Folder", lambda: self._open_output_folder()),
             pystray.MenuItem("Settings", pystray.Menu(
+                *self._github_menu_items(),
                 pystray.MenuItem(f"Dictation Hotkey ({self.cfg['hotkeys']['dictation_toggle']})",
                                  pystray.Menu(*dictation_hk_items)),
                 pystray.MenuItem(f"Meeting Hotkey ({self.cfg['hotkeys']['meeting_toggle']})",
@@ -1492,7 +1493,6 @@ class WhisperSync:
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem(f"Change Output Folder...\t{self._truncate_path(self._output_dir())}",
                                  lambda: self._change_output_folder()),
-                *self._github_menu_items(),
             )),
             pystray.MenuItem("Restart", lambda: self._restart()),
             pystray.MenuItem("Quit", lambda: self.quit()),
