@@ -1,7 +1,6 @@
 """Streaming WAV writer — writes PCM chunks to disk as they arrive.
 
-Used as a crash safety net for meeting recordings. Audio is written
-incrementally so that a crash preserves all data up to that point.
+Used as a crash safety net for meeting recordings. Audio is written incrementally so that a crash preserves all data up to that point.
 On recovery, the WAV header is fixed to reflect the actual data size.
 """
 
