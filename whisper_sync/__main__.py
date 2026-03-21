@@ -1558,12 +1558,15 @@ class WhisperSync:
             threading.Thread(target=_wait_first_poll, daemon=True).start()
 
     def _notify(self, message: str):
-        """Show a tray notification balloon."""
-        if self.tray:
-            try:
-                self.tray.notify(message, "WhisperSync")
-            except Exception:
-                logger.debug(f"Notification failed: {message}")
+        """Show a Windows notification. Uses msg command (works on Win 10/11)."""
+        import subprocess as _sp
+        try:
+            _sp.Popen(
+                ["msg", "*", f"WhisperSync: {message}"],
+                creationflags=0x08000000,  # CREATE_NO_WINDOW
+            )
+        except Exception:
+            logger.debug(f"Notification failed: {message}")
 
     def _github_menu_items(self) -> list:
         """Build menu items for GitHub PR status."""
