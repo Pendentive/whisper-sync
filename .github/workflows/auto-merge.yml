@@ -30,18 +30,22 @@ jobs:
               pull_number: prNumber
             });
 
-            const labels = prData.labels.map(l => l.name);
-            const isHigh = labels.includes('complexity:high');
-
-            if (isHigh) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber,
-                body: '## Auto-merge skipped\n\nCopilot approved, but this is `complexity:high`. Human review required.\n\ncc @pendentive'
-              });
+            // Check if we already commented on this PR (avoid duplicates on re-review)
+            const { data: existingComments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber
+            });
+            const alreadyCommented = existingComments.some(
+              c => c.user.login === 'github-actions[bot]' &&
+                   (c.body.includes('Auto-merge') || c.body.includes('Auto-merged'))
+            );
+            if (alreadyCommented) {
+              console.log(`PR #${prNumber}: auto-merge already commented, skipping duplicate`);
               return;
             }
+
+            const labels = prData.labels.map(l => l.name);
 
             // Check if Copilot left inline suggestions (means it found issues)
             const { data: reviewComments } = await github.rest.pulls.listReviewComments({
