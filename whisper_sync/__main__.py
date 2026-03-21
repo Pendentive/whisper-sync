@@ -2030,6 +2030,13 @@ class WhisperSync:
         # Start GitHub PR status polling if configured
         self._start_github_poller()
 
+        # Test toast notification on startup
+        def _test_toast():
+            import time
+            time.sleep(5)  # Wait for tray to be ready
+            self._notify("WhisperSync started — GitHub polling active")
+        threading.Thread(target=_test_toast, daemon=True).start()
+
         try:
             self.tray.run()
         finally:
