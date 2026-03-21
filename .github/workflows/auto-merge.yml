@@ -30,6 +30,17 @@ jobs:
               pull_number: prNumber
             });
 
+            // Never auto-merge release PRs (dev → main)
+            if (prData.base.ref === 'main') {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: '## Auto-merge skipped\n\nRelease PRs targeting `main` always require human review.'
+              });
+              return;
+            }
+
             const labels = prData.labels.map(l => l.name);
             const isHigh = labels.includes('complexity:high');
 
