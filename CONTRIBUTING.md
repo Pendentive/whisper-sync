@@ -103,3 +103,16 @@ There is no automated test suite yet. Before submitting a PR, manually verify:
 ## Development Setup
 
 See [docs/development.md](docs/development.md) for prerequisites, building from source, debugging, and common issues.
+
+## Branching Model
+
+- **main** — Stable release. Your coworker pulls this. Always works.
+- **dev** — Integration branch. Sync hook pushes here. Feature branches merge here.
+- **feat/fix/batch branches** — Short-lived, branch off dev, PR into dev.
+
+Flow:
+```
+feature branch → PR → dev (reviewed) → PR → main (release)
+```
+
+Never push directly to main. The sync hook pushes to dev automatically.
