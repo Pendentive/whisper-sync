@@ -1469,9 +1469,9 @@ class WhisperSync:
             ),
             pystray.MenuItem(filter_label, pystray.Menu(*filter_items)),
             pystray.Menu.SEPARATOR,
+            *self._github_menu_items(),
             pystray.MenuItem("Open Output Folder", lambda: self._open_output_folder()),
             pystray.MenuItem("Settings", pystray.Menu(
-                *self._github_menu_items(),
                 pystray.MenuItem(f"Dictation Hotkey ({self.cfg['hotkeys']['dictation_toggle']})",
                                  pystray.Menu(*dictation_hk_items)),
                 pystray.MenuItem(f"Meeting Hotkey ({self.cfg['hotkeys']['meeting_toggle']})",
@@ -1493,9 +1493,10 @@ class WhisperSync:
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem(f"Change Output Folder...\t{self._truncate_path(self._output_dir())}",
                                  lambda: self._change_output_folder()),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("Restart", lambda: self._restart()),
+                pystray.MenuItem("Quit", lambda: self.quit()),
             )),
-            pystray.MenuItem("Restart", lambda: self._restart()),
-            pystray.MenuItem("Quit", lambda: self.quit()),
         )
 
     # --- Actions ---
@@ -1570,37 +1571,35 @@ class WhisperSync:
         if not repo or not self._github_poller or not self._github_poller.state.available:
             return []
 
-        items = [pystray.Menu.SEPARATOR]
-
         prs = self._github_prs
         if not prs:
-            items.append(pystray.MenuItem("GitHub (no open PRs)", None, enabled=False))
-        else:
-            label = f"GitHub ({len(prs)} open PR{'s' if len(prs) != 1 else ''})"
-            pr_items = []
-            for pr in prs:
+            # No PRs — clicking opens GitHub pulls page
+            return [pystray.MenuItem(
+                "GitHub (no open PRs)",
+                self._cb(self._open_pr_url, f"https://github.com/{repo}/pulls"),
+            )]
+
+        label = f"GitHub ({len(prs)} open PR{'s' if len(prs) != 1 else ''})"
+        pr_items = []
+        for pr in prs:
+            # Each PR is a submenu: click opens PR, merge option if clean
+            if pr.review_state == "clean":
+                pr_sub = [
+                    pystray.MenuItem("View on GitHub", self._cb(self._open_pr_url, pr.url)),
+                    pystray.MenuItem(f"Merge to {self.cfg.get('github_repo', '').split('/')[-1]}",
+                                     self._cb(self._merge_pr, repo, pr.number)),
+                ]
+                pr_items.append(pystray.MenuItem(pr.display, pystray.Menu(*pr_sub)))
+            else:
+                # Not clean — click opens PR directly
                 pr_items.append(pystray.MenuItem(
                     pr.display,
                     self._cb(self._open_pr_url, pr.url),
                 ))
-            pr_items.append(pystray.Menu.SEPARATOR)
-            pr_items.append(pystray.MenuItem("Check now", lambda: self._github_poller.poll_now()))
-            pr_items.append(pystray.MenuItem(
-                "Open on GitHub",
-                self._cb(self._open_pr_url, f"https://github.com/{repo}/pulls"),
-            ))
-            # Add merge option for clean low/medium PRs
-            mergeable = [pr for pr in prs if pr.review_state == "clean" and pr.complexity != "high"]
-            if mergeable:
-                pr_items.append(pystray.Menu.SEPARATOR)
-                for pr in mergeable:
-                    pr_items.append(pystray.MenuItem(
-                        f"Merge #{pr.number}: {pr.title[:30]}",
-                        self._cb(self._merge_pr, repo, pr.number),
-                    ))
-            items.append(pystray.MenuItem(label, pystray.Menu(*pr_items)))
+        pr_items.append(pystray.Menu.SEPARATOR)
+        pr_items.append(pystray.MenuItem("Check now", lambda: self._github_poller.poll_now()))
 
-        return items
+        return [pystray.MenuItem(label, pystray.Menu(*pr_items))]
 
     def _open_pr_url(self, url: str):
         """Open a GitHub URL in the default browser."""
