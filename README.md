@@ -1253,6 +1253,3 @@ If you need to edit Python files to fix an issue:
 3. **PyTorch override**: whisperX pulls CPU-only torch. The installer forces CUDA torch. If CUDA stops working, this override is the first thing to check.
 4. **Config merge**: Defaults + user overrides, deep merged. User config.json only contains changed keys. Deleting it resets everything.
 5. **Standalone marker**: The `.standalone` file determines path resolution. Without it, the app assumes it's running inside the development repo.
-
-<!-- v0.2.0-dev -->
-<!-- toast test -->
