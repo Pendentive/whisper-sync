@@ -1255,3 +1255,4 @@ If you need to edit Python files to fix an issue:
 5. **Standalone marker**: The `.standalone` file determines path resolution. Without it, the app assumes it's running inside the development repo.
 
 <!-- v0.2.0-dev -->
+<!-- toast test -->
