@@ -8,16 +8,17 @@ Use a prefix that describes the type of change:
 |--------|---------|
 | `fix/` | Bug fixes (`fix/cuda-oom-retry`) |
 | `feat/` | New features (`feat/auto-speaker-map`) |
+| `batch/` | Multi-topic session updates (`batch/2026-03-20`) |
 | `test/` | Test additions or changes (`test/benchmark-models`) |
 | `docs/` | Documentation only (`docs/readme-update`) |
 
 ## PR Process
 
-1. **Create a branch** from `main` with the appropriate prefix
+1. **Create a branch** from `dev` with the appropriate prefix
 2. **Make your changes** -- keep PRs focused on a single concern
-3. **Open a PR** against `main`
-4. **Automated review runs** -- the CI workflow classifies your PR by complexity and posts a review comment
-5. **Merge** after review passes
+3. **Open a PR** against `dev`
+4. **Automated review runs** -- the CI workflow classifies your PR by complexity, Copilot reviews the code
+5. **Auto-merge** if Copilot finds no issues and complexity is low/medium. Otherwise, address suggestions and push again.
 
 ### Automated Review
 
@@ -30,9 +31,9 @@ The [review-pr workflow](.github/workflows/review-pr.yml) runs on every PR:
 |-------|----------|--------|
 | `complexity:low` | <50 lines, <3 files | Automated review comment, merge-ready |
 | `complexity:medium` | 50-200 lines, 3-5 files | Automated review comment, merge-ready |
-| `complexity:high` | >200 lines or >5 files | Human review requested, @pendentive tagged |
+| `complexity:high` | >200 lines or >5 files | Copilot reviews thoroughly, auto-merge if clean |
 
-Low and medium PRs get an automated review comment summarizing the change scope. High complexity PRs require human review.
+All PRs are machine-reviewed by Copilot Code Review. If Copilot finds inline suggestions, address them and push. Auto-merge fires when Copilot has no suggestions.
 
 ## Labels
 
@@ -106,9 +107,9 @@ See [docs/development.md](docs/development.md) for prerequisites, building from 
 
 ## Branching Model
 
-- **main** — Stable release. Your coworker pulls this. Always works.
-- **dev** — Integration branch. Sync hook pushes here. Feature branches merge here.
-- **feat/fix/batch branches** — Short-lived, branch off dev, PR into dev.
+- **main** — Stable release branch. Your coworker pulls this. Should always be releasable.
+- **dev** — Integration branch. Sync hook pushes here. Feature branches merge here via PR.
+- **feat/fix/batch/test/docs branches** — Short-lived, branch off dev, PR into dev.
 
 Flow:
 ```
