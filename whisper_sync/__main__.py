@@ -1582,19 +1582,16 @@ class WhisperSync:
         label = f"GitHub ({len(prs)} open PR{'s' if len(prs) != 1 else ''})"
         pr_items = []
         for pr in prs:
-            # Each PR is a submenu: click opens PR, merge option if clean
+            # Click opens PR on GitHub
+            pr_items.append(pystray.MenuItem(
+                pr.display,
+                self._cb(self._open_pr_url, pr.url),
+            ))
+            # If clean, add merge option right below
             if pr.review_state == "clean":
-                pr_sub = [
-                    pystray.MenuItem("View on GitHub", self._cb(self._open_pr_url, pr.url)),
-                    pystray.MenuItem(f"Merge to {self.cfg.get('github_repo', '').split('/')[-1]}",
-                                     self._cb(self._merge_pr, repo, pr.number)),
-                ]
-                pr_items.append(pystray.MenuItem(pr.display, pystray.Menu(*pr_sub)))
-            else:
-                # Not clean — click opens PR directly
                 pr_items.append(pystray.MenuItem(
-                    pr.display,
-                    self._cb(self._open_pr_url, pr.url),
+                    f"  Merge #{pr.number}",
+                    self._cb(self._merge_pr, repo, pr.number),
                 ))
         pr_items.append(pystray.Menu.SEPARATOR)
         pr_items.append(pystray.MenuItem("Check now", lambda: self._github_poller.poll_now()))
