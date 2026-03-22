@@ -72,9 +72,10 @@ def check_gh_available() -> bool:
         result = subprocess.run(
             [_GH, "auth", "status"],
             capture_output=True, text=True, timeout=10,
+            encoding="utf-8", errors="replace",
         )
         return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
         return False
 
 
@@ -86,9 +87,13 @@ def poll_prs(repo: str) -> list[PRStatus]:
              "--json", "number,title,state,url,labels,reviews,reviewRequests",
              "--limit", "10"],
             capture_output=True, text=True, timeout=15,
+            encoding="utf-8", errors="replace",
         )
         if result.returncode != 0:
-            logger.debug(f"gh pr list failed: {result.stderr.strip()}")
+            logger.debug(f"gh pr list failed: {(result.stderr or '').strip()}")
+            return []
+
+        if not result.stdout or not result.stdout.strip():
             return []
 
         prs_raw = json.loads(result.stdout)
