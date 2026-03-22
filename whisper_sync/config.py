@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+from .logger import logger
+
 _DIR = Path(__file__).parent
 _DEFAULTS = _DIR / "config.defaults.json"
 _USER = _DIR / "config.json"
@@ -50,7 +52,7 @@ def save(cfg: dict) -> None:
         if isinstance(v, (str, int, float, bool, dict, list, type(None))):
             clean[k] = v
         else:
-            print(f"[WhisperSync] WARNING: Skipping non-serializable config key '{k}': {type(v).__name__}")
+            logger.warning(f"Skipping non-serializable config key '{k}': {type(v).__name__}")
     with open(_USER, "w") as f:
         json.dump(clean, f, indent=2)
         f.write("\n")
