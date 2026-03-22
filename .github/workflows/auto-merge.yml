@@ -7,8 +7,12 @@ on:
   # Fires when new commits are pushed (after fixing suggestions)
   pull_request:
     types: [synchronize]
-  # Fires when Copilot's check run completes (catches re-reviews)
-  check_run:
+  # Fires when Copilot's check suite completes (reliable for Copilot reviews)
+  check_suite:
+    types: [completed]
+  # Fires after PR Review workflow completes (backup trigger)
+  workflow_run:
+    workflows: ["PR Review"]
     types: [completed]
 
 permissions:
@@ -21,9 +25,9 @@ jobs:
     runs-on: ubuntu-latest
     if: >
       github.event_name == 'pull_request'
-      || github.event_name == 'check_run'
+      || github.event_name == 'check_suite'
+      || github.event_name == 'workflow_run'
       || (github.event_name == 'pull_request_review'
-          && github.event.review.user.login == 'copilot-pull-request-reviewer[bot]'
           && (github.event.review.state == 'APPROVED' || github.event.review.state == 'COMMENTED'))
     steps:
       - name: Check and merge if ready
@@ -34,11 +38,16 @@ jobs:
             let prNumber;
             if (context.payload.pull_request) {
               prNumber = context.payload.pull_request.number;
-            } else if (context.payload.check_run) {
-              // check_run events link to PRs via pull_requests array
-              const prs = context.payload.check_run.pull_requests;
+            } else if (context.payload.check_suite) {
+              const prs = context.payload.check_suite.pull_requests;
               if (!prs || prs.length === 0) return;
               prNumber = prs[0].number;
+            } else if (context.payload.workflow_run) {
+              const prs = context.payload.workflow_run.pull_requests;
+              if (!prs || prs.length === 0) return;
+              prNumber = prs[0].number;
+            } else if (context.payload.review) {
+              prNumber = context.payload.pull_request.number;
             } else {
               return;
             }
