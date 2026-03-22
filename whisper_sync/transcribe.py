@@ -30,7 +30,7 @@ def _get_base_batch_size() -> int:
     """Determine base batch_size from available GPU VRAM.
 
     Tiers:
-        CPU:    16  (uses system RAM, no VRAM constraint)
+        CPU:    4   (slower, conservative)
         ≤8GB:   4   (~3GB model + limited headroom)
         ≤12GB:  8   (~3GB model + moderate headroom)
         >12GB:  16  (plenty of room)
@@ -39,11 +39,13 @@ def _get_base_batch_size() -> int:
     if _base_batch_size is not None:
         return _base_batch_size
 
-    import torch
-    if not torch.cuda.is_available():
-        _base_batch_size = 16
+    device = _get_device()
+    if device == "cpu":
+        _base_batch_size = 4
+        print("[WhisperSync] CPU mode -- base batch_size=4")
         return _base_batch_size
 
+    import torch
     props = torch.cuda.get_device_properties(0)
     total_gb = props.total_memory / (1024 ** 3)
     if total_gb <= 8:
@@ -53,7 +55,7 @@ def _get_base_batch_size() -> int:
     else:
         _base_batch_size = 16
 
-    print(f"[WhisperSync] GPU: {props.name} ({total_gb:.1f} GB) — base batch_size={_base_batch_size}")
+    print(f"[WhisperSync] GPU: {props.name} ({total_gb:.1f} GB) -- base batch_size={_base_batch_size}")
     return _base_batch_size
 
 
@@ -78,16 +80,18 @@ def _compute_batch_size(audio_np: np.ndarray, base: int) -> int:
 def _transcribe_with_retry(model, audio, batch_size: int, language: str,
                            max_retries: int = 3) -> dict:
     """Transcribe with OOM catch-and-retry at decreasing batch sizes."""
-    import torch
+    device = _get_device()
     for attempt in range(max_retries + 1):
         try:
             return model.transcribe(audio, batch_size=batch_size, language=language)
         except RuntimeError as e:
             if "out of memory" not in str(e).lower() or attempt == max_retries:
                 raise
-            torch.cuda.empty_cache()
+            if device == "cuda":
+                import torch
+                torch.cuda.empty_cache()
             batch_size = max(1, batch_size // 2)
-            print(f"[WhisperSync] CUDA OOM — retrying with batch_size={batch_size}")
+            print(f"[WhisperSync] OOM -- retrying with batch_size={batch_size}")
     raise RuntimeError("Exhausted OOM retries")
 
 
@@ -102,20 +106,55 @@ def _resolve_batch_size(audio_np: np.ndarray) -> int:
 
 
 def _get_device():
+    """Resolve device from config: auto/gpu/cuda -> 'cuda' or 'cpu', cpu -> 'cpu'."""
+    cfg = config.load()
+    device_pref = cfg.get("device", "auto").lower()
+
+    if device_pref == "cpu":
+        return "cpu"
+
     import torch
+    if device_pref in ("gpu", "cuda"):
+        if not torch.cuda.is_available():
+            print("[WhisperSync] WARNING: GPU requested but CUDA not available -- falling back to CPU")
+            return "cpu"
+        return "cuda"
+
+    # auto: detect GPU, fall back to CPU
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def get_gpu_name() -> str | None:
+    """Return the GPU device name, or None if CUDA is not available."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return torch.cuda.get_device_name(0)
+    except Exception:
+        pass
+    return None
+
+
 def _check_device_changed():
-    """If GPU availability changed (e.g. eco mode), clear cached models."""
-    global _last_device, _models, _align_model, _align_metadata, _diarize_pipeline
+    """If device changed (config switch or GPU availability), clear cached models."""
+    global _last_device, _models, _align_model, _align_metadata, _diarize_pipeline, _base_batch_size
     device = _get_device()
     if _last_device is not None and device != _last_device:
-        print(f"[WhisperSync] GPU changed: {_last_device} → {device}, reloading models...")
+        print(f"[WhisperSync] Device changed: {_last_device} -> {device}, reloading models...")
+        # Clean up CUDA memory when switching FROM GPU
+        if _last_device == "cuda":
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    print("[WhisperSync] CUDA memory cache cleared")
+            except Exception:
+                pass
         _models.clear()
         _align_model = None
         _align_metadata = None
         _diarize_pipeline = None
+        _base_batch_size = None  # Reset so batch size is re-computed for new device
     _last_device = device
     return device
 
