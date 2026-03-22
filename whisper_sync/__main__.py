@@ -86,6 +86,7 @@ class WhisperSync:
         self.worker = TranscriptionWorker(self.cfg, preload_model=dictation_model)
         self._github_poller = None
         self._github_prs = []
+        self._dictation_history = []  # last 10 dictation results
 
     def _update_icon(self):
         if self.tray is None:
@@ -255,6 +256,14 @@ class WhisperSync:
                 logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={dictation_model}")
                 if text:
                     dictation_log.append(text, t2 - t0)
+                    self._dictation_history.append({
+                        "text": text,
+                        "timestamp": datetime.now().strftime("%H:%M"),
+                        "chars": len(text),
+                    })
+                    if len(self._dictation_history) > 10:
+                        self._dictation_history = self._dictation_history[-10:]
+                    self._refresh_menu()
                 # Success — remove crash-safety WAV (text is in the .md log)
                 self.recorder.stop_streaming()  # defensive: ensure writer closed
                 self._safe_unlink(self._dictation_wav_path)
@@ -1353,6 +1362,38 @@ class WhisperSync:
             fn(*bound_args)
         return _handler
 
+    def _copy_dictation(self, text: str):
+        """Copy a dictation's full text to clipboard."""
+        import pyperclip
+        pyperclip.copy(text)
+
+    def _clear_dictation_history(self):
+        """Clear all dictation history and refresh menu."""
+        self._dictation_history.clear()
+        self._refresh_menu()
+
+    def _build_recent_dictations_menu(self):
+        """Build the Recent Dictations submenu items."""
+        if not self._dictation_history:
+            return pystray.Menu(
+                pystray.MenuItem("No dictations yet", None, enabled=False),
+            )
+        items = []
+        for entry in reversed(self._dictation_history):
+            preview = entry["text"][:40]
+            if len(entry["text"]) > 40:
+                preview += "..."
+            label = f"[{entry['timestamp']}] {preview} ({entry['chars']} chars)"
+            text = entry["text"]
+            items.append(
+                pystray.MenuItem(label, lambda _item=None, t=text: self._copy_dictation(t))
+            )
+        items.append(pystray.Menu.SEPARATOR)
+        items.append(
+            pystray.MenuItem("Clear History", lambda: self._clear_dictation_history())
+        )
+        return pystray.Menu(*items)
+
     def _build_menu(self):
         devices = list_devices(api_filter=self._api_filter)
         dict_hk = self._fmt_hotkey(self.cfg["hotkeys"]["dictation_toggle"])
@@ -1481,9 +1522,10 @@ class WhisperSync:
             gpu_name = get_gpu_name()
         except Exception:
             gpu_name = None
-        auto_suffix = f" ({gpu_name})" if gpu_name else " (CPU -- no GPU detected)"
+        auto_suffix = f"\t{gpu_name}" if gpu_name else "\tCPU -- no GPU detected"
         device_options.append(("auto", f"Auto{auto_suffix}"))
-        device_options.append(("gpu", "GPU"))
+        gpu_suffix = f"\t{gpu_name}" if gpu_name else "\tnot available"
+        device_options.append(("gpu", f"GPU{gpu_suffix}"))
         device_options.append(("cpu", "CPU"))
         device_items = [
             pystray.MenuItem(
@@ -1518,6 +1560,8 @@ class WhisperSync:
             pystray.Menu.SEPARATOR,
             *self._github_menu_items(),
             pystray.MenuItem("Open Output Folder", lambda: self._open_output_folder()),
+            pystray.MenuItem("Recent Dictations", self._build_recent_dictations_menu()),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem("Settings", pystray.Menu(
                 pystray.MenuItem(f"Dictation Hotkey ({self.cfg['hotkeys']['dictation_toggle']})",
                                  pystray.Menu(*dictation_hk_items)),
@@ -1535,9 +1579,6 @@ class WhisperSync:
                                  pystray.Menu(*dictation_model_items)),
                 pystray.MenuItem(f"Meeting Model ({self.cfg['model']})",
                                  pystray.Menu(*meeting_model_items)),
-                pystray.Menu.SEPARATOR,
-                *self._model_menu_items(),
-                pystray.Menu.SEPARATOR,
                 pystray.MenuItem(f"Device ({device_label})",
                                  pystray.Menu(*device_items)),
                 pystray.Menu.SEPARATOR,
@@ -1545,7 +1586,6 @@ class WhisperSync:
                                  lambda: self._change_output_folder()),
                 pystray.MenuItem(f"  {self._truncate_path(self._output_dir())}",
                                  None, enabled=False),
-                pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Log Window", pystray.Menu(
                     pystray.MenuItem("Off",
                                      self._cb(self._set_log_level, "off"),
