@@ -18,5 +18,6 @@
   "middle_click": "dictation",
   "github_repo": null,
   "github_poll_interval": 60,
-  "github_notifications": true
+  "github_notifications": true,
+  "log_window": "normal"
 }
