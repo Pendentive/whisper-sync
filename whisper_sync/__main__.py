@@ -1890,14 +1890,36 @@ class WhisperSync:
         old = self.cfg.get("device", "auto")
         if old == device:
             return
-        logger.info(f"Setting compute device: {old} -> {device}")
+
+        # Check if the resolved device is actually changing
+        # e.g. Auto->GPU when auto already uses GPU = no restart needed
+        def _resolve(d):
+            if d in ("gpu", "cuda"):
+                return "cuda"
+            if d == "cpu":
+                return "cpu"
+            # auto: check if GPU available
+            try:
+                import torch
+                return "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                return "cpu"
+
+        old_resolved = _resolve(old)
+        new_resolved = _resolve(device)
+
         self.cfg["device"] = device
         self._save_and_refresh()
-        # Update worker config and restart so the new device takes effect
+
+        if old_resolved == new_resolved:
+            logger.info(f"Device setting: {old} -> {device} (same hardware, no restart)")
+            return
+
+        logger.info(f"Switching device: {old} -> {device} ({old_resolved} -> {new_resolved})")
         self.worker.update_config(dict(self.cfg))
         def _do_restart():
             self.worker.restart()
-            logger.info(f"Worker restarted on device: {device}")
+            logger.info(f"Worker restarted on {new_resolved}")
         threading.Thread(target=_do_restart, daemon=True).start()
 
     def _get_device_label(self) -> str:
