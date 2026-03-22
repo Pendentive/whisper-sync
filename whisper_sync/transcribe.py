@@ -169,12 +169,12 @@ def _load_whisper_model(model_name: str, compute_type: str, language: str):
     key = f"{model_name}:{effective_compute}:{device}"
     if key not in _models:
         import whisperx
-        logger.info(f"Loading model {model_name} ({effective_compute}) on {device}...")
+        logger.info(f"Loading [{device}] {model_name} ({effective_compute})...")
         _models[key] = whisperx.load_model(
             model_name, device=device, compute_type=effective_compute, language=language,
             download_root=str(_MODEL_CACHE),
         )
-        logger.info(f"Model {model_name} loaded on {device}")
+        logger.info(f"Loaded [{device}] {model_name}")
     return _models[key]
 
 
@@ -183,11 +183,12 @@ def _load_align_model(language: str):
     global _align_model, _align_metadata
     if _align_model is None:
         import whisperx
-        logger.info("Loading alignment model...")
+        device = _get_device()
+        logger.info(f"Loading [{device}] alignment model...")
         _align_model, _align_metadata = whisperx.load_align_model(
-            language_code=language, device=_get_device(),
+            language_code=language, device=device,
         )
-        logger.info("Alignment model loaded")
+        logger.info(f"Loaded [{device}] alignment model")
     return _align_model, _align_metadata
 
 
@@ -209,9 +210,10 @@ def _load_diarize_pipeline():
                 f"HF token not found at {hf_token_path}. {hint}"
             )
         token = hf_token_path.read_text().strip()
-        logger.info("Loading diarization model...")
+        device = _get_device()
+        logger.info(f"Loading [{device}] diarization model...")
         try:
-            _diarize_pipeline = DiarizationPipeline(token=token, device=_get_device())
+            _diarize_pipeline = DiarizationPipeline(token=token, device=device)
         except Exception as e:
             err_str = str(e).lower()
             # Detect gated model access errors (403 Forbidden, access restricted)
@@ -223,7 +225,7 @@ def _load_diarize_pipeline():
                     f"Then restart WhisperSync."
                 ) from e
             raise
-        logger.info("Diarization model loaded")
+        logger.info(f"Loaded [{device}] diarization model")
     return _diarize_pipeline
 
 
@@ -269,7 +271,7 @@ def transcribe_fast(audio_np: np.ndarray, model_override: str = None) -> str:
     audio_np = np.ascontiguousarray(audio_np.flatten(), dtype=np.float32)
 
     batch = _resolve_batch_size(audio_np)
-    logger.info(f"Transcribing fast ({model_name}, batch={batch})...")
+    logger.info(f"Transcribing fast [{_get_device()}] {model_name} (batch={batch})...")
     result = _transcribe_with_retry(model, audio_np, batch, language)
 
     return " ".join(seg.get("text", "") for seg in result.get("segments", [])).strip()
@@ -331,7 +333,7 @@ def stage_prepare(audio_path: str, model_override: str = None) -> dict:
 def stage_transcribe(ctx: dict) -> dict:
     """Stage 1: Transcribe audio → segments. The longest stage."""
     batch = _resolve_batch_size(ctx["audio"])
-    logger.info(f"Transcribing ({ctx['model_name']}, batch={batch})...")
+    logger.info(f"Transcribing [{_get_device()}] {ctx['model_name']} (batch={batch})...")
     return _transcribe_with_retry(ctx["model"], ctx["audio"], batch, ctx["language"])
 
 

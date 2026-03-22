@@ -87,6 +87,16 @@ class WhisperSync:
         self._github_poller = None
         self._github_prs = []
         self._dictation_history = []  # last 10 dictation results
+        # Session stats
+        self._stats = {
+            "dictations": 0,
+            "meetings": 0,
+            "total_dictation_chars": 0,
+            "total_dictation_time": 0.0,
+            "total_meeting_seconds": 0,
+            "total_meeting_words": 0,
+            "session_start": datetime.now(),
+        }
 
     def _update_icon(self):
         if self.tray is None:
@@ -254,6 +264,10 @@ class WhisperSync:
                 char_count = len(text) if text else 0
                 log_dictation_result(text or "", t2 - t0, delivery, char_count)
                 logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={dictation_model}")
+                # Update session stats
+                self._stats["dictations"] += 1
+                self._stats["total_dictation_chars"] += char_count
+                self._stats["total_dictation_time"] += t2 - t0
                 if text:
                     dictation_log.append(text, t2 - t0)
                     self._dictation_history.append({
@@ -1101,6 +1115,10 @@ class WhisperSync:
                 _meet_duration = result.get("duration", 0)
                 _meet_folder = f"{week_dir}/{folder_name}/"
                 log_meeting_result(meeting_name or "meeting", _meet_duration, _meet_words, _meet_speakers, _meet_folder)
+                # Update session stats
+                self._stats["meetings"] += 1
+                self._stats["total_meeting_seconds"] += int(_meet_duration)
+                self._stats["total_meeting_words"] += _meet_words
 
                 # Log speaker previews at TRANSCRIPT level (detailed tier)
                 _meet_segments = result.get("speaker_segments")
@@ -1604,6 +1622,7 @@ class WhisperSync:
                                      checked=lambda item: self.cfg.get("log_window") == "verbose",
                                      radio=True),
                 )),
+                pystray.MenuItem("Session Stats", self._build_session_stats_menu()),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Restart", lambda: self._restart()),
                 pystray.MenuItem("Quit", lambda: self.quit()),
@@ -1890,6 +1909,27 @@ class WhisperSync:
         self.cfg["output_dir"] = str(new_path)
         self._save_and_refresh()
         logger.info(f"Output folder changed to: {new_path}")
+
+    def _build_session_stats_menu(self):
+        """Build session stats submenu items."""
+        s = self._stats
+        uptime = datetime.now() - s["session_start"]
+        hours, remainder = divmod(int(uptime.total_seconds()), 3600)
+        minutes = remainder // 60
+        avg_dict_time = s["total_dictation_time"] / s["dictations"] if s["dictations"] else 0
+
+        items = [
+            pystray.MenuItem(f"Session uptime: {hours}h {minutes}m", None, enabled=False),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(f"Dictations: {s['dictations']}", None, enabled=False),
+            pystray.MenuItem(f"Avg dictation time: {avg_dict_time:.2f}s", None, enabled=False),
+            pystray.MenuItem(f"Total chars dictated: {s['total_dictation_chars']:,}", None, enabled=False),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(f"Meetings: {s['meetings']}", None, enabled=False),
+            pystray.MenuItem(f"Total meeting time: {s['total_meeting_seconds'] // 60}m", None, enabled=False),
+            pystray.MenuItem(f"Total meeting words: {s['total_meeting_words']:,}", None, enabled=False),
+        ]
+        return pystray.Menu(*items)
 
     def _set_log_level(self, tier: str):
         self.cfg["log_window"] = tier

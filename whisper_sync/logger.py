@@ -47,25 +47,38 @@ class _ColorFormatter(logging.Formatter):
         ts = self.formatTime(record, self.datefmt)
 
         # Determine message color based on content/level
+        # Red = errors, Yellow = warnings/recovery, Magenta = transcript text
+        # Green = dictation results, Blue = meeting results / completed states
+        # Cyan = system identity, White = in-progress actions
         if record.levelno >= logging.ERROR:
             msg_color = _C_RED
         elif record.levelno >= logging.WARNING:
             msg_color = _C_YELLOW
         elif record.levelno == TRANSCRIPT:
             msg_color = _C_MAGENTA
-        elif "Dictation:" in msg or "dictation" in msg.lower() or "pasted" in msg or "clipboard" in msg:
-            msg_color = _C_GREEN
         elif any(kw in msg for kw in ("Recover", "recover", "Crash-recover", "crash")):
             msg_color = _C_YELLOW
-        elif any(kw in msg for kw in ("Meeting", "meeting", "Transcrib", "Diariz", "Align",
-                                       "Speaker", "speaker", "Minutes", "minutes", "Renamed:",
-                                       "WAV saved", "Transcript saved", "Saved:", "loopback",
-                                       "mic +", "Recording")):
+        elif "Dictation:" in msg or "pasted" in msg or "clipboard" in msg:
+            msg_color = _C_GREEN
+        # Completed states -- blue
+        elif any(kw in msg for kw in ("Loaded ", "loaded", " ready", "saved",
+                                       "Saved:", "Minutes generated", "Renamed:",
+                                       "Transcript saved", "WAV saved",
+                                       "Speakers confirmed", "identified",
+                                       "Model base", "Model large",
+                                       "Worker respawned", "Worker restarted")):
             msg_color = _C_BLUE
+        # In-progress actions -- white
+        elif any(kw in msg for kw in ("Loading", "Transcribing", "Aligning",
+                                       "Diarizing", "Generating", "Recovering",
+                                       "Restarting", "Switching", "Setting")):
+            msg_color = _C_WHITE
+        # System identity -- cyan
         elif msg.startswith("===") or any(kw in msg for kw in (
-                "starting", "Worker", "Model", "Loading", "loaded", "ready",
-                "GPU:", "batch_size", "Hotkeys", "Log file", "Right-click",
-                "GitHub", "Recovering", "recovery")):
+                "starting", "Worker process spawned", "GPU:", "CPU mode",
+                "batch_size", "Hotkeys", "Log file", "Right-click",
+                "GitHub", "Speaker loopback", "mic +",
+                "Meeting started", "Meeting stopped", "Recording")):
             msg_color = _C_CYAN
         else:
             msg_color = _C_WHITE
