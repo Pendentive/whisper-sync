@@ -86,7 +86,7 @@ class WhisperSync:
         self.worker = TranscriptionWorker(self.cfg, preload_model=dictation_model)
         self._github_poller = None
         self._github_prs = []
-        self._dictation_history = []  # last 10 dictation results
+        self._dictation_history = dictation_log.load_recent(10)  # persist across restarts
         # Session stats
         self._stats = {
             "dictations": 0,
