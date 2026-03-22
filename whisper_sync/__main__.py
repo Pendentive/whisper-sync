@@ -26,7 +26,7 @@ import pystray
 from . import config
 from .capture import AudioRecorder, get_default_devices, get_host_apis, list_devices, save_wav, save_stereo_wav
 from .icons import idle_icon, recording_icon, dictation_icon, saving_icon, transcribing_icon, done_icon, queued_icon, error_icon
-from .logger import logger, get_log_path
+from .logger import logger, get_log_path, set_console_level, log_dictation_result, log_meeting_result, log_transcript_preview
 from .model_status import get_model_status, download_model, bootstrap_models
 from .paste import paste
 from .paths import get_install_root, get_default_output_dir, is_standalone
@@ -73,6 +73,7 @@ CLICK_ACTIONS = {
 class WhisperSync:
     def __init__(self):
         self.cfg = config.load()
+        set_console_level(self.cfg.get("log_window", "normal"))
         self.recorder = AudioRecorder(sample_rate=self.cfg["sample_rate"])
         self.mode = None  # None, "dictation", "meeting", "saving", "transcribing", "done", "error"
         self._meeting_transcribing = False  # True while meeting transcription runs in background
@@ -85,17 +86,30 @@ class WhisperSync:
         self.worker = TranscriptionWorker(self.cfg, preload_model=dictation_model)
         self._github_poller = None
         self._github_prs = []
+        self._dictation_history = dictation_log.load_recent(10)  # persist across restarts
+        # Session stats
+        self._stats = {
+            "dictations": 0,
+            "meetings": 0,
+            "total_dictation_chars": 0,
+            "total_dictation_time": 0.0,
+            "total_meeting_seconds": 0,
+            "total_meeting_words": 0,
+            "session_start": datetime.now(),
+        }
 
     def _update_icon(self):
         if self.tray is None:
             return
+        # For meeting mode, check speaker loopback health for outer ring
+        speaker_ok = getattr(self.recorder, "speaker_loopback_active", True) if hasattr(self, "recorder") else True
         icons = {
-            "meeting": (recording_icon(), "Recording meeting..."),
+            "meeting": (recording_icon(speaker_ok=speaker_ok), "Recording meeting..."),
             "dictation": (dictation_icon(), "Dictating..."),
             "saving": (saving_icon(), "Saving audio..."),
             "transcribing": (transcribing_icon(), "Transcribing..."),
             "done": (done_icon(), "Done!"),
-            "error": (error_icon(), "Error — check console"),
+            "error": (error_icon(), "Error -- check console"),
         }
         if self.mode:
             icon, title = icons[self.mode]
@@ -244,13 +258,28 @@ class WhisperSync:
                 timeout = 180 if self._meeting_transcribing else 60
                 text = self.worker.transcribe_fast(audio["mic"], model_override=dictation_model, timeout=timeout)
                 t1 = _time.perf_counter()
-                logger.info(f"transcribe_fast: {t1 - t0:.2f}s")
+                logger.debug(f"transcribe_fast: {t1 - t0:.2f}s")
                 if text:
                     paste(text, self.cfg["paste_method"])
                 t2 = _time.perf_counter()
-                logger.info(f"total (stop -> paste): {t2 - t0:.2f}s")
+                delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
+                char_count = len(text) if text else 0
+                log_dictation_result(text or "", t2 - t0, delivery, char_count)
+                logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={dictation_model}")
+                # Update session stats
+                self._stats["dictations"] += 1
+                self._stats["total_dictation_chars"] += char_count
+                self._stats["total_dictation_time"] += t2 - t0
                 if text:
                     dictation_log.append(text, t2 - t0)
+                    self._dictation_history.append({
+                        "text": text,
+                        "timestamp": datetime.now().strftime("%H:%M"),
+                        "chars": len(text),
+                    })
+                    if len(self._dictation_history) > 10:
+                        self._dictation_history = self._dictation_history[-10:]
+                    self._refresh_menu()
                 # Success — remove crash-safety WAV (text is in the .md log)
                 self.recorder.stop_streaming()  # defensive: ensure writer closed
                 self._safe_unlink(self._dictation_wav_path)
@@ -450,9 +479,9 @@ class WhisperSync:
             speaker = defaults["output"]
         self.recorder.start(mic_device=mic, speaker_device=speaker)
         if self.recorder.speaker_loopback_active:
-            logger.info("Meeting recording: mic + speaker loopback (stereo)")
+            logger.info("Meeting started: mic + speaker loopback")
         else:
-            logger.warning("Meeting recording: mic only (speaker loopback unavailable)")
+            logger.warning("Meeting started: mic only (speaker loopback unavailable)")
         temp = self._meeting_temp_dir()
         mic_temp = temp / "mic-temp.wav"
         self.recorder.start_streaming(mic_temp, disk_only=True)
@@ -1015,6 +1044,13 @@ class WhisperSync:
             self._update_icon()
             return
 
+        # Log meeting duration
+        if self._meeting_start_time:
+            _elapsed = (datetime.now() - self._meeting_start_time).total_seconds()
+            _mins = int(_elapsed // 60)
+            _secs = int(_elapsed % 60)
+            logger.info(f"Meeting stopped: {_mins}m {_secs:02d}s recorded")
+
         # Stay in a processing state so clicks are ignored
         self.mode = "saving"
         self._update_icon()
@@ -1073,7 +1109,23 @@ class WhisperSync:
                     if not self.worker.wait_ready(timeout=120):
                         raise RuntimeError("Worker failed to restart")
                 result = self.worker.transcribe(str(wav_path), diarize=True)
-                logger.info(f"Transcript saved: {result.get('json_path', wav_path)}")
+                logger.debug(f"Transcript saved: {result.get('json_path', wav_path)}")
+
+                # Structured meeting result logging
+                _meet_words = result.get("word_count", 0)
+                _meet_speakers = result.get("num_speakers", 0)
+                _meet_duration = result.get("duration", 0)
+                _meet_folder = f"{week_dir}/{folder_name}/"
+                log_meeting_result(meeting_name or "meeting", _meet_duration, _meet_words, _meet_speakers, _meet_folder)
+                # Update session stats
+                self._stats["meetings"] += 1
+                self._stats["total_meeting_seconds"] += int(_meet_duration)
+                self._stats["total_meeting_words"] += _meet_words
+
+                # Log speaker previews at TRANSCRIPT level (detailed tier)
+                _meet_segments = result.get("speaker_segments")
+                if _meet_segments:
+                    log_transcript_preview("", speakers=_meet_segments)
 
                 # --- Speaker identification (runs for BOTH Save and Save & Summarize) ---
                 llm_ok = self._is_claude_cli_available()
@@ -1330,6 +1382,38 @@ class WhisperSync:
             fn(*bound_args)
         return _handler
 
+    def _copy_dictation(self, text: str):
+        """Copy a dictation's full text to clipboard."""
+        import pyperclip
+        pyperclip.copy(text)
+
+    def _clear_dictation_history(self):
+        """Clear all dictation history and refresh menu."""
+        self._dictation_history.clear()
+        self._refresh_menu()
+
+    def _build_recent_dictations_menu(self):
+        """Build the Recent Dictations submenu items."""
+        if not self._dictation_history:
+            return pystray.Menu(
+                pystray.MenuItem("No dictations yet", None, enabled=False),
+            )
+        items = []
+        for entry in reversed(self._dictation_history):
+            preview = entry["text"][:40]
+            if len(entry["text"]) > 40:
+                preview += "..."
+            label = f"[{entry['timestamp']}] {preview} ({entry['chars']} chars)"
+            text = entry["text"]
+            items.append(
+                pystray.MenuItem(label, lambda _item=None, t=text: self._copy_dictation(t))
+            )
+        items.append(pystray.Menu.SEPARATOR)
+        items.append(
+            pystray.MenuItem("Clear History", lambda: self._clear_dictation_history())
+        )
+        return pystray.Menu(*items)
+
     def _build_menu(self):
         devices = list_devices(api_filter=self._api_filter)
         dict_hk = self._fmt_hotkey(self.cfg["hotkeys"]["dictation_toggle"])
@@ -1365,7 +1449,7 @@ class WhisperSync:
 
         # --- Device filter submenu ---
         apis = get_host_apis()
-        filter_label = f"Device Filter ({self._api_filter or 'All'})"
+        filter_label = f"Device Filter\t{self._api_filter or 'All'}"
         filter_items = [
             pystray.MenuItem(
                 "All",
@@ -1448,9 +1532,35 @@ class WhisperSync:
             for action, label in CLICK_ACTIONS.items()
         ]
 
+        # Device (compute) selection
+        device_label = self._get_device_label()
+        current_device = self.cfg.get("device", "auto")
+        # Build per-option labels with GPU name for auto
+        device_options = []
+        try:
+            from .transcribe import get_gpu_name
+            gpu_name = get_gpu_name()
+        except Exception:
+            gpu_name = None
+        auto_suffix = f"\t{gpu_name}" if gpu_name else "\tCPU -- no GPU detected"
+        device_options.append(("auto", f"Auto{auto_suffix}"))
+        gpu_suffix = f"\t{gpu_name}" if gpu_name else "\tnot available"
+        device_options.append(("gpu", f"GPU{gpu_suffix}"))
+        device_options.append(("cpu", "CPU"))
+        device_items = [
+            pystray.MenuItem(
+                label,
+                self._cb(self._set_compute_device, dev),
+                checked=lambda item, d=dev: self.cfg.get("device", "auto") == d,
+                radio=True,
+            )
+            for dev, label in device_options
+        ]
+
         # Left-click fires the default menu item
         left_action = self.cfg.get("left_click", "meeting")
         return pystray.Menu(
+            pystray.MenuItem("Recent Dictations", self._build_recent_dictations_menu()),
             pystray.MenuItem(f"Dictation\t{dict_hk}", lambda: self._on_left_click() if left_action == "dictation" else self.toggle_dictation(),
                              default=left_action == "dictation"),
             pystray.MenuItem(f"Meeting\t{meet_hk}", lambda: self._on_left_click() if left_action == "meeting" else self.toggle_meeting(),
@@ -1471,30 +1581,50 @@ class WhisperSync:
             pystray.Menu.SEPARATOR,
             *self._github_menu_items(),
             pystray.MenuItem("Open Output Folder", lambda: self._open_output_folder()),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem("Settings", pystray.Menu(
-                pystray.MenuItem(f"Dictation Hotkey ({self.cfg['hotkeys']['dictation_toggle']})",
+                pystray.MenuItem(f"Dictation Hotkey\t{self.cfg['hotkeys']['dictation_toggle']}",
                                  pystray.Menu(*dictation_hk_items)),
-                pystray.MenuItem(f"Meeting Hotkey ({self.cfg['hotkeys']['meeting_toggle']})",
+                pystray.MenuItem(f"Meeting Hotkey\t{self.cfg['hotkeys']['meeting_toggle']}",
                                  pystray.Menu(*meeting_hk_items)),
-                pystray.MenuItem(f"Paste Method ({self.cfg['paste_method']})",
+                pystray.MenuItem(f"Paste Method\t{self.cfg['paste_method']}",
                                  pystray.Menu(*paste_items)),
                 pystray.Menu.SEPARATOR,
-                pystray.MenuItem(f"Left Click ({CLICK_ACTIONS.get(self.cfg.get('left_click', 'meeting'), 'meeting')})",
+                pystray.MenuItem(f"Left Click\t{CLICK_ACTIONS.get(self.cfg.get('left_click', 'meeting'), 'meeting')}",
                                  pystray.Menu(*left_click_items)),
-                pystray.MenuItem(f"Middle Click ({CLICK_ACTIONS.get(self.cfg.get('middle_click', 'dictation'), 'dictation')})",
+                pystray.MenuItem(f"Middle Click\t{CLICK_ACTIONS.get(self.cfg.get('middle_click', 'dictation'), 'dictation')}",
                                  pystray.Menu(*middle_click_items)),
                 pystray.Menu.SEPARATOR,
-                pystray.MenuItem(f"Dictation Model ({self.cfg.get('dictation_model', self.cfg['model'])})",
+                pystray.MenuItem(f"Dictation Model\t{self.cfg.get('dictation_model', self.cfg['model'])}",
                                  pystray.Menu(*dictation_model_items)),
-                pystray.MenuItem(f"Meeting Model ({self.cfg['model']})",
+                pystray.MenuItem(f"Meeting Model\t{self.cfg['model']}",
                                  pystray.Menu(*meeting_model_items)),
-                pystray.Menu.SEPARATOR,
-                *self._model_menu_items(),
+                pystray.MenuItem(f"Device\t{current_device} - {gpu_name or 'CPU'}",
+                                 pystray.Menu(*device_items)),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Change Output Folder...",
                                  lambda: self._change_output_folder()),
                 pystray.MenuItem(f"  {self._truncate_path(self._output_dir())}",
                                  None, enabled=False),
+                pystray.MenuItem(f"Log Window\t{self.cfg.get('log_window', 'normal')}", pystray.Menu(
+                    pystray.MenuItem("Off",
+                                     self._cb(self._set_log_level, "off"),
+                                     checked=lambda item: self.cfg.get("log_window") == "off",
+                                     radio=True),
+                    pystray.MenuItem("Normal",
+                                     self._cb(self._set_log_level, "normal"),
+                                     checked=lambda item: self.cfg.get("log_window", "normal") == "normal",
+                                     radio=True),
+                    pystray.MenuItem("Detailed -- includes transcriptions",
+                                     self._cb(self._set_log_level, "detailed"),
+                                     checked=lambda item: self.cfg.get("log_window") == "detailed",
+                                     radio=True),
+                    pystray.MenuItem("Verbose -- full debug output",
+                                     self._cb(self._set_log_level, "verbose"),
+                                     checked=lambda item: self.cfg.get("log_window") == "verbose",
+                                     radio=True),
+                )),
+                pystray.MenuItem("Session Stats", self._build_session_stats_menu()),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Restart", lambda: self._restart()),
                 pystray.MenuItem("Quit", lambda: self.quit()),
@@ -1580,11 +1710,11 @@ class WhisperSync:
         if not prs:
             # No PRs — clicking opens GitHub pulls page
             return [pystray.MenuItem(
-                "GitHub (no open PRs)",
+                "GitHub\tno open PRs",
                 self._cb(self._open_pr_url, f"https://github.com/{repo}/pulls"),
             )]
 
-        label = f"GitHub ({len(prs)} open PR{'s' if len(prs) != 1 else ''})"
+        label = f"GitHub\t{len(prs)} open PR{'s' if len(prs) != 1 else ''}"
         pr_items = []
         for pr in prs:
             status_label = {
@@ -1782,6 +1912,33 @@ class WhisperSync:
         self._save_and_refresh()
         logger.info(f"Output folder changed to: {new_path}")
 
+    def _build_session_stats_menu(self):
+        """Build session stats submenu items."""
+        s = self._stats
+        uptime = datetime.now() - s["session_start"]
+        hours, remainder = divmod(int(uptime.total_seconds()), 3600)
+        minutes = remainder // 60
+        avg_dict_time = s["total_dictation_time"] / s["dictations"] if s["dictations"] else 0
+
+        items = [
+            pystray.MenuItem(f"Session uptime: {hours}h {minutes}m", None, enabled=False),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(f"Dictations: {s['dictations']}", None, enabled=False),
+            pystray.MenuItem(f"Avg dictation time: {avg_dict_time:.2f}s", None, enabled=False),
+            pystray.MenuItem(f"Total chars dictated: {s['total_dictation_chars']:,}", None, enabled=False),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(f"Meetings: {s['meetings']}", None, enabled=False),
+            pystray.MenuItem(f"Total meeting time: {s['total_meeting_seconds'] // 60}m", None, enabled=False),
+            pystray.MenuItem(f"Total meeting words: {s['total_meeting_words']:,}", None, enabled=False),
+        ]
+        return pystray.Menu(*items)
+
+    def _set_log_level(self, tier: str):
+        self.cfg["log_window"] = tier
+        set_console_level(tier)
+        self._save_and_refresh()
+        logger.info(f"Log window set to: {tier}")
+
     def _set_api_filter(self, api_name: str | None):
         self._api_filter = api_name
         self._refresh_menu()
@@ -1809,6 +1966,67 @@ class WhisperSync:
     def _set_click(self, key: str, action: str):
         self.cfg[key] = action
         self._save_and_refresh()
+
+    def _set_compute_device(self, device: str):
+        """Switch compute device (auto/gpu/cpu) and restart the worker."""
+        old = self.cfg.get("device", "auto")
+        if old == device:
+            return
+
+        # Check if the resolved device is actually changing
+        # e.g. Auto->GPU when auto already uses GPU = no restart needed
+        def _resolve(d):
+            if d in ("gpu", "cuda"):
+                return "cuda"
+            if d == "cpu":
+                return "cpu"
+            # auto: check if GPU available
+            try:
+                import torch
+                return "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                return "cpu"
+
+        old_resolved = _resolve(old)
+        new_resolved = _resolve(device)
+
+        self.cfg["device"] = device
+        self._save_and_refresh()
+
+        if old_resolved == new_resolved:
+            logger.info(f"Device setting: {old} -> {device} (same hardware, no restart)")
+            return
+
+        logger.info(f"Switching device: {old} -> {device} ({old_resolved} -> {new_resolved})")
+        self.worker.update_config(dict(self.cfg))
+        def _do_restart():
+            self.worker.restart()
+            logger.info(f"Worker restarted on {new_resolved}")
+        threading.Thread(target=_do_restart, daemon=True).start()
+
+    def _get_device_label(self) -> str:
+        """Return display string for current device setting."""
+        device = self.cfg.get("device", "auto")
+        if device == "auto":
+            try:
+                from .transcribe import get_gpu_name
+                gpu = get_gpu_name()
+                if gpu:
+                    return f"Auto ({gpu})"
+                return "Auto (CPU -- no GPU detected)"
+            except Exception:
+                return "Auto"
+        elif device in ("gpu", "cuda"):
+            try:
+                from .transcribe import get_gpu_name
+                gpu = get_gpu_name()
+                if gpu:
+                    return f"GPU ({gpu})"
+                return "GPU (not available)"
+            except Exception:
+                return "GPU"
+        else:
+            return "CPU"
 
     def _set_model(self, key: str, model_name: str):
         logger.info(f"Setting {key} = {model_name}")
@@ -1850,8 +2068,11 @@ class WhisperSync:
         align_label = "Word Timing: " + ("ready" if meeting_status["alignment_downloaded"] else "not downloaded")
         items.append(pystray.MenuItem(align_label, None, enabled=False))
 
-        # GPU
-        if meeting_status["cuda_available"]:
+        # GPU / Device
+        device_pref = self.cfg.get("device", "auto")
+        if device_pref == "cpu":
+            gpu_label = "Device: CPU (forced)"
+        elif meeting_status["cuda_available"]:
             gpu_label = f"GPU: {meeting_status['cuda_device']}"
         else:
             gpu_label = "GPU: None (CPU mode)"
