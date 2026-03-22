@@ -55,6 +55,8 @@ class _ColorFormatter(logging.Formatter):
             msg_color = _C_MAGENTA
         elif "Dictation:" in msg or "dictation" in msg.lower() or "pasted" in msg or "clipboard" in msg:
             msg_color = _C_GREEN
+        elif any(kw in msg for kw in ("Recover", "recover", "Crash-recover", "crash")):
+            msg_color = _C_YELLOW
         elif any(kw in msg for kw in ("Meeting", "meeting", "Transcrib", "Diariz", "Align",
                                        "Speaker", "speaker", "Minutes", "minutes", "Renamed:",
                                        "WAV saved", "Transcript saved", "Saved:", "loopback",

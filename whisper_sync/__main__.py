@@ -1540,6 +1540,7 @@ class WhisperSync:
         # Left-click fires the default menu item
         left_action = self.cfg.get("left_click", "meeting")
         return pystray.Menu(
+            pystray.MenuItem("Recent Dictations", self._build_recent_dictations_menu()),
             pystray.MenuItem(f"Dictation\t{dict_hk}", lambda: self._on_left_click() if left_action == "dictation" else self.toggle_dictation(),
                              default=left_action == "dictation"),
             pystray.MenuItem(f"Meeting\t{meet_hk}", lambda: self._on_left_click() if left_action == "meeting" else self.toggle_meeting(),
@@ -1560,7 +1561,6 @@ class WhisperSync:
             pystray.Menu.SEPARATOR,
             *self._github_menu_items(),
             pystray.MenuItem("Open Output Folder", lambda: self._open_output_folder()),
-            pystray.MenuItem("Recent Dictations", self._build_recent_dictations_menu()),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Settings", pystray.Menu(
                 pystray.MenuItem(f"Dictation Hotkey ({self.cfg['hotkeys']['dictation_toggle']})",
@@ -1579,7 +1579,7 @@ class WhisperSync:
                                  pystray.Menu(*dictation_model_items)),
                 pystray.MenuItem(f"Meeting Model ({self.cfg['model']})",
                                  pystray.Menu(*meeting_model_items)),
-                pystray.MenuItem(f"Device ({device_label})",
+                pystray.MenuItem(f"Device\t{current_device}",
                                  pystray.Menu(*device_items)),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Change Output Folder...",
