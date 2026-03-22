@@ -41,8 +41,8 @@ def _get_base_batch_size() -> int:
 
     device = _get_device()
     if device == "cpu":
-        _base_batch_size = 4
-        print("[WhisperSync] CPU mode -- base batch_size=4")
+        _base_batch_size = 16  # CPU uses system RAM, not VRAM -- no memory constraint
+        print(f"[WhisperSync] CPU mode -- base batch_size={_base_batch_size}")
         return _base_batch_size
 
     import torch
