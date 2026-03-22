@@ -223,12 +223,15 @@ class WhisperSync:
         if self.cfg.get("use_system_devices", True):
             mic = None
         self.recorder.start(mic_device=mic)
-        # Stream to disk in the daily dictation log folder so audio survives a crash
-        log_dir = self._dictation_log_dir()
-        log_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        self._dictation_wav_path = log_dir / f"{ts}.wav"
-        self.recorder.start_streaming(self._dictation_wav_path)
+        # Stream to disk for crash recovery -- skip when incognito (RAM only)
+        if self.cfg.get("incognito", False):
+            self._dictation_wav_path = None
+        else:
+            log_dir = self._dictation_log_dir()
+            log_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            self._dictation_wav_path = log_dir / f"{ts}.wav"
+            self.recorder.start_streaming(self._dictation_wav_path)
 
     def _stop_dictation(self):
         audio = self.recorder.stop()
@@ -270,7 +273,8 @@ class WhisperSync:
                 self._stats["dictations"] += 1
                 self._stats["total_dictation_chars"] += char_count
                 self._stats["total_dictation_time"] += t2 - t0
-                if text:
+                incognito = self.cfg.get("incognito", False)
+                if text and not incognito:
                     dictation_log.append(text, t2 - t0)
                     self._dictation_history.append({
                         "text": text,
@@ -280,9 +284,10 @@ class WhisperSync:
                     if len(self._dictation_history) > 10:
                         self._dictation_history = self._dictation_history[-10:]
                     self._refresh_menu()
-                # Success — remove crash-safety WAV (text is in the .md log)
+                # Success -- remove crash-safety WAV (text is in the .md log)
                 self.recorder.stop_streaming()  # defensive: ensure writer closed
-                self._safe_unlink(self._dictation_wav_path)
+                if self._dictation_wav_path:
+                    self._safe_unlink(self._dictation_wav_path)
                 self.mode = "done"
                 self._update_icon()
             except WorkerCrashedError:
@@ -1557,9 +1562,24 @@ class WhisperSync:
             for dev, label in device_options
         ]
 
+        # --- Incognito mode ---
+        incognito_on = self.cfg.get("incognito", False)
+        incognito_items = [
+            pystray.MenuItem(
+                "Incognito Mode",
+                lambda: self._toggle_incognito(),
+                checked=lambda item: self.cfg.get("incognito", False),
+            ),
+        ]
+        if incognito_on:
+            incognito_items.append(
+                pystray.MenuItem("  RAM only -- no data stored on disk", None, enabled=False),
+            )
+
         # Left-click fires the default menu item
         left_action = self.cfg.get("left_click", "meeting")
         return pystray.Menu(
+            *incognito_items,
             pystray.MenuItem("Recent Dictations", self._build_recent_dictations_menu()),
             pystray.MenuItem(f"Dictation\t{dict_hk}", lambda: self._on_left_click() if left_action == "dictation" else self.toggle_dictation(),
                              default=left_action == "dictation"),
@@ -1632,6 +1652,12 @@ class WhisperSync:
         )
 
     # --- Actions ---
+
+    def _toggle_incognito(self):
+        self.cfg["incognito"] = not self.cfg.get("incognito", False)
+        state = "on" if self.cfg["incognito"] else "off"
+        logger.info(f"Incognito mode: {state}")
+        self._save_and_refresh()
 
     def _refresh_menu(self):
         if self.tray:
