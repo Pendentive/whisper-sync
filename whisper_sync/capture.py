@@ -162,9 +162,11 @@ class AudioRecorder:
                 frames_per_buffer=1024,
             )
             self._speaker_pa_stream.start_stream()
-            print(f"[WhisperSync] Speaker loopback active: {loopback_device['name']} @ {native_rate} Hz")
+            from .logger import logger
+            logger.info(f"Speaker loopback: {loopback_device['name']} @ {native_rate} Hz")
         except Exception as e:
-            print(f"[WhisperSync] WARN: speaker loopback failed: {e}")
+            from .logger import logger
+            logger.warning(f"Speaker loopback failed: {e}")
             self._close_pyaudio()
 
     def _close_pyaudio(self):

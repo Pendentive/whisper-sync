@@ -53,11 +53,17 @@ class _ColorFormatter(logging.Formatter):
             msg_color = _C_YELLOW
         elif record.levelno == TRANSCRIPT:
             msg_color = _C_MAGENTA
-        elif "Dictation:" in msg or "dictation" in msg.lower():
+        elif "Dictation:" in msg or "dictation" in msg.lower() or "pasted" in msg or "clipboard" in msg:
             msg_color = _C_GREEN
-        elif "Meeting" in msg or "meeting" in msg.lower():
+        elif any(kw in msg for kw in ("Meeting", "meeting", "Transcrib", "Diariz", "Align",
+                                       "Speaker", "speaker", "Minutes", "minutes", "Renamed:",
+                                       "WAV saved", "Transcript saved", "Saved:", "loopback",
+                                       "mic +", "Recording")):
             msg_color = _C_BLUE
-        elif msg.startswith("===") or "starting" in msg.lower():
+        elif msg.startswith("===") or any(kw in msg for kw in (
+                "starting", "Worker", "Model", "Loading", "loaded", "ready",
+                "GPU:", "batch_size", "Hotkeys", "Log file", "Right-click",
+                "GitHub", "Recovering", "recovery")):
             msg_color = _C_CYAN
         else:
             msg_color = _C_WHITE
