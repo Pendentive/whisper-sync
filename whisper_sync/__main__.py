@@ -1471,6 +1471,30 @@ class WhisperSync:
             for action, label in CLICK_ACTIONS.items()
         ]
 
+        # Device (compute) selection
+        device_label = self._get_device_label()
+        current_device = self.cfg.get("device", "auto")
+        # Build per-option labels with GPU name for auto
+        device_options = []
+        try:
+            from .transcribe import get_gpu_name
+            gpu_name = get_gpu_name()
+        except Exception:
+            gpu_name = None
+        auto_suffix = f" ({gpu_name})" if gpu_name else " (CPU -- no GPU detected)"
+        device_options.append(("auto", f"Auto{auto_suffix}"))
+        device_options.append(("gpu", "GPU"))
+        device_options.append(("cpu", "CPU"))
+        device_items = [
+            pystray.MenuItem(
+                label,
+                self._cb(self._set_compute_device, dev),
+                checked=lambda item, d=dev: self.cfg.get("device", "auto") == d,
+                radio=True,
+            )
+            for dev, label in device_options
+        ]
+
         # Left-click fires the default menu item
         left_action = self.cfg.get("left_click", "meeting")
         return pystray.Menu(
@@ -1513,6 +1537,9 @@ class WhisperSync:
                                  pystray.Menu(*meeting_model_items)),
                 pystray.Menu.SEPARATOR,
                 *self._model_menu_items(),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem(f"Device ({device_label})",
+                                 pystray.Menu(*device_items)),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Change Output Folder...",
                                  lambda: self._change_output_folder()),
@@ -1858,6 +1885,45 @@ class WhisperSync:
         self.cfg[key] = action
         self._save_and_refresh()
 
+    def _set_compute_device(self, device: str):
+        """Switch compute device (auto/gpu/cpu) and restart the worker."""
+        old = self.cfg.get("device", "auto")
+        if old == device:
+            return
+        logger.info(f"Setting compute device: {old} -> {device}")
+        self.cfg["device"] = device
+        self._save_and_refresh()
+        # Update worker config and restart so the new device takes effect
+        self.worker.update_config(dict(self.cfg))
+        def _do_restart():
+            self.worker.restart()
+            logger.info(f"Worker restarted on device: {device}")
+        threading.Thread(target=_do_restart, daemon=True).start()
+
+    def _get_device_label(self) -> str:
+        """Return display string for current device setting."""
+        device = self.cfg.get("device", "auto")
+        if device == "auto":
+            try:
+                from .transcribe import get_gpu_name
+                gpu = get_gpu_name()
+                if gpu:
+                    return f"Auto ({gpu})"
+                return "Auto (CPU -- no GPU detected)"
+            except Exception:
+                return "Auto"
+        elif device in ("gpu", "cuda"):
+            try:
+                from .transcribe import get_gpu_name
+                gpu = get_gpu_name()
+                if gpu:
+                    return f"GPU ({gpu})"
+                return "GPU (not available)"
+            except Exception:
+                return "GPU"
+        else:
+            return "CPU"
+
     def _set_model(self, key: str, model_name: str):
         logger.info(f"Setting {key} = {model_name}")
         if self.cfg.get(key) == model_name:
@@ -1898,8 +1964,11 @@ class WhisperSync:
         align_label = "Word Timing: " + ("ready" if meeting_status["alignment_downloaded"] else "not downloaded")
         items.append(pystray.MenuItem(align_label, None, enabled=False))
 
-        # GPU
-        if meeting_status["cuda_available"]:
+        # GPU / Device
+        device_pref = self.cfg.get("device", "auto")
+        if device_pref == "cpu":
+            gpu_label = "Device: CPU (forced)"
+        elif meeting_status["cuda_available"]:
             gpu_label = f"GPU: {meeting_status['cuda_device']}"
         else:
             gpu_label = "GPU: None (CPU mode)"
