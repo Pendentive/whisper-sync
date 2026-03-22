@@ -13,7 +13,7 @@ _VALID_KEYS = {
     "compute_type", "output_dir", "mic_device", "speaker_device",
     "sample_rate", "use_system_devices", "left_click", "middle_click",
     "suppress_llm_warning", "github_repo", "github_poll_interval",
-    "github_notifications",
+    "github_notifications", "log_window",
 }
 
 
