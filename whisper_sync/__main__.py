@@ -1429,7 +1429,7 @@ class WhisperSync:
 
         # --- Device filter submenu ---
         apis = get_host_apis()
-        filter_label = f"Device Filter ({self._api_filter or 'All'})"
+        filter_label = f"Device Filter\t{self._api_filter or 'All'}"
         filter_items = [
             pystray.MenuItem(
                 "All",
@@ -1563,30 +1563,30 @@ class WhisperSync:
             pystray.MenuItem("Open Output Folder", lambda: self._open_output_folder()),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Settings", pystray.Menu(
-                pystray.MenuItem(f"Dictation Hotkey ({self.cfg['hotkeys']['dictation_toggle']})",
+                pystray.MenuItem(f"Dictation Hotkey\t{self.cfg['hotkeys']['dictation_toggle']}",
                                  pystray.Menu(*dictation_hk_items)),
-                pystray.MenuItem(f"Meeting Hotkey ({self.cfg['hotkeys']['meeting_toggle']})",
+                pystray.MenuItem(f"Meeting Hotkey\t{self.cfg['hotkeys']['meeting_toggle']}",
                                  pystray.Menu(*meeting_hk_items)),
-                pystray.MenuItem(f"Paste Method ({self.cfg['paste_method']})",
+                pystray.MenuItem(f"Paste Method\t{self.cfg['paste_method']}",
                                  pystray.Menu(*paste_items)),
                 pystray.Menu.SEPARATOR,
-                pystray.MenuItem(f"Left Click ({CLICK_ACTIONS.get(self.cfg.get('left_click', 'meeting'), 'meeting')})",
+                pystray.MenuItem(f"Left Click\t{CLICK_ACTIONS.get(self.cfg.get('left_click', 'meeting'), 'meeting')}",
                                  pystray.Menu(*left_click_items)),
-                pystray.MenuItem(f"Middle Click ({CLICK_ACTIONS.get(self.cfg.get('middle_click', 'dictation'), 'dictation')})",
+                pystray.MenuItem(f"Middle Click\t{CLICK_ACTIONS.get(self.cfg.get('middle_click', 'dictation'), 'dictation')}",
                                  pystray.Menu(*middle_click_items)),
                 pystray.Menu.SEPARATOR,
-                pystray.MenuItem(f"Dictation Model ({self.cfg.get('dictation_model', self.cfg['model'])})",
+                pystray.MenuItem(f"Dictation Model\t{self.cfg.get('dictation_model', self.cfg['model'])}",
                                  pystray.Menu(*dictation_model_items)),
-                pystray.MenuItem(f"Meeting Model ({self.cfg['model']})",
+                pystray.MenuItem(f"Meeting Model\t{self.cfg['model']}",
                                  pystray.Menu(*meeting_model_items)),
-                pystray.MenuItem(f"Device\t{current_device}",
+                pystray.MenuItem(f"Device\t{current_device} - {gpu_name or 'CPU'}",
                                  pystray.Menu(*device_items)),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Change Output Folder...",
                                  lambda: self._change_output_folder()),
                 pystray.MenuItem(f"  {self._truncate_path(self._output_dir())}",
                                  None, enabled=False),
-                pystray.MenuItem("Log Window", pystray.Menu(
+                pystray.MenuItem(f"Log Window\t{self.cfg.get('log_window', 'normal')}", pystray.Menu(
                     pystray.MenuItem("Off",
                                      self._cb(self._set_log_level, "off"),
                                      checked=lambda item: self.cfg.get("log_window") == "off",
@@ -1689,11 +1689,11 @@ class WhisperSync:
         if not prs:
             # No PRs — clicking opens GitHub pulls page
             return [pystray.MenuItem(
-                "GitHub (no open PRs)",
+                "GitHub\tno open PRs",
                 self._cb(self._open_pr_url, f"https://github.com/{repo}/pulls"),
             )]
 
-        label = f"GitHub ({len(prs)} open PR{'s' if len(prs) != 1 else ''})"
+        label = f"GitHub\t{len(prs)} open PR{'s' if len(prs) != 1 else ''}"
         pr_items = []
         for pr in prs:
             status_label = {
