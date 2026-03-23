@@ -31,7 +31,7 @@ def _get_base_batch_size() -> int:
     """Determine base batch_size from available GPU VRAM.
 
     Tiers:
-        CPU:    4   (slower, conservative)
+        CPU:    16  (system RAM, not constrained)
         ≤8GB:   4   (~3GB model + limited headroom)
         ≤12GB:  8   (~3GB model + moderate headroom)
         >12GB:  16  (plenty of room)

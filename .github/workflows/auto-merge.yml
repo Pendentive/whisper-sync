@@ -90,8 +90,11 @@ jobs:
               repo: context.repo.repo,
               pull_number: prNumber
             });
+            // Only count comments on the latest commit -- old comments from
+            // previous pushes should not permanently block auto-merge.
             const suggestions = reviewComments.filter(
               c => c.user.login === 'copilot-pull-request-reviewer[bot]'
+                && c.commit_id === prData.head.sha
             );
 
             if (suggestions.length > 0) {

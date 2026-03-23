@@ -267,8 +267,9 @@ class WhisperSync:
                 t2 = _time.perf_counter()
                 delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
                 char_count = len(text) if text else 0
-                log_dictation_result(text or "", t2 - t0, delivery, char_count)
-                logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={dictation_model}")
+                if not self.cfg.get("incognito"):
+                    log_dictation_result(text or "", t2 - t0, delivery, char_count)
+                    logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={dictation_model}")
                 # Update session stats
                 self._stats["dictations"] += 1
                 self._stats["total_dictation_chars"] += char_count
@@ -1539,7 +1540,6 @@ class WhisperSync:
         ]
 
         # Device (compute) selection
-        device_label = self._get_device_label()
         current_device = self.cfg.get("device", "auto")
         # Build per-option labels with GPU name for auto
         device_options = []
