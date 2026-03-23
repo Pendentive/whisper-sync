@@ -73,7 +73,7 @@ def bootstrap_models(cfg: dict, on_large_model=None):
     if auto:
         logger.info(f"Auto-downloading base models: {', '.join(sorted(auto))}...")
         for name in sorted(auto):
-            _download_whisper_model(name)
+            _download_whisper_model(name, silent=True)
 
     # Prompt for large models
     for name in sorted(prompt):
@@ -123,8 +123,19 @@ def _bootstrap_alignment_model():
         logger.warning("Word timing will download on first use instead")
 
 
-def _download_whisper_model(model_name: str):
-    """Download a whisper model by loading it once via whisperx."""
+def _download_whisper_model(model_name: str, silent: bool = False):
+    """Download a whisper model by loading it once via whisperx.
+
+    Args:
+        model_name: Model identifier (e.g. "large-v3", "tiny").
+        silent: If True, skip toast notifications (used for auto-download of small models).
+    """
+    from .notifications import notify
+
+    size = _estimate_download_size(model_name)
+    if not silent:
+        notify("Downloading model", f"{model_name} ({size}), please wait...")
+
     try:
         import whisperx
         logger.info(f"Downloading {model_name}...")
@@ -133,8 +144,12 @@ def _download_whisper_model(model_name: str):
             download_root=str(_HF_CACHE),
         )
         logger.info(f"{model_name} cached successfully")
+        if not silent:
+            notify("Model downloaded", f"{model_name} is ready to use")
     except Exception as e:
         logger.error(f"Failed to download {model_name}: {e}")
+        if not silent:
+            notify("Download failed", f"{model_name}: {e}")
 
 
 def get_model_status(model_name: str) -> dict:
@@ -189,9 +204,14 @@ def download_model(model_name: str) -> bool:
 
     Returns True on success.
     """
+    from .notifications import notify
+
     import tempfile
     import wave
     import numpy as np
+
+    size = _estimate_download_size(model_name)
+    notify("Downloading model", f"{model_name} ({size}), please wait...")
 
     # Create a 1-second silent WAV
     tmp_wav = Path(tempfile.mktemp(suffix=".wav"))
@@ -214,8 +234,14 @@ def download_model(model_name: str) -> bool:
              "--output_dir", str(tmp_out)],
             capture_output=True, text=True, timeout=600,
         )
-        return proc.returncode == 0
+        success = proc.returncode == 0
+        if success:
+            notify("Model downloaded", f"{model_name} is ready to use")
+        else:
+            notify("Download failed", f"{model_name} download did not complete")
+        return success
     except Exception:
+        notify("Download failed", f"{model_name} download encountered an error")
         return False
     finally:
         tmp_wav.unlink(missing_ok=True)
