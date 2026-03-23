@@ -39,6 +39,7 @@ from . import dictation_log
 from .streaming_wav import fix_orphan
 from .crash_diagnostics import install_excepthook, check_previous_crash
 from .flatten import flatten as flatten_transcript
+from .notifications import notify
 from .rebuild_index import rebuild_root_index
 from .speakers import identify_speakers, write_speaker_map, update_config, get_config_path
 
@@ -1731,15 +1732,37 @@ class WhisperSync:
             if not self.cfg.get("github_notifications", True):
                 return
             # Notify on actionable changes
+            repo = self.cfg.get("github_repo", "")
             old_map = {pr.number: pr.review_state for pr in old_prs}
             for pr in new_prs:
                 old_state = old_map.get(pr.number)
                 if old_state == pr.review_state:
                     continue
-                if pr.review_state == "suggestions":
-                    self._notify(f"PR #{pr.number} needs attention: {pr.suggestion_count} suggestion(s)")
+                if pr.review_state == "clean":
+                    self._notify(
+                        f"PR #{pr.number} ready to merge",
+                        pr.title,
+                        buttons=[
+                            {"label": "Merge", "action": lambda _pr=pr: self._merge_pr(repo, _pr.number)},
+                            {"label": "View on GitHub", "action": lambda _pr=pr: self._open_pr_url(_pr.url)},
+                        ],
+                    )
+                elif pr.review_state == "suggestions":
+                    self._notify(
+                        f"PR #{pr.number}: {pr.suggestion_count} suggestion(s)",
+                        pr.title,
+                        buttons=[
+                            {"label": "View on GitHub", "action": lambda _pr=pr: self._open_pr_url(_pr.url)},
+                        ],
+                    )
                 elif pr.review_state == "human-review":
-                    self._notify(f"PR #{pr.number} flagged for human review")
+                    self._notify(
+                        f"PR #{pr.number} flagged for human review",
+                        pr.title,
+                        buttons=[
+                            {"label": "View on GitHub", "action": lambda _pr=pr: self._open_pr_url(_pr.url)},
+                        ],
+                    )
 
         def _on_initial_poll(old_prs, new_prs):
             """First poll — update menu regardless of change detection."""
@@ -1761,16 +1784,9 @@ class WhisperSync:
                         break
             threading.Thread(target=_wait_first_poll, daemon=True).start()
 
-    def _notify(self, message: str):
-        """Show a Windows notification. Uses msg command (works on Win 10/11)."""
-        import subprocess as _sp
-        try:
-            _sp.Popen(
-                ["msg", "*", f"WhisperSync: {message}"],
-                creationflags=0x08000000,  # CREATE_NO_WINDOW
-            )
-        except Exception:
-            logger.debug(f"Notification failed: {message}")
+    def _notify(self, title: str, body: str = "", *, buttons=None, on_click=None):
+        """Show a Windows toast notification via windows-toasts."""
+        notify(title, body, buttons=buttons, on_click=on_click)
 
     def _github_menu_items(self) -> list:
         """Build menu items for GitHub PR status."""
@@ -1830,13 +1846,13 @@ class WhisperSync:
             )
             if result.returncode == 0:
                 logger.info(f"PR #{pr_number} merged successfully")
-                self._notify(f"PR #{pr_number} merged to main")
+                self._notify("PR merged", f"PR #{pr_number} merged to main")
                 # Refresh after merge
                 if self._github_poller:
                     self._github_poller.poll_now()
             else:
                 logger.warning(f"PR #{pr_number} merge failed: {result.stderr.strip()}")
-                self._notify(f"PR #{pr_number} merge failed")
+                self._notify("Merge failed", f"PR #{pr_number} merge failed -- check logs")
         except Exception as e:
             logger.warning(f"PR merge error: {e}")
 
@@ -2308,6 +2324,13 @@ class WhisperSync:
         if self.cfg.get("incognito"):
             logger.info("Incognito mode active -- dictation data not stored on disk")
         logger.info("Right-click tray icon for menu.")
+
+        # Startup toast notification
+        compute = self.cfg.get("compute_type", "float16")
+        notify(
+            "WhisperSync running",
+            f"Model: {dictation_model} | Compute: {compute}",
+        )
 
         # Start transcription worker subprocess (loads models in isolation)
         self.worker.start()

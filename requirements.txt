@@ -8,3 +8,4 @@ pystray
 Pillow
 keyboard
 pyperclip
+windows-toasts
