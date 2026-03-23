@@ -59,9 +59,9 @@ Meeting (staged pipeline):
 Main Process (__main__.py)                Worker Process (worker.py)
 +--------------------------+              +----------------------------+
 | Tray icon + hotkeys      |              | whisperX + CUDA            |
-| Audio recording          |  request_q > | Model loading              |
+| Audio recording          |  request_q ->| Model loading              |
 | Mode state machine       |              | Transcription              |
-| Speaker identification   | < response_q | Alignment + diarization    |
+| Speaker identification   |<- response_q | Alignment + diarization    |
 | Minutes generation       |              |                            |
 | GitHub PR polling        |              |                            |
 | Toast notifications      |              |                            |
@@ -134,7 +134,7 @@ Model cache is always `whisper_sync/models/` regardless of mode.
 - **Icons**: Generated programmatically in `icons.py`. No external image assets.
 - **Warning suppression**: Scoped filters only. Must specify `message=`, `category=`, and/or `module=`. Never use blanket `warnings.filterwarnings("ignore")`.
 - **Commit messages**: `fix(whisper-sync):`, `feat(whisper-sync):`, `ci:`, `docs:` prefixes.
-- **Text style**: No em dashes or double dashes anywhere in code, comments, or docs. Use single hyphens, commas, or periods instead.
+- **Text style**: Do not use em dash characters. Use single hyphens for asides, standard CLI flags (like --force) are fine.
 
 ## Guardrails
 
@@ -149,7 +149,7 @@ Model cache is always `whisper_sync/models/` regardless of mode.
 - Commit `config.json`, `logs/`, `models/`, `whisper-env/`, or `__pycache__/`
 - Write data files to the old `scripts/` location. That path no longer exists in ic-product-mgmt
 - Store user data outside of `.whispersync/`. All persistent data belongs in `output_dir/.whispersync/`
-- Use em dashes or double dashes in any file. Use single hyphens, commas, or periods
+- Use em dash characters in any file (single hyphens and CLI flags like --force are fine)
 
 ### Always
 - Test both dictation AND meeting modes after any transcribe.py or worker.py change
