@@ -376,6 +376,19 @@ class WhisperSync:
                 pyperclip.copy(text)
                 dictation_log.append(text, 0)
                 logger.info(f"Crash-recovered dictation copied to clipboard: {text[:80]}...")
+                # #38: Toast with recovered text info and Copy button
+                try:
+                    _recovered_text = text
+                    def _copy_recovered(t=_recovered_text):
+                        import pyperclip as _pc
+                        _pc.copy(t)
+                    notify(
+                        "Dictation recovered",
+                        f"{len(text)} chars recovered from crash",
+                        buttons=[{"label": "Copy to Clipboard", "action": _copy_recovered}],
+                    )
+                except Exception:
+                    logger.debug("Recovery toast failed", exc_info=True)
             else:
                 logger.info("Crash-recovered dictation produced no text")
             # Clean up the WAV now that text is on clipboard + in the .md log
@@ -1181,6 +1194,9 @@ class WhisperSync:
                     log_transcript_preview("", speakers=_meet_segments)
 
                 # --- Speaker identification (runs for BOTH Save and Save & Summarize) ---
+                # #37 (deferred): Toast-based speaker ID was explored but the tkinter
+                # dialog provides autocomplete, confidence colors, and multi-speaker
+                # editing that ToastInputTextBox cannot replicate. Keeping tkinter flow.
                 llm_ok = self._is_claude_cli_available()
                 if llm_ok:
                     try:
@@ -1265,6 +1281,22 @@ class WhisperSync:
                     rebuild_root_index(self._output_dir())
                 except Exception as e:
                     logger.warning(f"Index rebuild failed (non-fatal): {e}")
+
+                # #36: Toast with meeting stats and Open Folder button
+                try:
+                    _toast_body = f"{_meet_words} words, {_meet_speakers} speakers"
+                    _folder_path = str(meeting_dir)
+                    def _open_meeting_folder(p=_folder_path):
+                        import subprocess as _sp
+                        _sp.Popen(["explorer", p])
+                    notify(
+                        "Meeting transcribed",
+                        _toast_body,
+                        buttons=[{"label": "Open Folder", "action": _open_meeting_folder}],
+                    )
+                except Exception as e:
+                    logger.debug(f"Meeting toast failed (non-fatal): {e}")
+
                 self._meeting_transcribing = False
                 # Flash "done" only if user is idle (not mid-dictation)
                 if self.mode is None:
@@ -1705,6 +1737,20 @@ class WhisperSync:
         state = "on" if self.cfg["incognito"] else "off"
         logger.info(f"Incognito mode: {state}")
         self._save_and_refresh()
+        # #40: Toast warning when incognito toggles
+        try:
+            if self.cfg["incognito"]:
+                notify(
+                    "Incognito Mode Active",
+                    "No data saved to disk. Dictation recovery is OFF.",
+                )
+            else:
+                notify(
+                    "Incognito Mode Off",
+                    "Dictation data will be saved to disk",
+                )
+        except Exception:
+            pass  # toast is best-effort
 
     def _refresh_menu(self):
         if self.tray:
@@ -2092,9 +2138,21 @@ class WhisperSync:
 
         logger.info(f"Switching device: {old} -> {device} ({old_resolved} -> {new_resolved})")
         self.worker.update_config(dict(self.cfg))
+        _previous_device = old
         def _do_restart():
             self.worker.restart()
             logger.info(f"Worker restarted on {new_resolved}")
+            # #39: Toast confirming device switch with Switch Back button
+            try:
+                def _switch_back(prev=_previous_device):
+                    self._set_compute_device(prev)
+                notify(
+                    "Device switched",
+                    f"Now using {new_resolved}",
+                    buttons=[{"label": "Switch Back", "action": _switch_back}],
+                )
+            except Exception:
+                pass  # toast is best-effort
         threading.Thread(target=_do_restart, daemon=True).start()
 
     def _get_device_label(self) -> str:
