@@ -1,8 +1,19 @@
 name: Auto-Merge on Copilot Approval
 
 on:
+  # Fires when Copilot first reviews
   pull_request_review:
     types: [submitted]
+  # Fires when new commits are pushed (after fixing suggestions)
+  pull_request:
+    types: [synchronize]
+  # Fires when Copilot's check suite completes (reliable for Copilot reviews)
+  check_suite:
+    types: [completed]
+  # Fires after PR Review workflow completes (backup trigger)
+  workflow_run:
+    workflows: ["PR Review"]
+    types: [completed]
 
 permissions:
   contents: write
@@ -13,74 +24,101 @@ jobs:
   auto-merge:
     runs-on: ubuntu-latest
     if: >
-      github.event.review.user.login == 'copilot-pull-request-reviewer[bot]'
-      && (github.event.review.state == 'APPROVED' || github.event.review.state == 'COMMENTED')
+      github.event_name == 'pull_request'
+      || github.event_name == 'check_suite'
+      || github.event_name == 'workflow_run'
+      || (github.event_name == 'pull_request_review'
+          && (github.event.review.state == 'APPROVED' || github.event.review.state == 'COMMENTED'))
     steps:
-      - name: Check complexity and merge
+      - name: Check and merge if ready
         uses: actions/github-script@v7
         with:
           script: |
-            const pr = context.payload.pull_request;
-            const prNumber = pr.number;
+            // Determine PR number from different event types
+            let prNumber;
+            if (context.payload.pull_request) {
+              prNumber = context.payload.pull_request.number;
+            } else if (context.payload.check_suite) {
+              const prs = context.payload.check_suite.pull_requests;
+              if (!prs || prs.length === 0) return;
+              prNumber = prs[0].number;
+            } else if (context.payload.workflow_run) {
+              const prs = context.payload.workflow_run.pull_requests;
+              if (!prs || prs.length === 0) return;
+              prNumber = prs[0].number;
+            } else if (context.payload.review) {
+              prNumber = context.payload.pull_request.number;
+            } else {
+              return;
+            }
 
-            // Get labels
             const { data: prData } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: prNumber
             });
 
-            // Check if we already commented on this PR (avoid duplicates on re-review)
-            const { data: existingComments } = await github.rest.issues.listComments({
+            if (prData.state !== 'open' || prData.merged) return;
+
+            // Check if we already auto-merged (dedup)
+            const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber
             });
-            const alreadyCommented = existingComments.some(
-              c => c.user.login === 'github-actions[bot]' &&
-                   (c.body.includes('Auto-merge') || c.body.includes('Auto-merged'))
-            );
-            if (alreadyCommented) {
-              console.log(`PR #${prNumber}: auto-merge already commented, skipping duplicate`);
+            if (comments.some(c => c.user.login === 'github-actions[bot]' && c.body.includes('Auto-merged'))) {
               return;
             }
 
-            const labels = prData.labels.map(l => l.name);
+            // Check if Copilot has reviewed
+            const { data: reviews } = await github.rest.pulls.listReviews({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+            const copilotReviewed = reviews.some(
+              r => r.user.login === 'copilot-pull-request-reviewer[bot]'
+            );
+            if (!copilotReviewed) {
+              console.log(`PR #${prNumber}: no Copilot review yet`);
+              return;
+            }
 
-            // Check if Copilot left inline suggestions (means it found issues)
+            // Check for unresolved inline suggestions
             const { data: reviewComments } = await github.rest.pulls.listReviewComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: prNumber
             });
-
-            const copilotSuggestions = reviewComments.filter(
+            const suggestions = reviewComments.filter(
               c => c.user.login === 'copilot-pull-request-reviewer[bot]'
             );
 
-            if (copilotSuggestions.length > 0) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber,
-                body: `## Auto-merge skipped\n\nCopilot found ${copilotSuggestions.length} suggestion(s) that should be addressed before merging.\n\ncc @pendentive`
-              });
+            if (suggestions.length > 0) {
+              // Only comment once
+              if (!comments.some(c => c.user.login === 'github-actions[bot]' && c.body.includes('Auto-merge skipped'))) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  body: `## Auto-merge skipped\n\nCopilot found ${suggestions.length} suggestion(s). Push fixes and auto-merge will re-check.`
+                });
+              }
               return;
             }
 
-            // Get file details for the decision log
+            // All clear — merge
+            const labels = prData.labels.map(l => l.name);
+            const complexity = labels.find(l => l.startsWith('complexity:')) || 'unknown';
             const { data: files } = await github.rest.pulls.listFiles({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: prNumber,
               per_page: 100
             });
-
             const changedLines = files.reduce((sum, f) => sum + f.additions + f.deletions, 0);
             const fileList = files.map(f => f.filename).join(', ');
-            const complexity = labels.find(l => l.startsWith('complexity:')) || 'unknown';
 
-            // Merge the PR
             try {
               await github.rest.pulls.merge({
                 owner: context.repo.owner,
@@ -88,28 +126,13 @@ jobs:
                 pull_number: prNumber,
                 merge_method: 'squash'
               });
-
-              // Post confirmation
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: prNumber,
-                body: [
-                  '## Auto-merged',
-                  '',
-                  `Copilot approved (${complexity}). Merged automatically.`,
-                  '',
-                  `**${changedLines} lines** across: ${fileList}`
-                ].join('\n')
+                body: `## Auto-merged\n\nCopilot reviewed (${complexity}), no suggestions. Merged automatically.\n\n**${changedLines} lines** across: ${fileList}`
               });
-
-              console.log(`PR #${prNumber} auto-merged: ${complexity}, ${changedLines} lines, files: ${fileList}`);
-
+              console.log(`PR #${prNumber} auto-merged`);
             } catch (err) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber,
-                body: `## Auto-merge failed\n\n\`${err.message}\`\n\nPlease merge manually.`
-              });
+              console.log(`PR #${prNumber} merge failed: ${err.message}`);
             }
