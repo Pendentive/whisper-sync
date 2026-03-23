@@ -1836,7 +1836,12 @@ class WhisperSync:
             webbrowser.open(url)
 
     def _merge_pr(self, repo: str, pr_number: int):
-        """Merge a PR via gh CLI."""
+        """Merge a PR via gh CLI.
+
+        NOTE: This method may be called from a toast notification thread
+        (via notifications.py button callbacks). The threading is handled
+        in notifications.py -- this method itself is blocking.
+        """
         import subprocess as _sp
         try:
             result = _sp.run(

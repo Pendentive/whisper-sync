@@ -5,6 +5,7 @@ Handles AppUserModelID registration automatically.
 """
 
 import logging
+import threading
 
 _logger = logging.getLogger("whisper_sync.notifications")
 
@@ -53,13 +54,17 @@ def notify(title: str, body: str, *, buttons=None, on_click=None):
                 action = btn.get("action")
                 toast_btn = ToastButton(label)
                 if action:
-                    # Capture action in closure for the callback
+                    # Capture action in closure for the callback.
+                    # Run in a daemon thread so blocking callbacks (e.g. subprocess
+                    # calls like PR merge) don't block the notification system.
                     def _make_handler(fn):
                         def _handler(event: ToastActivatedEventArgs):
-                            try:
-                                fn()
-                            except Exception as exc:
-                                _logger.debug(f"Toast button callback error: {exc}")
+                            def _run():
+                                try:
+                                    fn()
+                                except Exception as exc:
+                                    _logger.exception(f"Toast button callback error: {exc}")
+                            threading.Thread(target=_run, daemon=True).start()
                         return _handler
 
                     toast_btn.on_activated = _make_handler(action)
@@ -67,10 +72,12 @@ def notify(title: str, body: str, *, buttons=None, on_click=None):
 
         if on_click:
             def _body_handler(event: ToastActivatedEventArgs):
-                try:
-                    on_click()
-                except Exception as exc:
-                    _logger.debug(f"Toast click callback error: {exc}")
+                def _run():
+                    try:
+                        on_click()
+                    except Exception as exc:
+                        _logger.exception(f"Toast click callback error: {exc}")
+                threading.Thread(target=_run, daemon=True).start()
 
             toast.on_activated = _body_handler
 
