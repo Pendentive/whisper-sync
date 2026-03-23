@@ -255,8 +255,35 @@ while (-not $outputDir) {
         else { Warn "That path exists but is not a folder" }
     } catch { Warn "Can't use that path: $_"; Info "Try a different folder" }
 }
-$configJson = "{`n  `"output_dir`": `"$($outputDir -replace '\\', '/')`"`n}"
-NoBOM "$PkgDir\config.json" $configJson
+$wsDir = "$outputDir\.whispersync"
+if ((Test-Path $wsDir) -and -not (Test-Path $wsDir -PathType Container)) {
+    Warn ".whispersync exists at $wsDir but is a file, not a directory -- skipping"
+} elseif (-not (Test-Path $wsDir)) {
+    New-Item -ItemType Directory -Path $wsDir -Force | Out-Null
+}
+$ConfigPath = "$wsDir\config.json"
+
+# Check for existing config (reinstall protection)
+$skipConfig = $false
+if (Test-Path $ConfigPath) {
+    Write-Host ""
+    Info "Found existing WhisperSync data in this folder."
+    $keepExisting = Prompt "Keep existing settings and history? (Y/n)"
+    if ($keepExisting -ne "n") {
+        $skipConfig = $true
+        Ok "Keeping existing settings"
+    }
+}
+if (-not $skipConfig) {
+    $configJson = "{`n  `"output_dir`": `"$($outputDir -replace '\\', '/')`"`n}"
+    NoBOM $ConfigPath $configJson
+}
+# Bootstrap pointer -- the app reads whisper_sync/config.json (legacy location)
+# first to discover output_dir, then reads the full config from .whispersync/.
+# Without this, a fresh install can't find the output_dir on first run.
+$legacyCfgPath = "$PkgDir\config.json"
+$bootstrapJson = "{`n  `"output_dir`": `"$($outputDir -replace '\\', '/')`"`n}"
+NoBOM $legacyCfgPath $bootstrapJson
 Ok "Recordings will save to $outputDir"
 
 # ── Step 10: Shortcuts ──
@@ -398,7 +425,7 @@ from whisper_sync.model_status import is_model_cached
 for m in ['tiny', 'base', 'large-v3']:
     if is_model_cached(m):
         models_to_test.append(m)
-print()
+results = []
 for name in models_to_test:
     compute = 'int8' if device == 'cpu' else cfg.get('compute_type', 'float16')
     model = _load_whisper_model(name, compute, 'en')
@@ -407,9 +434,27 @@ for name in models_to_test:
     for _ in range(3):
         model.transcribe(audio, batch_size=4, language='en')
     avg = (time.perf_counter() - t0) / 3
-    quality = {'tiny': 'Basic', 'base': 'Good', 'large-v3': 'Best'}
-    bar = '#' * max(1, int(20 - avg * 10))
-    print(f'    {name:<10} {avg:.2f}s  {bar:<20}  ({quality.get(name, "")})')
+    results.append((name, avg))
+quality = {'tiny': 'Basic', 'base': 'Good', 'large-v3': 'Best'}
+# Build recommendations
+fast_models = [n for n, t in results if t < 0.3]
+all_fast = all(t < 0.5 for _, t in results)
+largest_cached = results[-1][0] if results else None
+print()
+print(f'    {"Model":<13}{"Time":<9}{"Quality":<12}{"Recommendation"}')
+print(f'    {"-------":<13}{"------":<9}{"---------":<12}{"---------------"}')
+for name, avg in results:
+    rec = ''
+    if all_fast and name == 'large-v3':
+        rec = '<< your GPU is fast enough for large-v3 everywhere'
+    else:
+        parts = []
+        if name in fast_models:
+            parts.append('<< recommended for dictation')
+        if name == 'large-v3' or (name == largest_cached and 'large-v3' not in [n for n, _ in results]):
+            parts.append('<< recommended for meetings')
+        rec = '  '.join(parts)
+    print(f'    {name:<13}{avg:.2f}s    {quality.get(name, ""):<12}{rec}')
 print()
 "@
     NoBOM $benchScript $benchCode
@@ -420,22 +465,24 @@ print()
     Remove-Item $benchScript -ErrorAction SilentlyContinue
     Ok "Benchmark complete"
     Write-Host ""
-    Write-Host "  I recommend always using the " -NoNewline -ForegroundColor DarkGray; Write-Host "best model for meetings" -NoNewline -ForegroundColor White; Write-Host " -" -ForegroundColor DarkGray
-    Write-Host "  accuracy matters. For dictation, use what feels right" -ForegroundColor DarkGray
-    Write-Host "  based on the speeds above." -ForegroundColor DarkGray
+    Write-Host "  See the recommendations above -- accuracy matters for" -ForegroundColor DarkGray
+    Write-Host "  meetings, speed matters for dictation." -ForegroundColor DarkGray
     Write-Host ""
     $setModel = Prompt "Set both to large-v3? (Y/n)"
     if ($setModel -ne "n") {
         $existingCfg = @{}
-        $cfgPath = "$PkgDir\config.json"
-        if (Test-Path $cfgPath) {
-            $raw = Get-Content $cfgPath -Raw
-            $parsed = $raw | ConvertFrom-Json
-            $parsed.PSObject.Properties | ForEach-Object { $existingCfg[$_.Name] = $_.Value }
+        if (Test-Path $ConfigPath) {
+            try {
+                $raw = Get-Content $ConfigPath -Raw
+                $parsed = $raw | ConvertFrom-Json
+                $parsed.PSObject.Properties | ForEach-Object { $existingCfg[$_.Name] = $_.Value }
+            } catch {
+                Warn "Existing config is corrupt -- starting fresh"
+            }
         }
         $existingCfg["model"] = "large-v3"
         $existingCfg["dictation_model"] = "large-v3"
-        NoBOM $cfgPath ($existingCfg | ConvertTo-Json)
+        NoBOM $ConfigPath ($existingCfg | ConvertTo-Json)
         Ok "Models set to large-v3"
     }
 }
