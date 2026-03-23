@@ -1,6 +1,7 @@
 """File-based logging for WhisperSync -- persists across crashes."""
 
 import logging
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -14,11 +15,86 @@ _log_file = _LOG_DIR / f"whisper-sync-{datetime.now():%Y-%m-%d}.log"
 TRANSCRIPT = 15
 logging.addLevelName(TRANSCRIPT, "TRANSCRIPT")
 
+# ANSI color codes
+_C_RESET = "\033[0m"
+_C_DIM = "\033[2m"          # dim gray for timestamps
+_C_CYAN = "\033[36m"        # cyan for [WhisperSync] system tag
+_C_GREEN = "\033[32m"       # green for dictation
+_C_BLUE = "\033[34m"        # blue for meeting
+_C_YELLOW = "\033[33m"      # yellow for warnings
+_C_RED = "\033[31m"         # red for errors
+_C_MAGENTA = "\033[35m"     # magenta for transcription text
+_C_WHITE = "\033[37m"       # white for general info
+
+# Enable ANSI on Windows
+if sys.platform == "win32":
+    os.system("")  # triggers VT100 mode
+
+
+class _ColorFormatter(logging.Formatter):
+    """Adds ANSI colors based on message content and level."""
+
+    def __init__(self, base_fmt: str, datefmt: str = None, use_colors: bool = True):
+        super().__init__(base_fmt, datefmt=datefmt)
+        self.use_colors = use_colors
+
+    def format(self, record: logging.LogRecord) -> str:
+        msg = record.getMessage()
+        if not self.use_colors:
+            return super().format(record)
+
+        # Color the timestamp portion
+        ts = self.formatTime(record, self.datefmt)
+
+        # Determine message color based on content/level
+        # Red = errors, Yellow = warnings/recovery, Magenta = transcript text
+        # Green = dictation results, Blue = meeting results / completed states
+        # Cyan = system identity, White = in-progress actions
+        if record.levelno >= logging.ERROR:
+            msg_color = _C_RED
+        elif record.levelno >= logging.WARNING:
+            msg_color = _C_YELLOW
+        elif record.levelno == TRANSCRIPT:
+            msg_color = _C_MAGENTA
+        elif any(kw in msg for kw in ("Recover", "recover", "Crash-recover", "crash")):
+            msg_color = _C_YELLOW
+        elif "Dictation:" in msg or "pasted" in msg or "clipboard" in msg:
+            msg_color = _C_GREEN
+        # Completed states -- blue
+        elif any(kw in msg for kw in ("Loaded ", "loaded", " ready", "saved",
+                                       "Saved:", "Minutes generated", "Renamed:",
+                                       "Transcript saved", "WAV saved",
+                                       "Speakers confirmed", "identified",
+                                       "Model base", "Model large",
+                                       "Worker respawned", "Worker restarted")):
+            msg_color = _C_BLUE
+        # In-progress actions -- white
+        elif any(kw in msg for kw in ("Loading", "Transcribing", "Aligning",
+                                       "Diarizing", "Generating", "Recovering",
+                                       "Restarting", "Switching", "Setting")):
+            msg_color = _C_WHITE
+        # System identity -- cyan
+        elif msg.startswith("===") or any(kw in msg for kw in (
+                "starting", "Worker process spawned", "GPU:", "CPU mode",
+                "batch_size", "Hotkeys", "Log file", "Right-click",
+                "GitHub", "Speaker loopback", "mic +",
+                "Meeting started", "Meeting stopped", "Recording")):
+            msg_color = _C_CYAN
+        else:
+            msg_color = _C_WHITE
+
+        # Check if this is the verbose [WhisperSync] format
+        if self._fmt and "WhisperSync" in self._fmt:
+            return f"{_C_CYAN}[WhisperSync]{_C_RESET} {msg_color}{msg}{_C_RESET}"
+        else:
+            return f"{_C_DIM}[{ts}]{_C_RESET} {msg_color}{msg}{_C_RESET}"
+
+
 # Root logger for the whisper_sync package
 logger = logging.getLogger("whisper_sync")
 logger.setLevel(logging.DEBUG)
 
-# File handler -- DEBUG level, persists everything
+# File handler -- DEBUG level, persists everything (no colors)
 _fh = logging.FileHandler(str(_log_file), encoding="utf-8")
 _fh.setLevel(logging.DEBUG)
 _fh.setFormatter(logging.Formatter(
@@ -31,9 +107,9 @@ logger.addHandler(_fh)
 _ch = logging.StreamHandler(sys.stdout)
 _ch.setLevel(logging.INFO)
 
-# Formatters for different tiers
-_fmt_clean = logging.Formatter("[%(asctime)s] %(message)s", datefmt="%H:%M")
-_fmt_verbose = logging.Formatter("[WhisperSync] %(message)s")
+# Formatters for different tiers (with colors)
+_fmt_clean = _ColorFormatter("[%(asctime)s] %(message)s", datefmt="%H:%M")
+_fmt_verbose = _ColorFormatter("[WhisperSync] %(message)s")
 
 _ch.setFormatter(_fmt_verbose)
 logger.addHandler(_ch)

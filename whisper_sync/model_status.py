@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .logger import logger
 from .paths import get_model_cache
 
 _VENV_SCRIPTS = Path(sys.executable).parent
@@ -70,7 +71,7 @@ def bootstrap_models(cfg: dict, on_large_model=None):
     prompt = needed - _AUTO_DOWNLOAD_MODELS
 
     if auto:
-        print(f"[WhisperSync] Auto-downloading base models: {', '.join(sorted(auto))}...")
+        logger.info(f"Auto-downloading base models: {', '.join(sorted(auto))}...")
         for name in sorted(auto):
             _download_whisper_model(name)
 
@@ -81,9 +82,9 @@ def bootstrap_models(cfg: dict, on_large_model=None):
             if on_large_model(name, size):
                 _download_whisper_model(name)
             else:
-                print(f"[WhisperSync] Skipped {name} download")
+                logger.info(f"Skipped {name} download")
         else:
-            print(f"[WhisperSync] Model {name} ({size}) not cached — download via Settings menu")
+            logger.info(f"Model {name} ({size}) not cached -- download via Settings menu")
 
     # Ensure alignment model (wav2vec2) is cached — needed for word timing
     _bootstrap_alignment_model()
@@ -112,28 +113,28 @@ def _bootstrap_alignment_model():
     if alignment_path.exists():
         return
     try:
-        print("[WhisperSync] Downloading word timing model (wav2vec2)...")
+        logger.info("Downloading word timing model (wav2vec2)...")
         import whisperx
         # Loading the alignment model triggers the download
         whisperx.load_align_model(language_code="en", device="cpu")
-        print("[WhisperSync] Word timing model cached successfully")
+        logger.info("Word timing model cached successfully")
     except Exception as e:
-        print(f"[WhisperSync] Failed to download alignment model: {e}")
-        print("[WhisperSync] Word timing will download on first use instead")
+        logger.warning(f"Failed to download alignment model: {e}")
+        logger.warning("Word timing will download on first use instead")
 
 
 def _download_whisper_model(model_name: str):
     """Download a whisper model by loading it once via whisperx."""
     try:
         import whisperx
-        print(f"[WhisperSync] Downloading {model_name}...")
+        logger.info(f"Downloading {model_name}...")
         whisperx.load_model(
             model_name, device="cpu", compute_type="int8", language="en",
             download_root=str(_HF_CACHE),
         )
-        print(f"[WhisperSync] {model_name} cached successfully")
+        logger.info(f"{model_name} cached successfully")
     except Exception as e:
-        print(f"[WhisperSync] Failed to download {model_name}: {e}")
+        logger.error(f"Failed to download {model_name}: {e}")
 
 
 def get_model_status(model_name: str) -> dict:

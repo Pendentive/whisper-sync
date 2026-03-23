@@ -19,5 +19,7 @@
   "github_repo": null,
   "github_poll_interval": 60,
   "github_notifications": true,
-  "log_window": "normal"
+  "log_window": "normal",
+  "device": "auto",
+  "incognito": false
 }

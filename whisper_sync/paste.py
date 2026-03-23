@@ -4,6 +4,8 @@ import time
 
 import pyperclip
 
+from .logger import logger
+
 
 def paste_clipboard(text: str) -> None:
     """Copy text to clipboard and attempt to paste into focused window.
@@ -12,7 +14,7 @@ def paste_clipboard(text: str) -> None:
     Text is guaranteed to be in clipboard regardless of outcome.
     """
     pyperclip.copy(text)
-    print(f"[WhisperSync] Text in clipboard ({len(text)} chars)")
+    logger.info(f"Text in clipboard ({len(text)} chars)")
     try:
         import keyboard
         time.sleep(0.1)
@@ -24,7 +26,7 @@ def paste_clipboard(text: str) -> None:
             _kb.release("ctrl")
         except Exception:
             pass
-        print(f"[WhisperSync] Auto-paste failed (text still in clipboard): {e}")
+        logger.warning(f"Auto-paste failed (text still in clipboard): {e}")
 
 
 def paste_keystrokes(text: str) -> None:
@@ -34,7 +36,7 @@ def paste_keystrokes(text: str) -> None:
         keyboard.write(text, delay=0.01)
     except Exception:
         pyperclip.copy(text)
-        print("[WhisperSync] Keystroke paste failed, text copied to clipboard")
+        logger.warning("Keystroke paste failed, text copied to clipboard")
 
 
 def paste(text: str, method: str = "clipboard") -> None:
