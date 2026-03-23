@@ -85,9 +85,15 @@ class _ColorFormatter(logging.Formatter):
 
         # Check if this is the verbose [WhisperSync] format
         if self._fmt and "WhisperSync" in self._fmt:
-            return f"{_C_CYAN}[WhisperSync]{_C_RESET} {msg_color}{msg}{_C_RESET}"
+            colored = f"{_C_CYAN}[WhisperSync]{_C_RESET} {msg_color}{msg}{_C_RESET}"
         else:
-            return f"{_C_DIM}[{ts}]{_C_RESET} {msg_color}{msg}{_C_RESET}"
+            colored = f"{_C_DIM}[{ts}]{_C_RESET} {msg_color}{msg}{_C_RESET}"
+
+        # Preserve exception tracebacks that super().format() would normally append
+        if record.exc_info and record.exc_info[1] is not None:
+            colored += "\n" + self.formatException(record.exc_info)
+
+        return colored
 
 
 # Root logger for the whisper_sync package

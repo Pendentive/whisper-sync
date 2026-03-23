@@ -267,9 +267,11 @@ class WhisperSync:
                 t2 = _time.perf_counter()
                 delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
                 char_count = len(text) if text else 0
-                if not self.cfg.get("incognito"):
+                if self.cfg.get("incognito"):
+                    logger.info(f"Dictation: {t2 - t0:.2f}s -- {delivery} ({char_count} chars)")
+                else:
                     log_dictation_result(text or "", t2 - t0, delivery, char_count)
-                    logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={dictation_model}")
+                logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={dictation_model}")
                 # Update session stats
                 self._stats["dictations"] += 1
                 self._stats["total_dictation_chars"] += char_count
