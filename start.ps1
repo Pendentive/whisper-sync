@@ -68,10 +68,6 @@ if (Test-Path "$PSScriptRoot\whisper_sync\__init__.py") {
 }
 
 Push-Location $WorkDir
-# Ensure gh CLI is in PATH for GitHub status polling
-if (Test-Path "C:\Program Files\GitHub CLI") {
-    $env:PATH = "C:\Program Files\GitHub CLI;$env:PATH"
-}
 # Suppress pyannote's torchcodec warning (fires at import time, can't be filtered in code).
 # torchcodec is optional — pyannote falls back to torchaudio which whisperX uses.
 # Also suppress the Lightning checkpoint upgrade nag.

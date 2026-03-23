@@ -17,9 +17,6 @@
   "left_click": "meeting",
   "middle_click": "dictation",
   "github_repo": null,
-  "github_poll_interval": 60,
-  "github_notifications": true,
-  "log_window": "normal",
-  "device": "auto",
-  "incognito": false
+  "github_poll_interval": 300,
+  "github_notifications": true
 }
