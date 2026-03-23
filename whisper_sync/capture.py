@@ -12,6 +12,7 @@ try:
 except ImportError:
     pyaudio = None
 
+from .logger import logger
 from .streaming_wav import StreamingWavWriter
 
 
@@ -78,7 +79,7 @@ class AudioRecorder:
             # Never let exceptions escape into PortAudio's C thread
             if not getattr(self, "_mic_error_logged", False):
                 self._mic_error_logged = True
-                print(f"[WhisperSync] WARN: mic callback error (suppressed): {e}")
+                logger.warning(f"mic callback error (suppressed): {e}")
 
     def _speaker_callback(self, indata, frames, time_info, status):
         try:
@@ -89,7 +90,7 @@ class AudioRecorder:
         except Exception as e:
             if not getattr(self, "_speaker_error_logged", False):
                 self._speaker_error_logged = True
-                print(f"[WhisperSync] WARN: speaker callback error (suppressed): {e}")
+                logger.warning(f"speaker callback error (suppressed): {e}")
 
     def start(self, mic_device: int | None = None, speaker_device: int | None = None):
         with self._lock:
@@ -114,7 +115,7 @@ class AudioRecorder:
     def _start_speaker_loopback(self):
         """Start WASAPI loopback capture via PyAudioWPatch."""
         if pyaudio is None:
-            print("[WhisperSync] WARN: pyaudiowpatch not installed — speaker loopback disabled")
+            logger.warning("pyaudiowpatch not installed -- speaker loopback disabled")
             return
         try:
             p = pyaudio.PyAudio()
@@ -162,9 +163,9 @@ class AudioRecorder:
                 frames_per_buffer=1024,
             )
             self._speaker_pa_stream.start_stream()
-            print(f"[WhisperSync] Speaker loopback active: {loopback_device['name']} @ {native_rate} Hz")
+            logger.info(f"Speaker loopback: {loopback_device['name']} @ {native_rate} Hz")
         except Exception as e:
-            print(f"[WhisperSync] WARN: speaker loopback failed: {e}")
+            logger.warning(f"Speaker loopback failed: {e}")
             self._close_pyaudio()
 
     def _close_pyaudio(self):
