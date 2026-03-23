@@ -3,9 +3,11 @@ name: PR Review
 on:
   pull_request:
     types: [opened, synchronize]
+  pull_request_review:
+    types: [submitted]
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
   issues: write
 
@@ -187,3 +189,84 @@ jobs:
               issue_number: context.payload.pull_request.number,
               body: body
             });
+
+  auto-merge:
+    runs-on: ubuntu-latest
+    needs: triage
+    if: github.event_name == 'pull_request_review'
+    steps:
+      - name: Auto-merge if Copilot approved
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const { data: prData } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+            if (prData.state !== 'open' || prData.merged) return;
+
+            // Dedup
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: prNumber
+            });
+            if (comments.some(c => c.user.login === 'github-actions[bot]' && c.body.includes('Auto-merged'))) return;
+
+            // Check Copilot reviewed
+            const { data: reviews } = await github.rest.pulls.listReviews({
+              owner: context.repo.owner, repo: context.repo.repo,
+              pull_number: prNumber
+            });
+            if (!reviews.some(r => r.user.login === 'copilot-pull-request-reviewer[bot]')) {
+              console.log(`PR #${prNumber}: no Copilot review yet`);
+              return;
+            }
+
+            // Check for inline suggestions
+            const { data: reviewComments } = await github.rest.pulls.listReviewComments({
+              owner: context.repo.owner, repo: context.repo.repo,
+              pull_number: prNumber
+            });
+            // Only count comments on the latest commit -- old comments from
+            // previous pushes should not permanently block auto-merge.
+            const suggestions = reviewComments.filter(
+              c => c.user.login === 'copilot-pull-request-reviewer[bot]'
+                && c.commit_id === prData.head.sha
+            );
+            if (suggestions.length > 0) {
+              if (!comments.some(c => c.user.login === 'github-actions[bot]' && c.body.includes('Auto-merge skipped'))) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: prNumber,
+                  body: `## Auto-merge skipped\n\nCopilot found ${suggestions.length} suggestion(s).`
+                });
+              }
+              return;
+            }
+
+            // Merge
+            const labels = prData.labels.map(l => l.name);
+            const complexity = labels.find(l => l.startsWith('complexity:')) || 'unknown';
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner, repo: context.repo.repo,
+              pull_number: prNumber, per_page: 100
+            });
+            const changedLines = files.reduce((sum, f) => sum + f.additions + f.deletions, 0);
+            const fileList = files.map(f => f.filename).join(', ');
+
+            try {
+              await github.rest.pulls.merge({
+                owner: context.repo.owner, repo: context.repo.repo,
+                pull_number: prNumber, merge_method: 'squash'
+              });
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: prNumber,
+                body: `## Auto-merged\n\nCopilot reviewed (${complexity}), no suggestions.\n\n**${changedLines} lines** across: ${fileList}`
+              });
+              console.log(`PR #${prNumber} auto-merged`);
+            } catch (err) {
+              console.log(`PR #${prNumber} merge failed: ${err.message}`);
+            }
