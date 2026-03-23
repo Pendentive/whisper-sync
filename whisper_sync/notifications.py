@@ -114,13 +114,18 @@ def notify_progress(title: str, caption: str, *, progress=None, progress_overrid
         progress: Float 0.0-1.0 for determinate, None for indeterminate.
         progress_override: Custom status text (e.g. "3 GB remaining").
     """
-    if not _available or not _has_progress_bar:
+    if not _available:
         _logger.info(f"[toast] {title}: {caption}")
+        return
+
+    if not _has_progress_bar:
+        _logger.info("[toast] ToastProgressBar not available, falling back to plain toast")
+        notify(title, caption)
         return
 
     try:
         progress_bar = ToastProgressBar(
-            caption, title,
+            title, caption,
             progress=progress,
             progress_override=progress_override,
         )

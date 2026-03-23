@@ -1,5 +1,6 @@
 """Check and download whisperX model + alignment dependencies."""
 
+import os
 import shutil
 import subprocess
 import sys
@@ -214,7 +215,9 @@ def download_model(model_name: str) -> bool:
     notify("Downloading model", f"{model_name} ({size}), please wait...")
 
     # Create a 1-second silent WAV
-    tmp_wav = Path(tempfile.mktemp(suffix=".wav"))
+    fd, tmp_wav_str = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    tmp_wav = Path(tmp_wav_str)
     tmp_out = Path(tempfile.mkdtemp())
     try:
         silence = np.zeros(16000, dtype=np.int16)
@@ -241,6 +244,7 @@ def download_model(model_name: str) -> bool:
             notify("Download failed", f"{model_name} download did not complete")
         return success
     except Exception:
+        logger.exception(f"Model download failed for {model_name}")
         notify("Download failed", f"{model_name} download encountered an error")
         return False
     finally:

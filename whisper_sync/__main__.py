@@ -388,7 +388,7 @@ class WhisperSync:
                         buttons=[{"label": "Copy to Clipboard", "action": _copy_recovered}],
                     )
                 except Exception:
-                    pass  # toast is best-effort, text is already on clipboard
+                    logger.debug("Recovery toast failed", exc_info=True)
             else:
                 logger.info("Crash-recovered dictation produced no text")
             # Clean up the WAV now that text is on clipboard + in the .md log
@@ -1747,7 +1747,7 @@ class WhisperSync:
             else:
                 notify(
                     "Incognito Mode Off",
-                    "Normal logging resumed",
+                    "Dictation data will be saved to disk",
                 )
         except Exception:
             pass  # toast is best-effort
