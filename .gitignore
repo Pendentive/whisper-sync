@@ -1,4 +1,5 @@
-# Personal config (users create from whisper_sync/config.defaults.json)
+# Personal config -- now stored in output_dir/.whispersync/config.json
+# Legacy location kept for migration compatibility
 whisper_sync/config.json
 
 # Runtime data — per-machine
