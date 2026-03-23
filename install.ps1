@@ -256,7 +256,11 @@ while (-not $outputDir) {
     } catch { Warn "Can't use that path: $_"; Info "Try a different folder" }
 }
 $wsDir = "$outputDir\.whispersync"
-if (-not (Test-Path $wsDir)) { New-Item -ItemType Directory -Path $wsDir -Force | Out-Null }
+if ((Test-Path $wsDir) -and -not (Test-Path $wsDir -PathType Container)) {
+    Warn ".whispersync exists at $wsDir but is a file, not a directory -- skipping"
+} elseif (-not (Test-Path $wsDir)) {
+    New-Item -ItemType Directory -Path $wsDir -Force | Out-Null
+}
 $ConfigPath = "$wsDir\config.json"
 
 # Check for existing config (reinstall protection)
@@ -274,6 +278,12 @@ if (-not $skipConfig) {
     $configJson = "{`n  `"output_dir`": `"$($outputDir -replace '\\', '/')`"`n}"
     NoBOM $ConfigPath $configJson
 }
+# Bootstrap pointer -- the app reads whisper_sync/config.json (legacy location)
+# first to discover output_dir, then reads the full config from .whispersync/.
+# Without this, a fresh install can't find the output_dir on first run.
+$legacyCfgPath = "$PkgDir\config.json"
+$bootstrapJson = "{`n  `"output_dir`": `"$($outputDir -replace '\\', '/')`"`n}"
+NoBOM $legacyCfgPath $bootstrapJson
 Ok "Recordings will save to $outputDir"
 
 # ── Step 10: Shortcuts ──
@@ -462,9 +472,13 @@ print()
     if ($setModel -ne "n") {
         $existingCfg = @{}
         if (Test-Path $ConfigPath) {
-            $raw = Get-Content $ConfigPath -Raw
-            $parsed = $raw | ConvertFrom-Json
-            $parsed.PSObject.Properties | ForEach-Object { $existingCfg[$_.Name] = $_.Value }
+            try {
+                $raw = Get-Content $ConfigPath -Raw
+                $parsed = $raw | ConvertFrom-Json
+                $parsed.PSObject.Properties | ForEach-Object { $existingCfg[$_.Name] = $_.Value }
+            } catch {
+                Warn "Existing config is corrupt -- starting fresh"
+            }
         }
         $existingCfg["model"] = "large-v3"
         $existingCfg["dictation_model"] = "large-v3"
