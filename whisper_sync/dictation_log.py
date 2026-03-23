@@ -1,10 +1,13 @@
 """Daily dictation history -- append-only markdown log per day."""
 
+import logging
 import re
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict
+
+logger = logging.getLogger("whisper_sync")
 
 _LOG_DIR = Path(__file__).parent / "logs" / "data" / "dictation"
 _lock = threading.Lock()
@@ -63,7 +66,8 @@ def load_recent(count: int = 10) -> List[Dict]:
         try:
             entries = _parse_log_file(log_file)
             results.extend(entries)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to parse dictation log {log_file}: {e}")
             continue  # skip corrupt files
 
     # Keep only the most recent *count*, oldest-first

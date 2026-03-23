@@ -267,9 +267,11 @@ class WhisperSync:
                 t2 = _time.perf_counter()
                 delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
                 char_count = len(text) if text else 0
-                if not self.cfg.get("incognito"):
+                if self.cfg.get("incognito"):
+                    logger.info(f"Dictation: {t2 - t0:.2f}s -- {delivery} ({char_count} chars)")
+                else:
                     log_dictation_result(text or "", t2 - t0, delivery, char_count)
-                    logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={dictation_model}")
+                logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={dictation_model}")
                 # Update session stats
                 self._stats["dictations"] += 1
                 self._stats["total_dictation_chars"] += char_count
@@ -1407,13 +1409,13 @@ class WhisperSync:
             )
         items = []
         for entry in reversed(self._dictation_history):
-            preview = entry["text"][:40]
-            if len(entry["text"]) > 40:
+            full_text = entry["text"]
+            preview = full_text[:40]
+            if len(full_text) > 40:
                 preview += "..."
-            label = f"[{entry['timestamp']}] {preview} ({entry['chars']} chars)"
-            text = entry["text"]
+            label = f"[{entry['timestamp']}] {preview}\t{entry['chars']} chars"
             items.append(
-                pystray.MenuItem(label, lambda _item=None, t=text: self._copy_dictation(t))
+                pystray.MenuItem(label, self._cb(self._copy_dictation, full_text))
             )
         items.append(pystray.Menu.SEPARATOR)
         items.append(

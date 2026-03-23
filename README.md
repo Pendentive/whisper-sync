@@ -186,7 +186,7 @@ Beyond Settings, the tray menu includes these top-level items:
 | Menu Item | Description |
 |-----------|-------------|
 | **Recent Dictations** | Last 10 dictations, click any entry to copy it to the clipboard. Persists across restarts. |
-| **Incognito Mode** | RAM-only dictation -- no transcription text or audio saved to disk. Operational log entries (timing, status) are still written but contain no dictation content. Meetings are unaffected. |
+| **Incognito Mode** | RAM-only dictation -- in incognito mode, operational timing logs are still written (e.g. duration, char count) but no transcription text is logged or saved to disk. Meetings are unaffected. |
 | **GitHub Status** | Shows the count of open pull requests if you've configured a GitHub repo. |
 
 ---
