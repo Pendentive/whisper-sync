@@ -29,7 +29,11 @@ from .icons import idle_icon, recording_icon, dictation_icon, saving_icon, trans
 from .logger import logger, get_log_path, set_console_level, log_dictation_result, log_meeting_result, log_transcript_preview
 from .model_status import get_model_status, download_model, bootstrap_models
 from .paste import paste
-from .paths import get_install_root, get_default_output_dir, is_standalone
+from .paths import (get_install_root, get_default_output_dir, is_standalone,
+                     get_data_dir, get_dictation_log_dir,
+                     get_legacy_config_path, get_legacy_speaker_config_path,
+                     get_legacy_dictation_log_dir, get_config_path as get_data_config_path,
+                     get_speaker_config_path)
 from .worker_manager import TranscriptionWorker, WorkerCrashedError
 from . import dictation_log
 from .streaming_wav import fix_orphan
@@ -72,6 +76,7 @@ CLICK_ACTIONS = {
 
 class WhisperSync:
     def __init__(self):
+        self._migrate_data()
         self.cfg = config.load()
         set_console_level(self.cfg.get("log_window", "normal"))
         self.recorder = AudioRecorder(sample_rate=self.cfg["sample_rate"])
@@ -97,6 +102,44 @@ class WhisperSync:
             "total_meeting_words": 0,
             "session_start": datetime.now(),
         }
+
+    @staticmethod
+    def _migrate_data():
+        """Migrate user data files from legacy locations to output_dir/.whispersync/.
+
+        Copies (not moves) files so the legacy locations remain valid until
+        the user explicitly cleans them up.
+        """
+        import shutil
+
+        data_dir = get_data_dir()  # creates .whispersync/ if needed
+
+        # 1. config.json
+        legacy_cfg = get_legacy_config_path()
+        new_cfg = get_data_config_path()
+        if legacy_cfg.exists() and not new_cfg.exists():
+            shutil.copy2(legacy_cfg, new_cfg)
+            logger.info(f"Migrated config.json -> {new_cfg}")
+
+        # 2. transcription-config.md
+        legacy_speaker = get_legacy_speaker_config_path()
+        new_speaker = get_speaker_config_path()
+        if legacy_speaker.exists() and not new_speaker.exists():
+            shutil.copy2(legacy_speaker, new_speaker)
+            logger.info(f"Migrated transcription-config.md -> {new_speaker}")
+
+        # 3. dictation-logs/
+        legacy_dict_dir = get_legacy_dictation_log_dir()
+        new_dict_dir = get_dictation_log_dir()
+        if legacy_dict_dir.exists() and any(legacy_dict_dir.iterdir()):
+            if not new_dict_dir.exists() or not any(new_dict_dir.iterdir()):
+                new_dict_dir.mkdir(parents=True, exist_ok=True)
+                for f in legacy_dict_dir.iterdir():
+                    if f.is_file():
+                        dest = new_dict_dir / f.name
+                        if not dest.exists():
+                            shutil.copy2(f, dest)
+                logger.info(f"Migrated dictation logs -> {new_dict_dir}")
 
     def _update_icon(self):
         if self.tray is None:
@@ -211,7 +254,7 @@ class WhisperSync:
                 self._start_dictation()
 
     def _dictation_log_dir(self) -> Path:
-        return Path(__file__).parent / "logs" / "data" / "dictation"
+        return get_dictation_log_dir()
 
     def _start_dictation(self):
         if not self.worker.is_ready():

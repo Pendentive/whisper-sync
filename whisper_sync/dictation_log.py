@@ -7,9 +7,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict
 
+from .paths import get_dictation_log_dir
+
 logger = logging.getLogger("whisper_sync")
 
-_LOG_DIR = Path(__file__).parent / "logs" / "data" / "dictation"
+_LOG_DIR = get_dictation_log_dir()
 _lock = threading.Lock()
 
 _HEADER_RE = re.compile(r"^## (\d{2}:\d{2}):\d{2} \|.*?\| (\d+) chars$")

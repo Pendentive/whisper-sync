@@ -204,4 +204,5 @@ def update_config(config_path: str, speaker_map: dict, config_updates: dict | No
 
 def get_config_path() -> str:
     """Return the path to transcription-config.md."""
-    return str(Path(__file__).parent.parent.parent / ".claude" / "workflows" / "transcription-config.md")
+    from .paths import get_speaker_config_path
+    return str(get_speaker_config_path())
