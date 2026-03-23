@@ -1407,13 +1407,13 @@ class WhisperSync:
             )
         items = []
         for entry in reversed(self._dictation_history):
-            preview = entry["text"][:40]
-            if len(entry["text"]) > 40:
+            full_text = entry["text"]
+            preview = full_text[:40]
+            if len(full_text) > 40:
                 preview += "..."
-            label = f"[{entry['timestamp']}] {preview} ({entry['chars']} chars)"
-            text = entry["text"]
+            label = f"[{entry['timestamp']}] {preview}\t{entry['chars']} chars"
             items.append(
-                pystray.MenuItem(label, lambda _item=None, t=text: self._copy_dictation(t))
+                pystray.MenuItem(label, self._cb(self._copy_dictation, full_text))
             )
         items.append(pystray.Menu.SEPARATOR)
         items.append(
