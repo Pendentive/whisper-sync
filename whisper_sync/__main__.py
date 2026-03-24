@@ -1712,8 +1712,8 @@ class WhisperSync:
         # Left-click fires the default menu item
         left_action = self.cfg.get("left_click", "meeting")
         return pystray.Menu(
-            *incognito_items,
             pystray.MenuItem("Recent Dictations", self._build_recent_dictations_menu()),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem(f"Dictation\t{dict_hk}", lambda: self._on_left_click() if left_action == "dictation" else self.toggle_dictation(),
                              default=left_action == "dictation"),
             pystray.MenuItem(f"Meeting\t{meet_hk}", lambda: self._on_left_click() if left_action == "meeting" else self.toggle_meeting(),
@@ -1789,6 +1789,8 @@ class WhisperSync:
                                      radio=True),
                 )),
                 pystray.MenuItem("Session Stats", self._build_session_stats_menu()),
+                pystray.Menu.SEPARATOR,
+                *incognito_items,
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Restart", lambda: self._restart()),
                 pystray.MenuItem("Quit", lambda: self.quit()),
