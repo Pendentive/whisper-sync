@@ -347,172 +347,112 @@ def stage_align(ctx: dict, result: dict) -> dict:
     )
 
 
-def _channel_diarize(audio_path: str, window_ms: int = 500) -> dict | None:
-    """Channel-based speaker diarization for stereo recordings.
+def _create_balanced_mono(audio_path: str) -> str | None:
+    """Create an RMS-balanced mono WAV for diarization from stereo input.
 
-    When mic and remote speakers are on separate stereo channels,
-    use channel energy as ground truth for speaker assignment instead
-    of relying solely on the embedding model (which struggles with
-    mono-mixed remote meeting audio).
+    When mic and remote speakers are on separate stereo channels with
+    different volumes, naive averaging loses the quieter speaker. This
+    normalizes each channel's speech energy independently before mixing,
+    so PyAnnote's neural embeddings can hear both speakers equally.
 
-    Returns a pyannote-compatible diarization result, or None if
-    the recording is mono or channels are too similar to distinguish.
+    Returns path to a temporary mono WAV file, or None if audio is
+    already mono or channels are identical.
     """
+    import wave as _wave
+    import tempfile
+
     try:
-        import wave as _wave
         with _wave.open(audio_path, "rb") as wf:
-            channels = wf.getnchannels()
-            if channels < 2:
+            n_channels = wf.getnchannels()
+            if n_channels < 2:
                 return None
-            sr = wf.getframerate()
-            frames = wf.getnframes()
-            raw = np.frombuffer(wf.readframes(frames), dtype=np.int16)
-            data = raw.reshape(-1, channels).astype(np.float64)
+            sample_rate = wf.getframerate()
+            raw = wf.readframes(wf.getnframes())
 
-        # Compute per-channel RMS in sliding windows
-        window_samples = int(sr * window_ms / 1000)
-        n_windows = len(data) // window_samples
-        if n_windows < 2:
+        samples = np.frombuffer(raw, dtype=np.int16).astype(np.float64)
+        ch0 = samples[0::2]
+        ch1 = samples[1::2]
+
+        def voiced_rms(channel, frame_ms=30, voiced_percentile=70):
+            """Compute RMS over voiced frames only (ignoring silence).
+
+            Uses energy percentile to find voiced frames, so a speaker
+            who only talks for 30s in a 30min recording still gets
+            properly normalized.
+            """
+            frame_size = int(sample_rate * frame_ms / 1000)
+            n_frames = len(channel) // frame_size
+            if n_frames == 0:
+                rms = np.sqrt(np.mean(channel ** 2))
+                return rms if rms > 0 else 1.0
+            truncated = channel[:n_frames * frame_size].reshape(n_frames, frame_size)
+            frame_energies = np.sqrt(np.mean(truncated ** 2, axis=1))
+            threshold = np.percentile(frame_energies, 100 - voiced_percentile)
+            voiced = frame_energies[frame_energies >= threshold]
+            return float(np.mean(voiced)) if len(voiced) > 0 else 1.0
+
+        rms0 = voiced_rms(ch0)
+        rms1 = voiced_rms(ch1)
+
+        # If channels are nearly identical, no balancing needed
+        if min(rms0, rms1) / max(rms0, rms1) > 0.95:
             return None
 
-        ch0_energy = np.array([
-            np.sqrt(np.mean(data[i*window_samples:(i+1)*window_samples, 0]**2))
-            for i in range(n_windows)
-        ])
-        ch1_energy = np.array([
-            np.sqrt(np.mean(data[i*window_samples:(i+1)*window_samples, 1]**2))
-            for i in range(n_windows)
-        ])
+        # Equalize speech energy: scale both to match the louder channel
+        target_rms = max(rms0, rms1)
+        gain0 = target_rms / rms0 if rms0 > 0 else 1.0
+        gain1 = target_rms / rms1 if rms1 > 0 else 1.0
 
-        # Check if channels are meaningfully different
-        ch0_total = np.sum(ch0_energy)
-        ch1_total = np.sum(ch1_energy)
-        if ch0_total == 0 or ch1_total == 0:
-            return None
-        ratio = min(ch0_total, ch1_total) / max(ch0_total, ch1_total)
-        if ratio > 0.95:
-            logger.info("Stereo channels too similar, falling back to model diarization")
-            return None
+        logger.info(f"Stereo balance: ch0 gain={gain0:.2f}x, ch1 gain={gain1:.2f}x "
+                     f"(RMS: {rms0:.0f}/{rms1:.0f})")
 
-        # Identify channel roles dynamically:
-        # The mic channel has more consistent energy (ambient room noise fills gaps).
-        # The remote channel is bursty (silent between speech, loud during speech).
-        # Measure "burstiness" as the coefficient of variation (std/mean).
-        ch0_active = ch0_energy[ch0_energy > 0]
-        ch1_active = ch1_energy[ch1_energy > 0]
-        ch0_cv = np.std(ch0_active) / np.mean(ch0_active) if len(ch0_active) > 0 else 0
-        ch1_cv = np.std(ch1_active) / np.mean(ch1_active) if len(ch1_active) > 0 else 0
+        mono = (ch0 * gain0 + ch1 * gain1) / 2.0
+        mono = np.clip(mono, -32768, 32767).astype(np.int16)
 
-        # Higher CV = more bursty = likely remote. Lower CV = more consistent = likely mic.
-        # If CVs are similar, fall back to total energy (louder = mic, typically).
-        if abs(ch0_cv - ch1_cv) > 0.1:
-            mic_ch = 0 if ch0_cv < ch1_cv else 1
-        else:
-            mic_ch = 0 if ch0_total >= ch1_total else 1
-        remote_ch = 1 - mic_ch
+        # Write temp file for diarization only
+        fd, tmp_path = tempfile.mkstemp(suffix=".wav")
+        try:
+            with _wave.open(tmp_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sample_rate)
+                wf.writeframes(mono.tobytes())
+        except Exception:
+            os.unlink(tmp_path)
+            raise
+        finally:
+            os.close(fd)
 
-        mic_label = "SPEAKER_00"
-        remote_label = "SPEAKER_01"
-        logger.info(f"Channel roles: ch{mic_ch}=mic, ch{remote_ch}=remote "
-                     f"(CV: {ch0_cv:.2f}/{ch1_cv:.2f}, energy ratio: {ratio:.2f})")
-
-        # Compute adaptive dominance threshold per window.
-        # Instead of a fixed 1.5x ratio, use the median energy ratio
-        # of clearly single-speaker windows to set the threshold.
-        # This adapts to different volume levels across setups.
-        ratios = []
-        for i in range(n_windows):
-            e_mic = ch0_energy[i] if mic_ch == 0 else ch1_energy[i]
-            e_rem = ch0_energy[i] if remote_ch == 0 else ch1_energy[i]
-            if e_mic > 0 and e_rem > 0:
-                r = max(e_mic, e_rem) / min(e_mic, e_rem)
-                if r > 1.2:  # clearly one-sided
-                    ratios.append(r)
-        # Use the 25th percentile of ratios as threshold (conservative)
-        if ratios:
-            dominance_thresh = max(1.2, np.percentile(ratios, 25))
-        else:
-            dominance_thresh = 1.5
-
-        # Silence threshold: adaptive per recording
-        all_energy = np.concatenate([ch0_energy, ch1_energy])
-        silence_thresh = np.percentile(all_energy[all_energy > 0], 10) if np.any(all_energy > 0) else 0
-
-        segments = []
-        current_speaker = None
-        seg_start = 0.0
-
-        for i in range(n_windows):
-            e_mic = ch0_energy[i] if mic_ch == 0 else ch1_energy[i]
-            e_rem = ch0_energy[i] if remote_ch == 0 else ch1_energy[i]
-            t = i * window_ms / 1000.0
-
-            if e_mic < silence_thresh and e_rem < silence_thresh:
-                speaker = None  # silence
-            elif e_rem > 0 and e_mic / e_rem > dominance_thresh:
-                speaker = mic_label
-            elif e_mic > 0 and e_rem / e_mic > dominance_thresh:
-                speaker = remote_label
-            elif e_mic > e_rem:
-                # Below dominance threshold but mic is louder
-                speaker = mic_label if current_speaker is None else current_speaker
-            else:
-                speaker = remote_label if current_speaker is None else current_speaker
-
-            if speaker != current_speaker:
-                if current_speaker is not None:
-                    segments.append({
-                        "speaker": current_speaker,
-                        "start": seg_start,
-                        "end": t,
-                    })
-                current_speaker = speaker
-                seg_start = t
-
-        # Close final segment
-        if current_speaker is not None:
-            segments.append({
-                "speaker": current_speaker,
-                "start": seg_start,
-                "end": n_windows * window_ms / 1000.0,
-            })
-
-        if not segments:
-            return None
-
-        # Build a pyannote-compatible annotation object
-        from pyannote.core import Annotation, Segment
-        annotation = Annotation()
-        for seg in segments:
-            annotation[Segment(seg["start"], seg["end"])] = seg["speaker"]
-
-        n_speakers = len(set(s["speaker"] for s in segments))
-        logger.info(f"Channel diarization: {n_speakers} speakers, {len(segments)} segments")
-        return annotation
+        return tmp_path
 
     except Exception as e:
-        logger.warning(f"Channel diarization failed, falling back to model: {e}")
+        logger.warning(f"Stereo balancing failed, using original: {e}")
         return None
 
 
 def stage_diarize(ctx: dict) -> dict:
     """Stage 3: Run speaker diarization pipeline.
 
-    For stereo recordings (mic + remote on separate channels),
-    uses channel-based diarization which is more accurate.
-    Falls back to the PyAnnote embedding model for mono or
-    when channels are too similar.
+    For stereo recordings, creates an RMS-balanced mono mix so
+    PyAnnote can hear both speakers at equal volume. The balanced
+    mix is used only for diarization; transcription uses the
+    original audio.
     """
-    # Try channel-based diarization first for stereo recordings
-    channel_result = _channel_diarize(ctx["audio_path"])
-    if channel_result is not None:
-        return channel_result
+    balanced_path = _create_balanced_mono(ctx["audio_path"])
+    diarize_path = balanced_path or ctx["audio_path"]
 
-    # Fallback to model-based diarization
-    with _lock:
-        pipeline = _load_diarize_pipeline()
-    logger.info("Diarizing...")
-    return pipeline(ctx["audio_path"])
+    try:
+        with _lock:
+            pipeline = _load_diarize_pipeline()
+        logger.info("Diarizing...")
+        return pipeline(diarize_path)
+    finally:
+        # Clean up temp file
+        if balanced_path and os.path.exists(balanced_path):
+            try:
+                os.unlink(balanced_path)
+            except OSError:
+                pass
 
 
 def stage_finalize(ctx: dict, result: dict, diarize_segments=None) -> dict:
