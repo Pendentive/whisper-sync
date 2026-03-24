@@ -23,6 +23,6 @@
   "device": "auto",
   "incognito": false,
   "always_available_dictation": true,
-  "backup_device": "auto",
+  "backup_device": "cpu",
   "backup_model": "base"
 }

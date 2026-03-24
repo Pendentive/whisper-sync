@@ -70,3 +70,14 @@ No automated test suite exists. All verification is manual.
 3. Verify: main process detects the crash and shows an error state
 4. Verify: worker respawns automatically
 5. Start another dictation and verify it works
+
+## Backup Dictation Test
+
+1. Start a meeting recording (Ctrl+Shift+M)
+2. Press Ctrl+Shift+Space to trigger dictation
+3. Verify: dictation works on CPU (backup model)
+4. Verify: meeting recording continues uninterrupted during and after dictation
+5. Verify: yellow double-flash appears on rapid hotkey presses during model load
+6. Verify: Settings > Device label shows correct device (CPU when CPU selected)
+7. Verify: tray icon shows three rings with blue inner dot during meeting + dictation
+8. Verify: log output contains "Backup model loading [cpu]" confirming CPU device

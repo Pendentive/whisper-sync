@@ -183,6 +183,26 @@ class WhisperSync:
         self.tray.icon = icon
         self.tray.title = f"WhisperSync: {title}"
 
+    def _yellow_flash(self):
+        """Universal loading/queuing signal: two quick yellow flashes (150ms on/off/on)."""
+        if getattr(self, '_flashing', False):
+            return
+        self._flashing = True
+        def _flash():
+            try:
+                from .icons import yellow_flash_icon
+                original = self.tray.icon
+                for _ in range(2):
+                    self.tray.icon = yellow_flash_icon()
+                    import time; time.sleep(0.15)
+                    self.tray.icon = original
+                    time.sleep(0.15)
+            except Exception:
+                pass  # tray may not be ready
+            finally:
+                self._flashing = False
+        threading.Thread(target=_flash, daemon=True).start()
+
     # --- Click dispatch ---
 
     def _dispatch_action(self, action: str):
@@ -278,6 +298,10 @@ class WhisperSync:
             elif self.mode == "meeting" or (self.mode is None and self._meeting_transcribing):
                 # Dictation during meeting recording or meeting transcription
                 if self.cfg.get("always_available_dictation", True):
+                    if self._backup.is_loading:
+                        logger.debug("Backup model still loading, triggering yellow flash")
+                        self._yellow_flash()
+                        return
                     self._start_overlay_dictation()
                 else:
                     logger.info("Dictation unavailable during meeting (always_available_dictation disabled)")
@@ -750,6 +774,8 @@ class WhisperSync:
         temp = self._meeting_temp_dir()
         mic_temp = temp / "mic-temp.wav"
         self.recorder.start_streaming(mic_temp, disk_only=True)
+        if self.cfg.get("always_available_dictation", True):
+            self._backup.preload()
 
     _ABORT = object()  # Sentinel for abort
 
@@ -1956,7 +1982,7 @@ class WhisperSync:
                                  pystray.Menu(*dictation_model_items)),
                 pystray.MenuItem(f"Meeting Model\t{self.cfg['model']}",
                                  pystray.Menu(*meeting_model_items)),
-                pystray.MenuItem(f"Device\t{current_device} - {gpu_name or 'CPU'}",
+                pystray.MenuItem(f"Device\t{self._get_device_label()}",
                                  pystray.Menu(*device_items)),
                 pystray.MenuItem("Always Available Dictation", pystray.Menu(
                     pystray.MenuItem(
@@ -2427,28 +2453,26 @@ class WhisperSync:
         threading.Thread(target=_do_restart, daemon=True).start()
 
     def _get_device_label(self) -> str:
-        """Return display string for current device setting."""
-        device = self.cfg.get("device", "auto")
-        if device == "auto":
+        """Return display string for the active resolved device."""
+        device_setting = self.cfg.get("device", "auto")
+        if device_setting == "cpu":
+            return "CPU"
+        elif device_setting in ("gpu", "cuda"):
             try:
                 from .transcribe import get_gpu_name
-                gpu = get_gpu_name()
-                if gpu:
-                    return f"Auto ({gpu})"
-                return "Auto (CPU -- no GPU detected)"
-            except Exception:
-                return "Auto"
-        elif device in ("gpu", "cuda"):
-            try:
-                from .transcribe import get_gpu_name
-                gpu = get_gpu_name()
-                if gpu:
-                    return f"GPU ({gpu})"
-                return "GPU (not available)"
+                gpu_name = get_gpu_name()
+                return gpu_name if gpu_name else "GPU"
             except Exception:
                 return "GPU"
-        else:
-            return "CPU"
+        else:  # auto
+            try:
+                from .transcribe import get_gpu_name
+                gpu_name = get_gpu_name()
+                if gpu_name:
+                    return f"Auto ({gpu_name})"
+                return "Auto (CPU)"
+            except Exception:
+                return "Auto"
 
     def _toggle_always_available_dictation(self):
         self.cfg["always_available_dictation"] = not self.cfg.get("always_available_dictation", True)

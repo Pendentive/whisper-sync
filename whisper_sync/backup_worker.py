@@ -46,10 +46,31 @@ class BackupTranscriber:
         self._device = None
         self._compute_type = None
         self._model_name = None
+        self._loading = False
         self._lock = threading.Lock()
+
+    @property
+    def is_loading(self) -> bool:
+        return self._loading
 
     def is_enabled(self) -> bool:
         return self.cfg.get("always_available_dictation", True)
+
+    def preload(self):
+        """Pre-load backup model in background thread. Called when meeting starts."""
+        if self._model is not None or self._loading:
+            return
+
+        def _do_preload():
+            self._loading = True
+            try:
+                with self._lock:
+                    if self._model is None:
+                        self._load()
+            finally:
+                self._loading = False
+
+        threading.Thread(target=_do_preload, daemon=True, name="backup-preload").start()
 
     @property
     def device(self) -> str:
@@ -116,54 +137,16 @@ class BackupTranscriber:
         logger.info(f"Backup model ready [{device}] {model_name}")
 
     def _resolve_device(self) -> str:
-        """Determine which device to use for the backup model."""
-        backup_device = self.cfg.get("backup_device", "auto")
+        """Determine device for backup model. Always CPU unless explicitly overridden."""
+        backup_device = self.cfg.get("backup_device", "cpu")
 
-        if backup_device == "cpu":
-            return "cpu"
         if backup_device in ("gpu", "cuda"):
+            main_device = self.cfg.get("device", "auto")
+            if main_device in ("gpu", "cuda"):
+                logger.warning("Backup model on GPU while main model also on GPU - may cause VRAM pressure")
             return "cuda"
 
-        # Auto-detect: check if primary + backup fit in VRAM
-        try:
-            import torch
-            if not torch.cuda.is_available():
-                logger.info("Backup device auto -> CPU (no GPU available)")
-                return "cpu"
-
-            total_vram = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-
-            # 8 GB or less: always CPU for backup (meeting processing uses most VRAM)
-            if total_vram <= 8:
-                logger.info(f"Backup device auto -> CPU ({total_vram:.0f} GB VRAM, too tight for dual models)")
-                return "cpu"
-
-            primary_model = self.cfg.get("model", "large-v3")
-            backup_model = self.cfg.get("backup_model", "base")
-            primary_device = self.cfg.get("device", "auto")
-            # If primary is forced to CPU, it won't consume VRAM
-            primary_vram = 0.0 if primary_device == "cpu" else MODEL_VRAM_GB.get(primary_model, 3.0)
-            backup_vram = MODEL_VRAM_GB.get(backup_model, 1.0)
-            combined = primary_vram + backup_vram
-
-            if combined <= total_vram * VRAM_THRESHOLD:
-                logger.info(
-                    f"Backup device auto -> GPU "
-                    f"({combined:.1f} GB needed, {total_vram:.1f} GB available)"
-                )
-                return "cuda"
-            else:
-                logger.info(
-                    f"Backup device auto -> CPU "
-                    f"({combined:.1f} GB needed > {total_vram * VRAM_THRESHOLD:.1f} GB threshold)"
-                )
-                return "cpu"
-        except ImportError:
-            logger.info("Backup device auto -> CPU (torch not available)")
-            return "cpu"
-        except Exception as e:
-            logger.warning(f"Backup device auto -> CPU (error: {e})")
-            return "cpu"
+        return "cpu"
 
     def unload(self):
         """Free the backup model from memory."""

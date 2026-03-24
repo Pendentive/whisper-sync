@@ -65,3 +65,32 @@ Four tiers controlled by the `log_window` config key:
 - **verbose** - full debug output, prefixed with `[WhisperSync]`
 
 File logging always captures DEBUG level regardless of console tier. Log files rotate daily.
+
+## Tray Icon Anatomy (Three-Ring Model)
+
+The tray icon uses a layered three-ring design:
+
+- **Outer ring** (3px): reflects speaker/channel health status.
+- **Middle circle**: primary indicator for mic status and recording state.
+- **Inner dot** (4px, optional): dictation overlay indicator. Appears ONLY during overlay dictation (dictation while a meeting is active).
+
+### Color State Table
+
+| State | Outer Ring | Middle Circle | Inner Dot |
+|-------|-----------|---------------|-----------|
+| Idle | Gray (#808080) | Gray (#808080) | None |
+| Recording (meeting) | Dark red (#CC3333) | Light red (#FF4444) | None |
+| Recording (speaker fail) | Yellow (#FFAA00) | Light red (#FF4444) | None |
+| Dictation (standalone) | White/light gray (#CCCCCC) | Blue (#4488FF) | None |
+| Dictation (overlay, during meeting) | Dark red (#CC3333) | Light red (#FF4444) | Blue (#4488FF) |
+| Dictation (overlay, during transcription) | Dark amber (#CC8800) | Amber (#FFAA00) | Blue (#4488FF) |
+| Transcribing | Dark amber (#CC8800) | Amber (#FFAA00) | None |
+| Saving | Dark amber (#CC8800) | Amber (#FFAA00) | None |
+| Summarizing | Dark purple (#9944CC) | Light purple (#CC66FF) | None |
+| Queued | Dark orange (#CC6600) | Orange (#FF8800) | None |
+| Done | Dark green (#44CC44) | Light green (#66FF66) | None |
+| Error | Dark magenta (#CC44CC) | Light magenta (#FF66FF) | None |
+
+### Yellow Double-Flash Convention
+
+The yellow double-flash is the universal "loading/queuing" signal. Timing: 150ms on, 150ms off, 150ms on. Used when a hotkey press is received while a model is still loading or a previous operation is queued.
