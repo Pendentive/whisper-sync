@@ -57,20 +57,14 @@ class BackupTranscriber:
         return self.cfg.get("always_available_dictation", True)
 
     def preload(self):
-        """Pre-load backup model in background thread. Called when meeting starts."""
-        if self._model is not None or self._loading:
-            return
+        """Pre-load backup model. Currently disabled pending subprocess rewrite.
 
-        def _do_preload():
-            self._loading = True
-            try:
-                with self._lock:
-                    if self._model is None:
-                        self._load()
-            finally:
-                self._loading = False
-
-        threading.Thread(target=_do_preload, daemon=True, name="backup-preload").start()
+        Loading any CTranslate2 model in the main process segfaults because the
+        worker subprocess already owns a CTranslate2/torch context. The backup
+        model needs its own subprocess (like TranscriptionWorker).
+        """
+        # TODO: Reimplement using a second TranscriptionWorker subprocess
+        logger.debug("Backup preload skipped (subprocess implementation pending)")
 
     @property
     def device(self) -> str:
@@ -87,24 +81,12 @@ class BackupTranscriber:
             Transcribed text. Raises on failure (caller handles).
         """
         with self._lock:
-            if self._model is None:
-                self._load()
-
-            # Normalize audio for faster_whisper
-            if audio_np.dtype == np.int16:
-                audio_np = audio_np.astype(np.float32) / 32768.0
-            audio_np = np.ascontiguousarray(audio_np.flatten(), dtype=np.float32)
-
-            language = self.cfg.get("language", "en")
-
-            logger.info(
-                f"Backup transcribe [{self._device}] {self._model_name}..."
+            # Backup transcription disabled - CTranslate2 cannot load in main process
+            # TODO: Reimplement with subprocess-based worker
+            raise RuntimeError(
+                "Backup transcription unavailable (subprocess implementation pending). "
+                "Dictation will queue on the primary worker instead."
             )
-            segments, _ = self._model.transcribe(
-                audio_np, beam_size=5, language=language, vad_filter=True
-            )
-            text = " ".join(seg.text.strip() for seg in segments)
-            return text
 
     def _load(self):
         """Lazily load the backup model.
