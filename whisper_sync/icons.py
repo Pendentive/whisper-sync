@@ -128,13 +128,15 @@ def dictation_icon() -> Image.Image:
     return _make_dual_icon(COLOR_DICTATION_INNER, COLOR_DICTATION_OUTER)
 
 
-def dictation_during_recording_icon() -> Image.Image:
+def dictation_during_recording_icon(speaker_ok: bool = True) -> Image.Image:
     """Dictation active during meeting recording.
 
-    Outer ring = dark red (meeting still recording).
+    Outer ring = dark red (meeting still recording), or yellow if speaker
+    loopback is unhealthy.
     Inner = small blue dot (dictation active).
     """
-    return _make_overlay_icon(COLOR_RECORDING_OUTER)
+    outer = COLOR_RECORDING_OUTER if speaker_ok else COLOR_RECORDING_FAIL
+    return _make_overlay_icon(outer)
 
 
 def dictation_during_transcription_icon() -> Image.Image:

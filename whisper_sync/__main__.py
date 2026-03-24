@@ -157,7 +157,7 @@ class WhisperSync:
         # Dictation overlay during meeting takes priority for icon display
         if self._dictation_overlay:
             if self.mode == "meeting":
-                icon, title = dictation_during_recording_icon(), "Dictating (meeting recording)..."
+                icon, title = dictation_during_recording_icon(speaker_ok=speaker_ok), "Dictating (meeting recording)..."
             elif self._meeting_transcribing:
                 icon, title = dictation_during_transcription_icon(), "Dictating (meeting transcribing)..."
             else:
@@ -420,10 +420,8 @@ class WhisperSync:
         Uses an independent AudioRecorder so the meeting recording is never
         interrupted. Transcription uses the backup model (CPU or secondary GPU).
         """
-        if not self._backup.is_enabled():
-            logger.info("Overlay dictation unavailable - backup transcriber not enabled")
-            notify("Dictation unavailable", "Backup model not configured")
-            return
+        # Note: always_available_dictation config flag already gates the call to
+        # this method in toggle_dictation(), so no need to re-check is_enabled() here.
 
         meeting_state = "recording" if self.mode == "meeting" else "transcribing"
         backup_model = self.cfg.get("backup_model", "base")
@@ -516,7 +514,32 @@ class WhisperSync:
                     if text:
                         paste(text, self.cfg["paste_method"])
                     t1 = _time.perf_counter()
-                    logger.info(f"Overlay dictation fallback: {t1 - t0:.2f}s, {len(text or '')} chars")
+                    duration = t1 - t0
+                    char_count = len(text or "")
+                    logger.info(f"Overlay dictation fallback: {duration:.2f}s, {char_count} chars")
+
+                    # Post-dictation bookkeeping (same as the normal overlay path)
+                    self._stats["dictations"] += 1
+                    self._stats["total_dictation_chars"] += char_count
+                    self._stats["total_dictation_time"] += duration
+
+                    incognito = self.cfg.get("incognito", False)
+                    if text and not incognito:
+                        dictation_log.append(text, duration)
+                        self._dictation_history.append({
+                            "text": text,
+                            "timestamp": datetime.now().strftime("%H:%M"),
+                            "chars": len(text),
+                        })
+                        if len(self._dictation_history) > 10:
+                            self._dictation_history = self._dictation_history[-10:]
+                        self._refresh_menu()
+
+                    delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
+                    if incognito:
+                        logger.info(f"Overlay dictation fallback: {duration:.2f}s - {delivery} ({char_count} chars)")
+                    else:
+                        log_dictation_result(text or "", duration, delivery, char_count)
                 except Exception as fallback_err:
                     logger.error(f"Overlay dictation fallback also failed: {fallback_err}")
 
