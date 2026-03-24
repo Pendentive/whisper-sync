@@ -46,10 +46,29 @@ class BackupTranscriber:
         self._device = None
         self._compute_type = None
         self._model_name = None
+        self._loading = False
         self._lock = threading.Lock()
+
+    @property
+    def is_loading(self) -> bool:
+        return self._loading
 
     def is_enabled(self) -> bool:
         return self.cfg.get("always_available_dictation", True)
+
+    def preload(self):
+        """Pre-load backup model in background thread. Called when meeting starts."""
+        if self._model is not None or self._loading:
+            return
+
+        def _do_preload():
+            self._loading = True
+            try:
+                self._load()
+            finally:
+                self._loading = False
+
+        threading.Thread(target=_do_preload, daemon=True, name="backup-preload").start()
 
     @property
     def device(self) -> str:
