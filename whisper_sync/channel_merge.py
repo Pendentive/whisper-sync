@@ -199,7 +199,8 @@ def unify_speaker_labels(segments):
 
     for seg in segments:
         spk = seg.get("speaker", "UNKNOWN")
-        if seg["origin"] == "local" or (seg["origin"] == "ambiguous" and seg["source_channel"] == 0):
+        origin = seg.get("origin", "ambiguous")
+        if origin == "local" or (origin == "ambiguous" and seg.get("source_channel", 0) == 0):
             local_speakers.add(spk)
         else:
             remote_speakers.add(spk)
@@ -216,11 +217,12 @@ def unify_speaker_labels(segments):
     # Apply
     for seg in segments:
         spk = seg.get("speaker", "UNKNOWN")
-        origin = seg["origin"]
+        seg["speaker"] = spk  # ensure key exists
+        origin = seg.get("origin", "ambiguous")
         if origin == "ambiguous":
-            origin = "local" if seg["source_channel"] == 0 else "remote"
+            origin = "local" if seg.get("source_channel", 0) == 0 else "remote"
         key = (origin, spk)
-        seg["speaker"] = label_map.get(key, seg["speaker"])
+        seg["speaker"] = label_map.get(key, spk)
 
     return segments
 
