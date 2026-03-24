@@ -498,28 +498,111 @@ def _channel_diarize(audio_path: str, window_ms: int = 500) -> dict | None:
 def stage_diarize(ctx: dict) -> dict:
     """Stage 3: Run speaker diarization pipeline.
 
-    For stereo recordings (mic + remote on separate channels),
-    uses channel-based diarization which is more accurate.
-    Falls back to the PyAnnote embedding model for mono or
-    when channels are too similar.
+    For stereo recordings: per-channel transcription + confidence fusion (Tier 1).
+    Falls back to energy-based channel diarization (Tier 2), then balanced mono
+    with PyAnnote model (Tier 3), then raw audio with PyAnnote model (Tier 4).
     """
-    # Try channel-based diarization first for stereo recordings
-    channel_result = _channel_diarize(ctx["audio_path"])
+    from .channel_merge import is_stereo, split_channels, load_channel_audio, merge_channel_results
+
+    audio_path = ctx["audio_path"]
+
+    # Check if stereo
+    if not is_stereo(audio_path):
+        # Mono: standard model-based diarization
+        with _lock:
+            pipeline = _load_diarize_pipeline()
+        logger.info("Diarizing (mono)...")
+        return pipeline(audio_path)
+
+    # Tier 1: Per-channel transcription + confidence fusion
+    logger.info("Stereo detected, running per-channel pipeline...")
+    ch0_path = ch1_path = None
+    try:
+        ch0_path, ch1_path = split_channels(audio_path)
+        ch0_audio, ch1_audio, sr = load_channel_audio(audio_path)
+
+        # Get duration
+        import wave as _wave
+        with _wave.open(audio_path, "rb") as wf:
+            duration = wf.getnframes() / wf.getframerate()
+
+        # Run full pipeline on ch0
+        logger.info("Processing channel 0 (mic)...")
+        ctx_ch0 = stage_prepare(ch0_path, model_override=ctx.get("model_name"))
+        result_ch0 = stage_transcribe(ctx_ch0)
+        result_ch0 = stage_align(ctx_ch0, result_ch0)
+        with _lock:
+            pipeline = _load_diarize_pipeline()
+        diarize_ch0 = pipeline(ch0_path)
+        import whisperx
+        result_ch0 = whisperx.assign_word_speakers(diarize_ch0, result_ch0)
+
+        # Run full pipeline on ch1
+        logger.info("Processing channel 1 (remote)...")
+        ctx_ch1 = stage_prepare(ch1_path, model_override=ctx.get("model_name"))
+        result_ch1 = stage_transcribe(ctx_ch1)
+        result_ch1 = stage_align(ctx_ch1, result_ch1)
+        diarize_ch1 = pipeline(ch1_path)
+        result_ch1 = whisperx.assign_word_speakers(diarize_ch1, result_ch1)
+
+        # Merge
+        segments_ch0 = result_ch0.get("segments", [])
+        segments_ch1 = result_ch1.get("segments", [])
+        merged, quality_ok = merge_channel_results(
+            segments_ch0, segments_ch1, ch0_audio, ch1_audio, sr, duration
+        )
+
+        if quality_ok:
+            # Store merged segments in ctx for stage_finalize to use
+            ctx["_per_channel_segments"] = merged
+            ctx["_per_channel_result"] = result_ch0  # base result structure
+            # Return a dummy diarize result; stage_finalize will use _per_channel_segments
+            return diarize_ch0  # not actually used when _per_channel_segments is set
+        else:
+            logger.warning("Per-channel quality check failed, falling back to channel diarization")
+
+    except Exception as e:
+        logger.warning(f"Per-channel pipeline failed: {e}")
+
+    finally:
+        # Clean up temp files
+        for p in (ch0_path, ch1_path):
+            if p and os.path.exists(p):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+
+    # Tier 2: Energy-based channel diarization
+    channel_result = _channel_diarize(audio_path)
     if channel_result is not None:
         return channel_result
 
-    # Fallback to model-based diarization
-    with _lock:
-        pipeline = _load_diarize_pipeline()
-    logger.info("Diarizing...")
-    return pipeline(ctx["audio_path"])
+    # Tier 3: Balanced mono + PyAnnote model
+    balanced_path = _create_balanced_mono(audio_path)
+    diarize_path = balanced_path or audio_path
+    try:
+        with _lock:
+            pipeline = _load_diarize_pipeline()
+        logger.info("Diarizing (balanced mono fallback)...")
+        return pipeline(diarize_path)
+    finally:
+        if balanced_path and os.path.exists(balanced_path):
+            try:
+                os.unlink(balanced_path)
+            except OSError:
+                pass
 
 
 def stage_finalize(ctx: dict, result: dict, diarize_segments=None) -> dict:
     """Stage 4: Assign speakers, save JSON, build output dict."""
     import whisperx
 
-    if diarize_segments is not None:
+    # Check if per-channel pipeline already produced merged segments
+    per_channel = ctx.get("_per_channel_segments")
+    if per_channel is not None:
+        result["segments"] = per_channel
+    elif diarize_segments is not None:
         result = whisperx.assign_word_speakers(diarize_segments, result)
 
     text = " ".join(seg.get("text", "") for seg in result.get("segments", []))
