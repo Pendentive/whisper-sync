@@ -2448,28 +2448,26 @@ class WhisperSync:
         threading.Thread(target=_do_restart, daemon=True).start()
 
     def _get_device_label(self) -> str:
-        """Return display string for current device setting."""
-        device = self.cfg.get("device", "auto")
-        if device == "auto":
+        """Return display string for the active resolved device."""
+        device_setting = self.cfg.get("device", "auto")
+        if device_setting == "cpu":
+            return "CPU"
+        elif device_setting in ("gpu", "cuda"):
             try:
                 from .transcribe import get_gpu_name
-                gpu = get_gpu_name()
-                if gpu:
-                    return f"Auto ({gpu})"
-                return "Auto (CPU -- no GPU detected)"
-            except Exception:
-                return "Auto"
-        elif device in ("gpu", "cuda"):
-            try:
-                from .transcribe import get_gpu_name
-                gpu = get_gpu_name()
-                if gpu:
-                    return f"GPU ({gpu})"
-                return "GPU (not available)"
+                gpu_name = get_gpu_name()
+                return gpu_name if gpu_name else "GPU"
             except Exception:
                 return "GPU"
-        else:
-            return "CPU"
+        else:  # auto
+            try:
+                from .transcribe import get_gpu_name
+                gpu_name = get_gpu_name()
+                if gpu_name:
+                    return f"Auto ({gpu_name})"
+                return "Auto (CPU)"
+            except Exception:
+                return "Auto"
 
     def _toggle_always_available_dictation(self):
         self.cfg["always_available_dictation"] = not self.cfg.get("always_available_dictation", True)
