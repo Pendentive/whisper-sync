@@ -309,7 +309,7 @@ class WhisperSync:
                         used_backup = True
                         t1 = _time.perf_counter()
                         backup_model = self.cfg.get("backup_model", "base")
-                        backup_device = self._backup._device or "?"
+                        backup_device = self._backup.device
                         logger.info(
                             f"Dictation (backup, {backup_device} {backup_model}): "
                             f"{t1 - t0:.2f}s"

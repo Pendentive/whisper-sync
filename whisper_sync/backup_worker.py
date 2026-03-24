@@ -8,6 +8,10 @@ transcription completes in 1-3s on CPU or <1s on GPU with a small model.
 
 The model is loaded lazily on first use and kept in memory for
 subsequent calls. Call unload() to free it explicitly.
+
+NOTE: WhisperX is loaded in the main process thread for simplicity.
+The backup model is small and transcription is brief (~1-3s). If
+stability issues arise, migrate to a subprocess model.
 """
 
 import threading
@@ -47,6 +51,11 @@ class BackupTranscriber:
     def is_enabled(self) -> bool:
         return self.cfg.get("always_available_dictation", True)
 
+    @property
+    def device(self) -> str:
+        """Current device string, or 'not loaded' if model is not loaded."""
+        return self._device or "not loaded"
+
     def transcribe(self, audio_np: np.ndarray) -> str:
         """Transcribe audio using the backup model. Loads model on first call.
 
@@ -54,7 +63,7 @@ class BackupTranscriber:
             audio_np: Raw audio as float32 or int16 numpy array (16kHz mono).
 
         Returns:
-            Transcribed text string, or empty string on failure.
+            Transcribed text. Raises on failure (caller handles).
         """
         with self._lock:
             if self._model is None:
@@ -90,8 +99,8 @@ class BackupTranscriber:
         device = self._resolve_device()
         compute_type = "int8" if device == "cpu" else self.cfg.get("compute_type", "float16")
 
-        from .paths import get_data_dir
-        model_cache = get_data_dir() / "models"
+        from .paths import get_model_cache
+        model_cache = get_model_cache()
 
         logger.info(f"Loading backup model [{device}] {model_name} ({compute_type})...")
         self._model = whisperx.load_model(
@@ -122,7 +131,7 @@ class BackupTranscriber:
                 logger.info("Backup device auto -> CPU (no GPU available)")
                 return "cpu"
 
-            total_vram = torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)
+            total_vram = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
 
             # 8 GB or less: always CPU for backup (meeting processing uses most VRAM)
             if total_vram <= 8:
@@ -131,7 +140,9 @@ class BackupTranscriber:
 
             primary_model = self.cfg.get("model", "large-v3")
             backup_model = self.cfg.get("backup_model", "base")
-            primary_vram = MODEL_VRAM_GB.get(primary_model, 3.0)
+            primary_device = self.cfg.get("device", "auto")
+            # If primary is forced to CPU, it won't consume VRAM
+            primary_vram = 0.0 if primary_device == "cpu" else MODEL_VRAM_GB.get(primary_model, 3.0)
             backup_vram = MODEL_VRAM_GB.get(backup_model, 1.0)
             combined = primary_vram + backup_vram
 
@@ -196,17 +207,22 @@ class BackupTranscriber:
             if not torch.cuda.is_available():
                 return None  # no GPU, no VRAM concern
 
-            total_vram = torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)
+            total_vram = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
             primary_vram = MODEL_VRAM_GB.get(primary_model, 3.0)
             backup_vram = MODEL_VRAM_GB.get(backup_model, 1.0)
             combined = primary_vram + backup_vram
             threshold = total_vram * VRAM_THRESHOLD
 
             if combined > threshold:
+                backup_device = self.cfg.get("backup_device", "auto")
+                if backup_device == "auto":
+                    advice = "Backup will use CPU in auto mode."
+                else:
+                    advice = "Consider switching to a smaller model or CPU to avoid OOM."
                 return (
                     f"{primary_model} + {backup_model} need ~{combined:.1f} GB VRAM "
                     f"({total_vram:.1f} GB total, {threshold:.1f} GB safe limit). "
-                    f"Backup will use CPU instead."
+                    f"{advice}"
                 )
         except Exception:
             pass
