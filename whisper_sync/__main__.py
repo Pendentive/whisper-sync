@@ -1062,6 +1062,8 @@ class WhisperSync:
                             root.after(10, lambda: _autocomplete(ent, var, names))
 
                     def _autocomplete(ent, var, names):
+                        if _closing[0]:
+                            return
                         current = var.get()
                         if not current:
                             _close_listbox()
@@ -1105,13 +1107,30 @@ class WhisperSync:
             btn_frame = tk.Frame(root, bg=bg)
             btn_frame.pack(pady=(14, 12))
 
+            _closing = [False]
+
             def _confirm():
-                result[0] = {spk_id: var.get() for spk_id, var in dropdowns.items()}
-                root.destroy()
+                if _closing[0]:
+                    return
+                _closing[0] = True
+                try:
+                    result[0] = {spk_id: var.get() for spk_id, var in dropdowns.items()}
+                except Exception:
+                    pass
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
 
             def _skip():
+                if _closing[0]:
+                    return
+                _closing[0] = True
                 result[0] = None
-                root.destroy()
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
 
             self._flat_button(btn_frame, "Confirm", _confirm,
                               bg=accent, fg="#1e1e2e", hover_bg="#74c7ec", bold=True).pack(side=tk.RIGHT, padx=8)
