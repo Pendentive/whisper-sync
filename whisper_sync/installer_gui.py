@@ -528,7 +528,8 @@ class InstallerApp:
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
         )
-        canvas.create_window((0, 0), window=self.gs_frame, anchor="nw")
+        canvas.create_window((0, 0), window=self.gs_frame, anchor="nw",
+                             width=WIN_W - 56 - 16)
         canvas.configure(yscrollcommand=scrollbar.set)
 
         scrollbar.pack(side="right", fill="y")
@@ -565,115 +566,119 @@ class InstallerApp:
     def _populate_getstarted(self):
         f = self.gs_frame
 
-        # Success header
+        # Success header - cyan H1, not green
         tk.Label(
-            f, text="WhisperSync installed successfully!",
-            bg=BG, fg=GREEN, font=("Segoe UI", 14, "bold"),
-        ).pack(anchor="w", pady=(10, 12))
+            f, text="Installation Complete",
+            bg=BG, fg=ACCENT, font=("Segoe UI", 14, "bold"),
+        ).pack(anchor="w", pady=(10, 2))
+        tk.Label(
+            f, text="WhisperSync is ready to use.",
+            bg=BG, fg=FG, font=("Segoe UI", 10),
+        ).pack(anchor="w", pady=(0, 14))
 
-        # Launch info
+        # Feature comparison - horizontal layout
         tk.Label(
-            f, text="LAUNCH", bg=BG, fg=YELLOW,
-            font=("Segoe UI", 11, "bold"),
-        ).pack(anchor="w", pady=(0, 4))
-        tk.Label(
-            f, text="Double-click WhisperSync on your Desktop\n"
-                    "Or: powershell -File start.ps1",
-            bg=BG, fg=FG_DIM, font=("Segoe UI", 9), justify="left",
-        ).pack(anchor="w", pady=(0, 12))
+            f, text="What runs where",
+            bg=BG, fg=ACCENT, font=("Segoe UI", 11, "bold"),
+        ).pack(anchor="w", pady=(0, 6))
 
-        # Local vs Cloud table
-        table_frame = tk.Frame(f, bg=BG)
-        table_frame.pack(fill="x", pady=(0, 12))
-
-        tk.Label(
-            table_frame, text="100% LOCAL", bg=BG, fg=GREEN,
-            font=("Segoe UI", 10, "bold"),
-        ).grid(row=0, column=0, sticky="w", padx=(0, 40))
-        tk.Label(
-            table_frame, text="CLOUD (optional)", bg=BG, fg=YELLOW,
-            font=("Segoe UI", 10, "bold"),
-        ).grid(row=0, column=1, sticky="w")
-
-        local_items = ["Dictation", "Transcription", "Speaker ID", "Audio capture"]
-        cloud_items = ["Meeting minutes", "(via Claude CLI)", "", ""]
-        for i, (loc, cld) in enumerate(zip(local_items, cloud_items)):
+        features = [
+            ("Dictation transcription", "Local", GREEN),
+            ("Meeting transcription", "Local", GREEN),
+            ("Speaker identification", "Local", GREEN),
+            ("Audio recording", "Local", GREEN),
+            ("Meeting minutes", "Cloud (Claude CLI)", ACCENT),
+        ]
+        for feat_name, location, color in features:
+            row = tk.Frame(f, bg=BG)
+            row.pack(fill="x", pady=1)
             tk.Label(
-                table_frame, text=loc, bg=BG, fg=FG,
-                font=("Segoe UI", 9),
-            ).grid(row=i + 1, column=0, sticky="w", padx=(4, 40))
-            if cld:
-                tk.Label(
-                    table_frame, text=cld, bg=BG, fg=FG_DIM,
-                    font=("Segoe UI", 9),
-                ).grid(row=i + 1, column=1, sticky="w")
+                row, text=feat_name, bg=BG, fg=FG,
+                font=("Segoe UI", 9), anchor="w",
+            ).pack(side="left")
+            tk.Label(
+                row, text=location, bg=BG, fg=color,
+                font=("Segoe UI", 9), anchor="e",
+            ).pack(side="right")
 
         tk.Label(
-            f, text="Audio never leaves your machine.",
-            bg=BG, fg=GREEN, font=("Segoe UI", 10),
-        ).pack(anchor="w", pady=(0, 16))
+            f, text="All audio stays on your machine.",
+            bg=BG, fg=FG_DIM, font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(6, 14))
 
         # Separator
         tk.Frame(f, bg=FG_DIM, height=1).pack(fill="x", pady=(0, 12))
 
-        # GET STARTED header
+        # GET STARTED header - cyan H1
         tk.Label(
-            f, text="GET STARTED", bg=BG, fg=ACCENT,
-            font=("Segoe UI", 11, "bold"),
-        ).pack(anchor="w", pady=(0, 4))
+            f, text="Get Started",
+            bg=BG, fg=ACCENT, font=("Segoe UI", 11, "bold"),
+        ).pack(anchor="w", pady=(0, 2))
         tk.Label(
-            f, text="Record your first dictation and meeting!",
-            bg=BG, fg=FG, font=("Segoe UI", 10),
-        ).pack(anchor="w", pady=(0, 12))
+            f, text="Launch WhisperSync, then try these:",
+            bg=BG, fg=FG_DIM, font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(0, 10))
 
-        # Try Dictation
+        # Try Dictation - white H2
         tk.Label(
-            f, text="Try Dictation:", bg=BG, fg=MAGENTA,
+            f, text="Dictation", bg=BG, fg=FG,
             font=("Segoe UI", 10, "bold"),
-        ).pack(anchor="w", pady=(0, 4))
+        ).pack(anchor="w", pady=(0, 3))
         dictation_steps = [
-            "1. Click any text box (Notepad, browser, chat)",
-            "2. Press Ctrl+Shift+Space and say your favorite quote",
-            "3. Press Ctrl+Shift+Space again",
-            "4. Your words appear right where you clicked!",
+            ("1. Click any text box (Notepad, browser, chat)", FG_DIM),
+            ("2. Press ", FG_DIM, "Ctrl+Shift+Space", ACCENT),
+            ("3. Speak, then press the same hotkey again", FG_DIM),
+            ("4. Text appears where your cursor is", FG_DIM),
         ]
-        for s in dictation_steps:
-            color = GREEN if s.startswith("4.") else FG
-            tk.Label(
-                f, text=f"    {s}", bg=BG, fg=color,
-                font=("Segoe UI", 9), anchor="w",
-            ).pack(anchor="w")
+        for item in dictation_steps:
+            if len(item) == 2:
+                tk.Label(
+                    f, text=f"    {item[0]}", bg=BG, fg=item[1],
+                    font=("Segoe UI", 9), anchor="w",
+                ).pack(anchor="w")
+            else:
+                row = tk.Frame(f, bg=BG)
+                row.pack(anchor="w")
+                tk.Label(
+                    row, text=f"    {item[0]}", bg=BG, fg=item[1],
+                    font=("Segoe UI", 9), anchor="w",
+                ).pack(side="left")
+                tk.Label(
+                    row, text=item[2], bg=BG, fg=item[3],
+                    font=("Segoe UI", 9, "bold"), anchor="w",
+                ).pack(side="left")
 
         tk.Label(f, text="", bg=BG).pack()  # spacer
 
-        # Try a Meeting
+        # Try a Meeting - white H2
         tk.Label(
-            f, text="Try a Meeting:", bg=BG, fg=MAGENTA,
+            f, text="Meetings", bg=BG, fg=FG,
             font=("Segoe UI", 10, "bold"),
-        ).pack(anchor="w", pady=(0, 4))
+        ).pack(anchor="w", pady=(0, 3))
         meeting_steps = [
-            "1. Find the gray circle in your system tray (bottom-right)",
-            "2. Left-click it (it turns red - you're recording!)",
-            "3. Talk, play a video, join a call - it hears everything",
-            "4. Left-click again and follow the save dialog",
-            "5. Transcript with speaker names in your folder!",
+            ("1. Press ", FG_DIM, "Ctrl+Shift+M", ACCENT),
+            ("2. The tray icon turns red - recording", FG_DIM),
+            ("3. Talk, join a call, play a video", FG_DIM),
+            ("4. Press the same hotkey to stop and save", FG_DIM),
+            ("5. Transcript with speaker names saved to your folder", FG_DIM),
         ]
-        for s in meeting_steps:
-            color = GREEN if s.startswith("5.") else FG
-            tk.Label(
-                f, text=f"    {s}", bg=BG, fg=color,
-                font=("Segoe UI", 9), anchor="w",
-            ).pack(anchor="w")
-
-        tk.Label(f, text="", bg=BG).pack()  # spacer
-
-        # Cloud AI bonus
-        tk.Label(
-            f,
-            text="    * With Cloud AI (Claude CLI), minutes are automatically\n"
-                 "      generated with action items and summaries *",
-            bg=BG, fg=FG_DIM, font=("Segoe UI", 9), justify="left",
-        ).pack(anchor="w", pady=(0, 8))
+        for item in meeting_steps:
+            if len(item) == 2:
+                tk.Label(
+                    f, text=f"    {item[0]}", bg=BG, fg=item[1],
+                    font=("Segoe UI", 9), anchor="w",
+                ).pack(anchor="w")
+            else:
+                row = tk.Frame(f, bg=BG)
+                row.pack(anchor="w")
+                tk.Label(
+                    row, text=f"    {item[0]}", bg=BG, fg=item[1],
+                    font=("Segoe UI", 9), anchor="w",
+                ).pack(side="left")
+                tk.Label(
+                    row, text=item[2], bg=BG, fg=item[3],
+                    font=("Segoe UI", 9, "bold"), anchor="w",
+                ).pack(side="left")
 
     # ------------------------------------------------------------------
     # Navigation handlers
@@ -1243,174 +1248,17 @@ class InstallerApp:
     # ------------------------------------------------------------------
 
     def _on_benchmark(self):
-        """Run benchmark in a background thread, showing output in a popup."""
-        if self.installing:
-            return
-        self.installing = True
+        """Open a benchmark modal with a live-updating table."""
         self.bench_btn.configure(state="disabled")
-        thread = threading.Thread(target=self._run_benchmark, daemon=True)
-        thread.start()
 
-    def _run_benchmark(self):
-        venv_python = str(self.venv_path / "Scripts" / "python.exe")
-
-        fd, bench_path = tempfile.mkstemp(suffix=".py", prefix="ws-bench-")
-        os.close(fd)
-        bench_script = Path(bench_path)
-        bench_code = (
-            "import warnings, os, sys, time, numpy as np\n"
-            "warnings.filterwarnings('ignore')\n"
-            "os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'\n"
-            f"sys.path.insert(0, {repr(str(self.script_root))})\n"
-            "from whisper_sync.transcribe import _load_whisper_model, _get_device\n"
-            "from whisper_sync import config\n"
-            "cfg = config.load()\n"
-            "device = _get_device()\n"
-            "audio = np.zeros(16000 * 5, dtype=np.float32)\n"
-            "models_to_test = []\n"
-            "from whisper_sync.model_status import is_model_cached\n"
-            "for m in ['tiny', 'base', 'large-v3']:\n"
-            "    if is_model_cached(m):\n"
-            "        models_to_test.append(m)\n"
-            "results = []\n"
-            "for name in models_to_test:\n"
-            "    compute = 'int8' if device == 'cpu' else "
-            "cfg.get('compute_type', 'float16')\n"
-            "    model = _load_whisper_model(name, compute, 'en')\n"
-            "    model.transcribe(audio, batch_size=4, language='en')\n"
-            "    t0 = time.perf_counter()\n"
-            "    for _ in range(3):\n"
-            "        model.transcribe(audio, batch_size=4, language='en')\n"
-            "    avg = (time.perf_counter() - t0) / 3\n"
-            "    results.append((name, avg))\n"
-            "quality = {'tiny': 'Basic', 'base': 'Good', 'large-v3': 'Best'}\n"
-            "fast_models = [n for n, t in results if t < 0.3]\n"
-            "all_fast = all(t < 0.5 for _, t in results)\n"
-            "largest_cached = results[-1][0] if results else None\n"
-            "print()\n"
-            "hdr = f\"{'Model':<13}{'Time':<9}{'Quality':<12}{'Recommendation'}\"\n"
-            "print(hdr)\n"
-            "sep = f\"{'-------':<13}{'------':<9}{'---------':<12}{'---------------'}\"\n"
-            "print(sep)\n"
-            "for name, avg in results:\n"
-            "    rec = ''\n"
-            "    if all_fast and name == 'large-v3':\n"
-            "        rec = '<< GPU fast enough for large-v3 everywhere'\n"
-            "    else:\n"
-            "        parts = []\n"
-            "        if name in fast_models:\n"
-            "            parts.append('<< recommended for dictation')\n"
-            "        if name == 'large-v3' or "
-            "(name == largest_cached and "
-            "'large-v3' not in [n for n, _ in results]):\n"
-            "            parts.append('<< recommended for meetings')\n"
-            "        rec = '  '.join(parts)\n"
-            "    q = quality.get(name, '')\n"
-            "    print(f'{name:<13}{avg:.2f}s    {q:<12}{rec}')\n"
-            "print()\n"
-        )
-        bench_script.write_text(bench_code, encoding="utf-8")
-
-        try:
-            merged_env = os.environ.copy()
-            merged_env["PYTHONWARNINGS"] = (
-                "ignore::UserWarning:pyannote.audio.core.io,"
-                "ignore::UserWarning:pyannote.audio.utils.reproducibility"
-            )
-            proc = subprocess.run(
-                [venv_python, str(bench_script)],
-                capture_output=True, text=True,
-                cwd=str(self.script_root), env=merged_env,
-            )
-
-            # Show results in a popup window
-            def _show():
-                win = tk.Toplevel(self.root)
-                win.title("WhisperSync Benchmark")
-                win.configure(bg=BG)
-                win.resizable(False, False)
-
-                bw, bh = 480, 340
-                bx = self.root.winfo_x() + (WIN_W - bw) // 2
-                by = self.root.winfo_y() + (WIN_H - bh) // 2
-                win.geometry(f"{bw}x{bh}+{bx}+{by}")
-
-                # Dark title bar
-                try:
-                    import ctypes
-                    win.update()
-                    hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
-                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                        hwnd, 20,
-                        ctypes.byref(ctypes.c_int(1)),
-                        ctypes.sizeof(ctypes.c_int),
-                    )
-                except Exception:
-                    pass
-
-                tk.Label(
-                    win, text="Benchmark Results", bg=BG, fg=ACCENT,
-                    font=("Segoe UI", 14, "bold"),
-                ).pack(anchor="w", padx=16, pady=(12, 8))
-
-                text_widget = tk.Text(
-                    win, bg=BG_LIGHT, fg=FG,
-                    font=("Consolas", 10), relief="flat", bd=6,
-                    wrap="word", state="disabled",
-                )
-                text_widget.pack(fill="both", expand=True, padx=16, pady=(0, 8))
-
-                output_lines = []
-                if proc.returncode == 0:
-                    for line in proc.stdout.splitlines():
-                        skip_words = [
-                            "warning", "torchcodec", "lightning", "xet storage",
-                        ]
-                        if line.strip() and not any(
-                            w in line.lower() for w in skip_words
-                        ):
-                            output_lines.append(line)
-                    output_lines.append("")
-                    output_lines.append(
-                        "Accuracy matters for meetings, speed for dictation."
-                    )
-                else:
-                    output_lines.append(f"Benchmark failed: {proc.stderr[:300]}")
-
-                text_widget.configure(state="normal")
-                text_widget.insert("end", "\n".join(output_lines))
-                text_widget.configure(state="disabled")
-
-                tk.Button(
-                    win, text="Close", bg=BG_LIGHT, fg=FG,
-                    font=("Segoe UI", 10), relief="flat", bd=0,
-                    padx=16, pady=4,
-                    activebackground=ACCENT, activeforeground=BTN_FG,
-                    command=win.destroy,
-                ).pack(pady=(0, 12))
-
-            self.root.after(0, _show)
-
-        except Exception as e:
-            def _err():
-                import tkinter.messagebox as mb
-                mb.showerror("Benchmark Error", str(e))
-            self.root.after(0, _err)
-        finally:
-            bench_script.unlink(missing_ok=True)
-            self.installing = False
-            self.root.after(
-                0, lambda: self.bench_btn.configure(state="normal"),
-            )
-
-    def _on_howworks(self):
-        """Show a How It Works popup window."""
         win = tk.Toplevel(self.root)
-        win.title("How WhisperSync Works")
+        win.title("Model Benchmark")
         win.configure(bg=BG)
         win.resizable(False, False)
+        win.transient(self.root)
+        win.grab_set()
 
-        bw, bh = 500, 480
+        bw, bh = 420, 380
         bx = self.root.winfo_x() + (WIN_W - bw) // 2
         by = self.root.winfo_y() + (WIN_H - bh) // 2
         win.geometry(f"{bw}x{bh}+{bx}+{by}")
@@ -1428,94 +1276,366 @@ class InstallerApp:
         except Exception:
             pass
 
-        text = tk.Text(
-            win, bg=BG_LIGHT, fg=FG,
-            font=("Consolas", 9), relief="flat", bd=8,
-            wrap="word", state="disabled",
+        tk.Label(
+            win, text="Model Benchmark", bg=BG, fg=ACCENT,
+            font=("Segoe UI", 14, "bold"),
+        ).pack(anchor="w", padx=16, pady=(12, 4))
+        tk.Label(
+            win, text="Testing cached models on your hardware.",
+            bg=BG, fg=FG_DIM, font=("Segoe UI", 9),
+        ).pack(anchor="w", padx=16, pady=(0, 10))
+
+        # Table header
+        table = tk.Frame(win, bg=BG)
+        table.pack(fill="x", padx=16, pady=(0, 8))
+
+        headers = [("Model", 10, "w"), ("Speed", 8, "w"),
+                    ("Quality", 8, "w"), ("Status", 12, "w")]
+        for col, (text, width, anchor) in enumerate(headers):
+            tk.Label(
+                table, text=text, bg=BG, fg=ACCENT,
+                font=("Segoe UI", 9, "bold"), width=width, anchor=anchor,
+            ).grid(row=0, column=col, sticky="w", padx=(0, 4))
+
+        tk.Frame(table, bg=FG_DIM, height=1).grid(
+            row=1, column=0, columnspan=4, sticky="ew", pady=4,
         )
-        text.pack(fill="both", expand=True, padx=12, pady=(12, 8))
 
-        text.tag_configure("heading", foreground=MAGENTA,
-                            font=("Consolas", 10, "bold"))
-        text.tag_configure("accent", foreground=ACCENT)
-        text.tag_configure("key", foreground=YELLOW)
-        text.tag_configure("dim", foreground=FG_DIM)
-        text.tag_configure("ok", foreground=GREEN)
+        models = ["tiny", "base", "large-v3"]
+        quality_map = {"tiny": "Basic", "base": "Good", "large-v3": "Best"}
+        row_labels = {}
 
-        lines = [
-            ("DICTATION  -  voice-to-text anywhere\n", "heading"),
-            ("\n", None),
-            ("  Start recording       ", None),
-            ("Ctrl+Shift+Space\n", "key"),
-            ("  Stop & paste          ", None),
-            ("Ctrl+Shift+Space", "key"),
-            (" (same key)\n", "dim"),
-            ("  Cancel                ", None),
-            ("Left-click", "key"),
-            (" the tray icon\n", "dim"),
-            ("\n", None),
-            ("  Text goes into the focused text field (editor,\n", "dim"),
-            ("  browser, chat). If nothing is focused, it's\n", "dim"),
-            ("  copied to your clipboard instead.\n", "dim"),
-            ("\n", None),
-            ("  - - - - - - - - - - - - - - - - - - - -\n", "dim"),
-            ("\n", None),
-            ("MEETING  -  record, transcribe, identify speakers\n", "heading"),
-            ("\n", None),
-            ("  Start recording       ", None),
-            ("Ctrl+Shift+M\n", "key"),
-            ("      or                ", None),
-            ("Left-click", "key"),
-            (" the tray icon\n", "dim"),
-            ("  Stop & save           ", None),
-            ("Ctrl+Shift+M", "key"),
-            (" (same key)\n", "dim"),
-            ("\n", None),
-            ("  Records your mic + system audio (what you hear).\n", "dim"),
-            ("  Works with Zoom, Meet, Teams, phone calls,\n", "dim"),
-            ("  in-person, and any audio through your speakers.\n", "dim"),
-            ("\n", None),
-            ("  After you stop, name the meeting and get a full\n", "dim"),
-            ("  transcript with speaker labels. WhisperSync ", "dim"),
-            ("learns\n", "ok"),
-            ("  speakers over time", "ok"),
-            (" - the more you use it, the\n", "dim"),
-            ("  better it recognizes who's talking.\n", "dim"),
-            ("\n", None),
-            ("  - - - - - - - - - - - - - - - - - - - -\n", "dim"),
-            ("\n", None),
-            ("TRAY ICON\n", "heading"),
-            ("\n", None),
-            ("  Gray ", None),
-            (" Ready           ", "dim"),
-            ("Red ", None),
-            (" Recording (live!)\n", "dim"),
-            ("  Amber", None),
-            (" Transcribing    ", "dim"),
-            ("Green", "ok"),
-            (" Done\n", "dim"),
-            ("\n", None),
-            ("  Left-click  ", "key"),
-            ("= start/cancel meeting\n", "dim"),
-            ("  Right-click ", "key"),
-            ("= settings, model downloads, hotkeys\n", "dim"),
-        ]
+        for i, model_name in enumerate(models):
+            row_idx = i + 2
+            tk.Label(
+                table, text=model_name, bg=BG, fg=FG,
+                font=("Segoe UI", 9), width=10, anchor="w",
+            ).grid(row=row_idx, column=0, sticky="w", padx=(0, 4))
+            speed_lbl = tk.Label(
+                table, text="-", bg=BG, fg=FG_DIM,
+                font=("Segoe UI", 9), width=8, anchor="w",
+            )
+            speed_lbl.grid(row=row_idx, column=1, sticky="w", padx=(0, 4))
+            tk.Label(
+                table, text=quality_map.get(model_name, ""),
+                bg=BG, fg=FG_DIM, font=("Segoe UI", 9),
+                width=8, anchor="w",
+            ).grid(row=row_idx, column=2, sticky="w", padx=(0, 4))
+            status_lbl = tk.Label(
+                table, text="Waiting...", bg=BG, fg=FG_DIM,
+                font=("Segoe UI", 9), width=12, anchor="w",
+            )
+            status_lbl.grid(row=row_idx, column=3, sticky="w", padx=(0, 4))
+            row_labels[model_name] = (speed_lbl, status_lbl)
 
-        text.configure(state="normal")
-        for content, tag in lines:
-            if tag:
-                text.insert("end", content, tag)
+        # Recommendation area
+        rec_label = tk.Label(
+            win, text="", bg=BG, fg=FG_DIM,
+            font=("Segoe UI", 9), wraplength=bw - 40, justify="left",
+        )
+        rec_label.pack(anchor="w", padx=16, pady=(4, 0))
+
+        # Close button
+        close_btn = tk.Button(
+            win, text="Close", bg=BG_LIGHT, fg=FG,
+            font=("Segoe UI", 10), relief="flat", bd=0,
+            padx=16, pady=4,
+            activebackground=ACCENT, activeforeground=BTN_FG,
+            command=win.destroy,
+        )
+        close_btn.pack(side="bottom", pady=(0, 12))
+
+        def _on_modal_close():
+            self.bench_btn.configure(state="normal")
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", _on_modal_close)
+        close_btn.configure(command=_on_modal_close)
+
+        def _run():
+            self._run_benchmark_live(
+                models, row_labels, rec_label, win,
+            )
+            self.root.after(
+                0, lambda: self.bench_btn.configure(state="normal"),
+            )
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+
+    def _run_benchmark_live(self, models, row_labels, rec_label, win):
+        """Run benchmark per model, updating the table live."""
+        venv_python = str(self.venv_path / "Scripts" / "python.exe")
+        results = []
+
+        for model_name in models:
+            speed_lbl, status_lbl = row_labels[model_name]
+
+            # Check if model is cached
+            fd, check_path = tempfile.mkstemp(
+                suffix=".py", prefix="ws-bench-check-",
+            )
+            os.close(fd)
+            check_script = Path(check_path)
+            check_script.write_text(
+                "import warnings, os, sys\n"
+                "warnings.filterwarnings('ignore')\n"
+                f"sys.path.insert(0, {repr(str(self.script_root))})\n"
+                "from whisper_sync.model_status import is_model_cached\n"
+                f"print('yes' if is_model_cached({repr(model_name)}) "
+                "else 'no')\n",
+                encoding="utf-8",
+            )
+            try:
+                r = subprocess.run(
+                    [venv_python, str(check_script)],
+                    capture_output=True, text=True, timeout=15,
+                    cwd=str(self.script_root),
+                )
+                cached = r.returncode == 0 and "yes" in r.stdout
+            except Exception:
+                cached = False
+            finally:
+                check_script.unlink(missing_ok=True)
+
+            if not cached:
+                self.root.after(0, lambda s=status_lbl: s.configure(
+                    text="Not cached", fg=FG_DIM,
+                ))
+                continue
+
+            # Update status to testing
+            self.root.after(0, lambda s=status_lbl: s.configure(
+                text="Testing...", fg=YELLOW,
+            ))
+
+            # Run the single-model benchmark
+            fd, bench_path = tempfile.mkstemp(
+                suffix=".py", prefix="ws-bench-",
+            )
+            os.close(fd)
+            bench_script = Path(bench_path)
+            bench_script.write_text(
+                "import warnings, os, sys, time, json, numpy as np\n"
+                "warnings.filterwarnings('ignore')\n"
+                "os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'\n"
+                f"sys.path.insert(0, {repr(str(self.script_root))})\n"
+                "from whisper_sync.transcribe import "
+                "_load_whisper_model, _get_device\n"
+                "from whisper_sync import config\n"
+                "cfg = config.load()\n"
+                "device = _get_device()\n"
+                "audio = np.zeros(16000 * 5, dtype=np.float32)\n"
+                f"name = {repr(model_name)}\n"
+                "compute = 'int8' if device == 'cpu' else "
+                "cfg.get('compute_type', 'float16')\n"
+                "model = _load_whisper_model(name, compute, 'en')\n"
+                "model.transcribe(audio, batch_size=4, language='en')\n"
+                "t0 = time.perf_counter()\n"
+                "for _ in range(3):\n"
+                "    model.transcribe(audio, batch_size=4, language='en')\n"
+                "avg = (time.perf_counter() - t0) / 3\n"
+                "print(json.dumps({'model': name, 'time': round(avg, 2)}))\n",
+                encoding="utf-8",
+            )
+
+            try:
+                merged_env = os.environ.copy()
+                merged_env["PYTHONWARNINGS"] = (
+                    "ignore::UserWarning:pyannote.audio.core.io,"
+                    "ignore::UserWarning:pyannote.audio.utils.reproducibility"
+                )
+                proc = subprocess.run(
+                    [venv_python, str(bench_script)],
+                    capture_output=True, text=True,
+                    cwd=str(self.script_root), env=merged_env,
+                )
+                if proc.returncode == 0:
+                    # Parse JSON from last non-empty line
+                    for line in reversed(proc.stdout.splitlines()):
+                        line = line.strip()
+                        if line.startswith("{"):
+                            data = json.loads(line)
+                            avg_time = data["time"]
+                            results.append((model_name, avg_time))
+                            self.root.after(0, lambda s=speed_lbl, t=avg_time:
+                                s.configure(text=f"{t:.2f}s", fg=FG))
+                            self.root.after(0, lambda s=status_lbl:
+                                s.configure(text="Done", fg=GREEN))
+                            break
+                    else:
+                        self.root.after(0, lambda s=status_lbl:
+                            s.configure(text="No output", fg=RED))
+                else:
+                    self.root.after(0, lambda s=status_lbl:
+                        s.configure(text="Failed", fg=RED))
+            except Exception:
+                self.root.after(0, lambda s=status_lbl:
+                    s.configure(text="Error", fg=RED))
+            finally:
+                bench_script.unlink(missing_ok=True)
+
+        # Show recommendation
+        if results:
+            fast = [n for n, t in results if t < 0.3]
+            all_fast = all(t < 0.5 for _, t in results)
+            if all_fast and any(n == "large-v3" for n, _ in results):
+                rec = ("Your GPU handles large-v3 well - use it for "
+                       "both dictation and meetings.")
+            elif fast:
+                rec = (f"Recommended: {fast[0]} for dictation (fast), "
+                       f"{results[-1][0]} for meetings (accurate).")
             else:
-                text.insert("end", content)
-        text.configure(state="disabled")
+                rec = ("Speed for dictation, accuracy for meetings. "
+                       "Pick the tradeoff that fits your workflow.")
+        else:
+            rec = "No cached models found. Download models first."
 
+        self.root.after(0, lambda: rec_label.configure(text=rec))
+
+    def _on_howworks(self):
+        """Show a How It Works modal window."""
+        win = tk.Toplevel(self.root)
+        win.title("How WhisperSync Works")
+        win.configure(bg=BG)
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.grab_set()
+
+        bw, bh = 450, 500
+        bx = self.root.winfo_x() + (WIN_W - bw) // 2
+        by = self.root.winfo_y() + (WIN_H - bh) // 2
+        win.geometry(f"{bw}x{bh}+{bx}+{by}")
+
+        # Dark title bar
+        try:
+            import ctypes
+            win.update()
+            hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 20,
+                ctypes.byref(ctypes.c_int(1)),
+                ctypes.sizeof(ctypes.c_int),
+            )
+        except Exception:
+            pass
+
+        # Scrollable content
+        outer = tk.Frame(win, bg=BG)
+        outer.pack(fill="both", expand=True, padx=16, pady=(12, 0))
+
+        canvas = tk.Canvas(outer, bg=BG, highlightthickness=0)
+        scrollbar = tk.Scrollbar(outer, orient="vertical",
+                                  command=canvas.yview)
+        inner = tk.Frame(canvas, bg=BG)
+        inner.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        canvas.create_window((0, 0), window=inner, anchor="nw",
+                             width=bw - 44)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        def _heading(text):
+            tk.Label(
+                inner, text=text, bg=BG, fg=ACCENT,
+                font=("Segoe UI", 11, "bold"),
+            ).pack(anchor="w", pady=(10, 4))
+
+        def _hotkey_row(action, keys):
+            row = tk.Frame(inner, bg=BG)
+            row.pack(anchor="w", fill="x")
+            tk.Label(
+                row, text=f"  {action}", bg=BG, fg=FG_DIM,
+                font=("Segoe UI", 9), width=22, anchor="w",
+            ).pack(side="left")
+            tk.Label(
+                row, text=keys, bg=BG, fg=ACCENT,
+                font=("Segoe UI", 9, "bold"), anchor="w",
+            ).pack(side="left")
+
+        def _body(text):
+            tk.Label(
+                inner, text=text, bg=BG, fg=FG_DIM,
+                font=("Segoe UI", 9), justify="left",
+                wraplength=bw - 60, anchor="w",
+            ).pack(anchor="w", padx=(4, 0), pady=(2, 0))
+
+        def _separator():
+            tk.Frame(inner, bg=FG_DIM, height=1).pack(
+                fill="x", pady=(8, 0),
+            )
+
+        # -- Dictation section --
+        _heading("Dictation")
+        _hotkey_row("Start recording", "Ctrl+Shift+Space")
+        _hotkey_row("Stop and paste", "Ctrl+Shift+Space")
+        _hotkey_row("Cancel", "Left-click tray icon")
+        _body(
+            "Text goes into the focused text field (editor, browser, "
+            "chat). If nothing is focused, it copies to your clipboard."
+        )
+
+        _separator()
+
+        # -- Meeting section --
+        _heading("Meetings")
+        _hotkey_row("Start recording", "Ctrl+Shift+M")
+        _hotkey_row("Stop and save", "Ctrl+Shift+M")
+        _hotkey_row("Alt start/stop", "Left-click tray icon")
+        _body(
+            "Records your mic + system audio (what you hear). Works "
+            "with Zoom, Meet, Teams, phone calls, in-person, and any "
+            "audio through your speakers."
+        )
+        _body(
+            "After you stop, name the meeting and get a full transcript "
+            "with speaker labels. WhisperSync learns speakers over time "
+            "- the more you use it, the better it gets."
+        )
+
+        _separator()
+
+        # -- Tray icon section --
+        _heading("Tray Icon")
+
+        colors = [
+            ("Gray", "Ready", FG_DIM),
+            ("Red", "Recording", RED),
+            ("Amber", "Transcribing", YELLOW),
+            ("Green", "Done", GREEN),
+        ]
+        for color_name, state_text, color in colors:
+            row = tk.Frame(inner, bg=BG)
+            row.pack(anchor="w", fill="x")
+            tk.Label(
+                row, text=f"  {color_name}", bg=BG, fg=color,
+                font=("Segoe UI", 9, "bold"), width=10, anchor="w",
+            ).pack(side="left")
+            tk.Label(
+                row, text=state_text, bg=BG, fg=FG_DIM,
+                font=("Segoe UI", 9), anchor="w",
+            ).pack(side="left")
+
+        tk.Label(inner, text="", bg=BG).pack()  # spacer
+        _hotkey_row("Left-click", "Start/cancel meeting")
+        _hotkey_row("Right-click", "Settings, models, hotkeys")
+
+        # Close button
         tk.Button(
             win, text="Close", bg=BG_LIGHT, fg=FG,
             font=("Segoe UI", 10), relief="flat", bd=0,
             padx=16, pady=4,
             activebackground=ACCENT, activeforeground=BTN_FG,
             command=win.destroy,
-        ).pack(pady=(0, 12))
+        ).pack(pady=(8, 12))
 
     # ------------------------------------------------------------------
     # Launch
