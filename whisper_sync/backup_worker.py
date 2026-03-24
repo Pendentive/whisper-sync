@@ -123,6 +123,12 @@ class BackupTranscriber:
                 return "cpu"
 
             total_vram = torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)
+
+            # 8 GB or less: always CPU for backup (meeting processing uses most VRAM)
+            if total_vram <= 8:
+                logger.info(f"Backup device auto -> CPU ({total_vram:.0f} GB VRAM, too tight for dual models)")
+                return "cpu"
+
             primary_model = self.cfg.get("model", "large-v3")
             backup_model = self.cfg.get("backup_model", "base")
             primary_vram = MODEL_VRAM_GB.get(primary_model, 3.0)
