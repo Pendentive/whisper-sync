@@ -170,3 +170,7 @@ def queued_icon() -> Image.Image:
 
 def error_icon() -> Image.Image:
     return _make_dual_icon(COLOR_ERROR, COLOR_ERROR)
+
+
+def yellow_flash_icon(size: int = 64) -> Image.Image:
+    return _make_dual_icon("#FFCC00", "#FFCC00", size=size)

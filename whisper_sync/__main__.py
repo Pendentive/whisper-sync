@@ -183,6 +183,21 @@ class WhisperSync:
         self.tray.icon = icon
         self.tray.title = f"WhisperSync: {title}"
 
+    def _yellow_flash(self):
+        """Universal loading/queuing signal: two quick yellow flashes (150ms on/off/on)."""
+        def _flash():
+            from .icons import yellow_flash_icon
+            try:
+                original = self.tray.icon
+                for _ in range(2):
+                    self.tray.icon = yellow_flash_icon()
+                    import time; time.sleep(0.15)
+                    self.tray.icon = original
+                    time.sleep(0.15)
+            except Exception:
+                pass  # tray may not be ready
+        threading.Thread(target=_flash, daemon=True).start()
+
     # --- Click dispatch ---
 
     def _dispatch_action(self, action: str):
@@ -278,6 +293,10 @@ class WhisperSync:
             elif self.mode == "meeting" or (self.mode is None and self._meeting_transcribing):
                 # Dictation during meeting recording or meeting transcription
                 if self.cfg.get("always_available_dictation", True):
+                    if self._backup.is_loading:
+                        logger.debug("Backup model still loading, triggering yellow flash")
+                        self._yellow_flash()
+                        return
                     self._start_overlay_dictation()
                 else:
                     logger.info("Dictation unavailable during meeting (always_available_dictation disabled)")
@@ -750,6 +769,8 @@ class WhisperSync:
         temp = self._meeting_temp_dir()
         mic_temp = temp / "mic-temp.wav"
         self.recorder.start_streaming(mic_temp, disk_only=True)
+        if self.cfg.get("always_available_dictation", True):
+            self._backup.preload()
 
     _ABORT = object()  # Sentinel for abort
 
