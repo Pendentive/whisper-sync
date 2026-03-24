@@ -10,24 +10,29 @@ COLOR_RECORDING_OUTER = "#CC3333"       # Dark red - meeting outer ring
 COLOR_RECORDING_INNER = "#FF4444"       # Lighter red - meeting inner circle
 COLOR_RECORDING_FAIL = "#FFAA00"        # Yellow - channel failing during recording
 COLOR_TRANSCRIBING_OUTER = "#CC8800"    # Dark amber - meeting transcribing outer
-COLOR_TRANSCRIBING_INNER = "#FFA500"    # Lighter amber - meeting transcribing inner
-COLOR_DONE = "#44FF44"
+COLOR_TRANSCRIBING_INNER = "#FFAA00"    # Amber - meeting transcribing inner
+COLOR_DONE_OUTER = "#44CC44"            # Dark green - done outer ring
+COLOR_DONE_INNER = "#66FF66"            # Light green - done inner circle
 COLOR_DICTATION_INNER = "#4488FF"       # Blue - mic active
 COLOR_DICTATION_OUTER = "#CCCCCC"       # White/light gray - dictation outer ring
-COLOR_SAVING = "#FFB833"
-COLOR_SUMMARIZING = "#AA44FF"
-COLOR_QUEUED = "#FF8800"
-COLOR_ERROR = "#FF44FF"
+COLOR_SAVING_OUTER = "#CC8800"          # Dark amber - saving outer ring
+COLOR_SAVING_INNER = "#FFAA00"          # Amber - saving inner circle
+COLOR_SUMMARIZING_OUTER = "#9944CC"     # Dark purple - summarizing outer ring
+COLOR_SUMMARIZING_INNER = "#CC66FF"     # Light purple - summarizing inner circle
+COLOR_QUEUED_OUTER = "#CC6600"          # Dark orange - queued outer ring
+COLOR_QUEUED_INNER = "#FF8800"          # Orange - queued inner circle
+COLOR_ERROR_OUTER = "#CC44CC"           # Dark magenta - error outer ring
+COLOR_ERROR_INNER = "#FF66FF"           # Light magenta - error inner circle
 
 
-def _make_dual_icon(inner_color: str, outer_color: str, size: int = 64) -> Image.Image:
-    """Generate a 64x64 icon with two concentric rings.
+def _make_three_ring_icon(outer_color: str, middle_color: str,
+                          inner_color: str | None = None, size: int = 64) -> Image.Image:
+    """Generate icon with outer ring + middle filled circle + optional inner dot.
 
-    - Outer ring: 3px wide, starts at 2px margin
+    - Outer ring: 3px wide, 2px margin
     - Gap: 2px transparent
-    - Inner circle: filled, remaining space (~24px radius)
-
-    At 16x16 tray size the two zones remain distinguishable.
+    - Middle circle: filled, remaining space
+    - Inner dot: ~4px radius, centered (only for overlay dictation)
     """
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -36,11 +41,9 @@ def _make_dual_icon(inner_color: str, outer_color: str, size: int = 64) -> Image
     ring_width = 3
     gap = 2
 
-    # Outer ring - draw filled ellipse then punch out interior
-    outer_r = size - margin  # right/bottom edge
+    # Outer ring
+    outer_r = size - margin
     draw.ellipse([margin, margin, outer_r - 1, outer_r - 1], fill=outer_color)
-
-    # Punch out the inside of the ring (transparent)
     inner_of_ring = margin + ring_width
     draw.ellipse(
         [inner_of_ring, inner_of_ring,
@@ -48,64 +51,27 @@ def _make_dual_icon(inner_color: str, outer_color: str, size: int = 64) -> Image
         fill=(0, 0, 0, 0),
     )
 
-    # Inner filled circle (after the gap)
-    inner_start = margin + ring_width + gap
-    inner_end = size - margin - ring_width - gap
-    if inner_end > inner_start:
+    # Middle filled circle (after gap)
+    mid_start = margin + ring_width + gap
+    mid_end = size - margin - ring_width - gap
+    if mid_end > mid_start:
+        draw.ellipse([mid_start, mid_start, mid_end - 1, mid_end - 1], fill=middle_color)
+
+    # Inner dot (overlay dictation indicator)
+    if inner_color is not None:
+        dot_radius = 4
+        cx, cy = size // 2, size // 2
         draw.ellipse(
-            [inner_start, inner_start, inner_end - 1, inner_end - 1],
+            [cx - dot_radius, cy - dot_radius, cx + dot_radius, cy + dot_radius],
             fill=inner_color,
         )
 
     return img
 
 
-def _make_overlay_icon(outer_color: str, size: int = 64) -> Image.Image:
-    """Generate a 64x64 icon with the outer ring in one color and a small blue dot centered.
-
-    Used for dictation-during-meeting: outer ring shows meeting state,
-    small centered blue dot shows dictation is active.
-
-    The blue dot is ~40% the size of the normal inner circle.
-    """
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-
-    margin = 2
-    ring_width = 3
-    gap = 2
-
-    # Outer ring - same as _make_dual_icon
-    outer_r = size - margin
-    draw.ellipse([margin, margin, outer_r - 1, outer_r - 1], fill=outer_color)
-
-    inner_of_ring = margin + ring_width
-    draw.ellipse(
-        [inner_of_ring, inner_of_ring,
-         outer_r - 1 - ring_width, outer_r - 1 - ring_width],
-        fill=(0, 0, 0, 0),
-    )
-
-    # Small blue dot (~40% of the inner circle area)
-    inner_start = margin + ring_width + gap
-    inner_end = size - margin - ring_width - gap
-    inner_radius = (inner_end - inner_start) / 2
-    dot_radius = inner_radius * 0.4
-    center = size / 2
-    dot_start = int(center - dot_radius)
-    dot_end = int(center + dot_radius)
-    if dot_end > dot_start:
-        draw.ellipse(
-            [dot_start, dot_start, dot_end, dot_end],
-            fill=COLOR_DICTATION_INNER,
-        )
-
-    return img
-
-
 def _circle_icon(color: str, size: int = 64) -> Image.Image:
-    """Legacy single-color circle - both rings same color."""
-    return _make_dual_icon(color, color, size)
+    """Backward-compat wrapper - both rings same color."""
+    return _make_three_ring_icon(color, color, size=size)
 
 
 # --- Public icon constructors ---
@@ -114,18 +80,18 @@ def _circle_icon(color: str, size: int = 64) -> Image.Image:
 
 
 def idle_icon() -> Image.Image:
-    return _make_dual_icon(COLOR_IDLE, COLOR_IDLE)
+    return _make_three_ring_icon("#808080", "#808080")
 
 
 def recording_icon(speaker_ok: bool = True) -> Image.Image:
     """Meeting recording - outer ring reflects speaker loopback status."""
     outer = COLOR_RECORDING_OUTER if speaker_ok else COLOR_RECORDING_FAIL
-    return _make_dual_icon(COLOR_RECORDING_INNER, outer)
+    return _make_three_ring_icon(outer, COLOR_RECORDING_INNER)
 
 
 def dictation_icon() -> Image.Image:
-    """Dictation - mic active (inner blue), outer white/gray."""
-    return _make_dual_icon(COLOR_DICTATION_INNER, COLOR_DICTATION_OUTER)
+    """Dictation - outer white/gray, middle blue."""
+    return _make_three_ring_icon(COLOR_DICTATION_OUTER, COLOR_DICTATION_INNER)
 
 
 def dictation_during_recording_icon(speaker_ok: bool = True) -> Image.Image:
@@ -133,44 +99,46 @@ def dictation_during_recording_icon(speaker_ok: bool = True) -> Image.Image:
 
     Outer ring = dark red (meeting still recording), or yellow if speaker
     loopback is unhealthy.
-    Inner = small blue dot (dictation active).
+    Middle = red (recording).
+    Inner dot = blue (dictation active).
     """
     outer = COLOR_RECORDING_OUTER if speaker_ok else COLOR_RECORDING_FAIL
-    return _make_overlay_icon(outer)
+    return _make_three_ring_icon(outer, COLOR_RECORDING_INNER, COLOR_DICTATION_INNER)
 
 
 def dictation_during_transcription_icon() -> Image.Image:
     """Dictation active during meeting transcription.
 
     Outer ring = dark amber (meeting transcribing).
-    Inner = small blue dot (dictation active).
+    Middle = amber (transcribing).
+    Inner dot = blue (dictation active).
     """
-    return _make_overlay_icon(COLOR_TRANSCRIBING_OUTER)
+    return _make_three_ring_icon(COLOR_TRANSCRIBING_OUTER, COLOR_TRANSCRIBING_INNER, COLOR_DICTATION_INNER)
 
 
 def saving_icon() -> Image.Image:
-    return _make_dual_icon(COLOR_SAVING, COLOR_SAVING)
+    return _make_three_ring_icon(COLOR_SAVING_OUTER, COLOR_SAVING_INNER)
 
 
 def transcribing_icon() -> Image.Image:
-    return _make_dual_icon(COLOR_TRANSCRIBING_INNER, COLOR_TRANSCRIBING_OUTER)
+    return _make_three_ring_icon(COLOR_TRANSCRIBING_OUTER, COLOR_TRANSCRIBING_INNER)
 
 
 def done_icon() -> Image.Image:
-    return _make_dual_icon(COLOR_DONE, COLOR_DONE)
+    return _make_three_ring_icon(COLOR_DONE_OUTER, COLOR_DONE_INNER)
 
 
 def summarizing_icon() -> Image.Image:
-    return _make_dual_icon(COLOR_SUMMARIZING, COLOR_SUMMARIZING)
+    return _make_three_ring_icon(COLOR_SUMMARIZING_OUTER, COLOR_SUMMARIZING_INNER)
 
 
 def queued_icon() -> Image.Image:
-    return _make_dual_icon(COLOR_QUEUED, COLOR_QUEUED)
+    return _make_three_ring_icon(COLOR_QUEUED_OUTER, COLOR_QUEUED_INNER)
 
 
 def error_icon() -> Image.Image:
-    return _make_dual_icon(COLOR_ERROR, COLOR_ERROR)
+    return _make_three_ring_icon(COLOR_ERROR_OUTER, COLOR_ERROR_INNER)
 
 
 def yellow_flash_icon(size: int = 64) -> Image.Image:
-    return _make_dual_icon("#FFCC00", "#FFCC00", size=size)
+    return _make_three_ring_icon("#FFCC00", "#FFCC00", size=size)
