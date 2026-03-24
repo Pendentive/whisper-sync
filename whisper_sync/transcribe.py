@@ -384,36 +384,80 @@ def _channel_diarize(audio_path: str, window_ms: int = 500) -> dict | None:
             for i in range(n_windows)
         ])
 
-        # Check if channels are meaningfully different (one should be mic, other remote)
+        # Check if channels are meaningfully different
         ch0_total = np.sum(ch0_energy)
         ch1_total = np.sum(ch1_energy)
         if ch0_total == 0 or ch1_total == 0:
             return None
         ratio = min(ch0_total, ch1_total) / max(ch0_total, ch1_total)
-        # If channels are nearly identical (>0.95 ratio), they're likely the same source
         if ratio > 0.95:
             logger.info("Stereo channels too similar, falling back to model diarization")
             return None
 
-        # Assign speaker per window based on dominant channel
-        # Silence threshold: 5% of max energy across both channels
-        silence_thresh = 0.05 * max(np.max(ch0_energy), np.max(ch1_energy))
+        # Identify channel roles dynamically:
+        # The mic channel has more consistent energy (ambient room noise fills gaps).
+        # The remote channel is bursty (silent between speech, loud during speech).
+        # Measure "burstiness" as the coefficient of variation (std/mean).
+        ch0_active = ch0_energy[ch0_energy > 0]
+        ch1_active = ch1_energy[ch1_energy > 0]
+        ch0_cv = np.std(ch0_active) / np.mean(ch0_active) if len(ch0_active) > 0 else 0
+        ch1_cv = np.std(ch1_active) / np.mean(ch1_active) if len(ch1_active) > 0 else 0
+
+        # Higher CV = more bursty = likely remote. Lower CV = more consistent = likely mic.
+        # If CVs are similar, fall back to total energy (louder = mic, typically).
+        if abs(ch0_cv - ch1_cv) > 0.1:
+            mic_ch = 0 if ch0_cv < ch1_cv else 1
+        else:
+            mic_ch = 0 if ch0_total >= ch1_total else 1
+        remote_ch = 1 - mic_ch
+
+        mic_label = "SPEAKER_00"
+        remote_label = "SPEAKER_01"
+        logger.info(f"Channel roles: ch{mic_ch}=mic, ch{remote_ch}=remote "
+                     f"(CV: {ch0_cv:.2f}/{ch1_cv:.2f}, energy ratio: {ratio:.2f})")
+
+        # Compute adaptive dominance threshold per window.
+        # Instead of a fixed 1.5x ratio, use the median energy ratio
+        # of clearly single-speaker windows to set the threshold.
+        # This adapts to different volume levels across setups.
+        ratios = []
+        for i in range(n_windows):
+            e_mic = ch0_energy[i] if mic_ch == 0 else ch1_energy[i]
+            e_rem = ch0_energy[i] if remote_ch == 0 else ch1_energy[i]
+            if e_mic > 0 and e_rem > 0:
+                r = max(e_mic, e_rem) / min(e_mic, e_rem)
+                if r > 1.2:  # clearly one-sided
+                    ratios.append(r)
+        # Use the 25th percentile of ratios as threshold (conservative)
+        if ratios:
+            dominance_thresh = max(1.2, np.percentile(ratios, 25))
+        else:
+            dominance_thresh = 1.5
+
+        # Silence threshold: adaptive per recording
+        all_energy = np.concatenate([ch0_energy, ch1_energy])
+        silence_thresh = np.percentile(all_energy[all_energy > 0], 10) if np.any(all_energy > 0) else 0
+
         segments = []
         current_speaker = None
         seg_start = 0.0
 
         for i in range(n_windows):
-            e0, e1 = ch0_energy[i], ch1_energy[i]
+            e_mic = ch0_energy[i] if mic_ch == 0 else ch1_energy[i]
+            e_rem = ch0_energy[i] if remote_ch == 0 else ch1_energy[i]
             t = i * window_ms / 1000.0
 
-            if e0 < silence_thresh and e1 < silence_thresh:
+            if e_mic < silence_thresh and e_rem < silence_thresh:
                 speaker = None  # silence
-            elif e0 > e1 * 1.5:
-                speaker = "SPEAKER_00"  # mic dominant (channel 0)
-            elif e1 > e0 * 1.5:
-                speaker = "SPEAKER_01"  # remote dominant (channel 1)
+            elif e_rem > 0 and e_mic / e_rem > dominance_thresh:
+                speaker = mic_label
+            elif e_mic > 0 and e_rem / e_mic > dominance_thresh:
+                speaker = remote_label
+            elif e_mic > e_rem:
+                # Below dominance threshold but mic is louder
+                speaker = mic_label if current_speaker is None else current_speaker
             else:
-                speaker = current_speaker  # crosstalk, keep current
+                speaker = remote_label if current_speaker is None else current_speaker
 
             if speaker != current_speaker:
                 if current_speaker is not None:
