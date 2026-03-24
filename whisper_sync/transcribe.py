@@ -347,160 +347,12 @@ def stage_align(ctx: dict, result: dict) -> dict:
     )
 
 
-def _channel_diarize(audio_path: str, window_ms: int = 500) -> dict | None:
-    """Channel-based speaker diarization for stereo recordings.
-
-    When mic and remote speakers are on separate stereo channels,
-    use channel energy as ground truth for speaker assignment instead
-    of relying solely on the embedding model (which struggles with
-    mono-mixed remote meeting audio).
-
-    Returns a pyannote-compatible diarization result, or None if
-    the recording is mono or channels are too similar to distinguish.
-    """
-    try:
-        import wave as _wave
-        with _wave.open(audio_path, "rb") as wf:
-            channels = wf.getnchannels()
-            if channels < 2:
-                return None
-            sr = wf.getframerate()
-            frames = wf.getnframes()
-            raw = np.frombuffer(wf.readframes(frames), dtype=np.int16)
-            data = raw.reshape(-1, channels).astype(np.float64)
-
-        # Compute per-channel RMS in sliding windows
-        window_samples = int(sr * window_ms / 1000)
-        n_windows = len(data) // window_samples
-        if n_windows < 2:
-            return None
-
-        ch0_energy = np.array([
-            np.sqrt(np.mean(data[i*window_samples:(i+1)*window_samples, 0]**2))
-            for i in range(n_windows)
-        ])
-        ch1_energy = np.array([
-            np.sqrt(np.mean(data[i*window_samples:(i+1)*window_samples, 1]**2))
-            for i in range(n_windows)
-        ])
-
-        # Check if channels are meaningfully different
-        ch0_total = np.sum(ch0_energy)
-        ch1_total = np.sum(ch1_energy)
-        if ch0_total == 0 or ch1_total == 0:
-            return None
-        ratio = min(ch0_total, ch1_total) / max(ch0_total, ch1_total)
-        if ratio > 0.95:
-            logger.info("Stereo channels too similar, falling back to model diarization")
-            return None
-
-        # Identify channel roles dynamically:
-        # The mic channel has more consistent energy (ambient room noise fills gaps).
-        # The remote channel is bursty (silent between speech, loud during speech).
-        # Measure "burstiness" as the coefficient of variation (std/mean).
-        ch0_active = ch0_energy[ch0_energy > 0]
-        ch1_active = ch1_energy[ch1_energy > 0]
-        ch0_cv = np.std(ch0_active) / np.mean(ch0_active) if len(ch0_active) > 0 else 0
-        ch1_cv = np.std(ch1_active) / np.mean(ch1_active) if len(ch1_active) > 0 else 0
-
-        # Higher CV = more bursty = likely remote. Lower CV = more consistent = likely mic.
-        # If CVs are similar, fall back to total energy (louder = mic, typically).
-        if abs(ch0_cv - ch1_cv) > 0.1:
-            mic_ch = 0 if ch0_cv < ch1_cv else 1
-        else:
-            mic_ch = 0 if ch0_total >= ch1_total else 1
-        remote_ch = 1 - mic_ch
-
-        mic_label = "SPEAKER_00"
-        remote_label = "SPEAKER_01"
-        logger.info(f"Channel roles: ch{mic_ch}=mic, ch{remote_ch}=remote "
-                     f"(CV: {ch0_cv:.2f}/{ch1_cv:.2f}, energy ratio: {ratio:.2f})")
-
-        # Compute adaptive dominance threshold per window.
-        # Instead of a fixed 1.5x ratio, use the median energy ratio
-        # of clearly single-speaker windows to set the threshold.
-        # This adapts to different volume levels across setups.
-        ratios = []
-        for i in range(n_windows):
-            e_mic = ch0_energy[i] if mic_ch == 0 else ch1_energy[i]
-            e_rem = ch0_energy[i] if remote_ch == 0 else ch1_energy[i]
-            if e_mic > 0 and e_rem > 0:
-                r = max(e_mic, e_rem) / min(e_mic, e_rem)
-                if r > 1.2:  # clearly one-sided
-                    ratios.append(r)
-        # Use the 25th percentile of ratios as threshold (conservative)
-        if ratios:
-            dominance_thresh = max(1.2, np.percentile(ratios, 25))
-        else:
-            dominance_thresh = 1.5
-
-        # Silence threshold: adaptive per recording
-        all_energy = np.concatenate([ch0_energy, ch1_energy])
-        silence_thresh = np.percentile(all_energy[all_energy > 0], 10) if np.any(all_energy > 0) else 0
-
-        segments = []
-        current_speaker = None
-        seg_start = 0.0
-
-        for i in range(n_windows):
-            e_mic = ch0_energy[i] if mic_ch == 0 else ch1_energy[i]
-            e_rem = ch0_energy[i] if remote_ch == 0 else ch1_energy[i]
-            t = i * window_ms / 1000.0
-
-            if e_mic < silence_thresh and e_rem < silence_thresh:
-                speaker = None  # silence
-            elif e_rem > 0 and e_mic / e_rem > dominance_thresh:
-                speaker = mic_label
-            elif e_mic > 0 and e_rem / e_mic > dominance_thresh:
-                speaker = remote_label
-            elif e_mic > e_rem:
-                # Below dominance threshold but mic is louder
-                speaker = mic_label if current_speaker is None else current_speaker
-            else:
-                speaker = remote_label if current_speaker is None else current_speaker
-
-            if speaker != current_speaker:
-                if current_speaker is not None:
-                    segments.append({
-                        "speaker": current_speaker,
-                        "start": seg_start,
-                        "end": t,
-                    })
-                current_speaker = speaker
-                seg_start = t
-
-        # Close final segment
-        if current_speaker is not None:
-            segments.append({
-                "speaker": current_speaker,
-                "start": seg_start,
-                "end": n_windows * window_ms / 1000.0,
-            })
-
-        if not segments:
-            return None
-
-        # Build a pyannote-compatible annotation object
-        from pyannote.core import Annotation, Segment
-        annotation = Annotation()
-        for seg in segments:
-            annotation[Segment(seg["start"], seg["end"])] = seg["speaker"]
-
-        n_speakers = len(set(s["speaker"] for s in segments))
-        logger.info(f"Channel diarization: {n_speakers} speakers, {len(segments)} segments")
-        return annotation
-
-    except Exception as e:
-        logger.warning(f"Channel diarization failed, falling back to model: {e}")
-        return None
-
-
 def stage_diarize(ctx: dict) -> dict:
     """Stage 3: Run speaker diarization pipeline.
 
     For stereo recordings: per-channel transcription + confidence fusion (Tier 1).
-    Falls back to energy-based channel diarization (Tier 2), then balanced mono
-    with PyAnnote model (Tier 3), then raw audio with PyAnnote model (Tier 4).
+    Falls back to balanced mono with PyAnnote model (Tier 2), then raw audio
+    with PyAnnote model (Tier 3).
     """
     from .channel_merge import is_stereo, split_channels, load_channel_audio, merge_channel_results
 
@@ -573,12 +425,7 @@ def stage_diarize(ctx: dict) -> dict:
                 except OSError:
                     pass
 
-    # Tier 2: Energy-based channel diarization
-    channel_result = _channel_diarize(audio_path)
-    if channel_result is not None:
-        return channel_result
-
-    # Tier 3: Balanced mono + PyAnnote model
+    # Tier 2: Balanced mono + PyAnnote model
     balanced_path = _create_balanced_mono(audio_path)
     diarize_path = balanced_path or audio_path
     try:
