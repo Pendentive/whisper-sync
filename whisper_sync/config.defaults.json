@@ -21,5 +21,8 @@
   "github_notifications": true,
   "log_window": "normal",
   "device": "auto",
-  "incognito": false
+  "incognito": false,
+  "always_available_dictation": true,
+  "backup_device": "auto",
+  "backup_model": "base"
 }

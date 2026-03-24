@@ -1,16 +1,16 @@
 # WhisperSync
 
-Hotkey-triggered audio capture and transcription that runs 100% locally on your GPU. Two modes:
+Hotkey-triggered audio capture and transcription that runs 100% locally. Two modes:
 
-- **Dictation** — press a hotkey, speak, press again. Your words are transcribed and pasted into whatever app is focused. Sub-second turnaround with a fast model.
-- **Meeting recording** — press a hotkey to record your mic + system audio (what you hear). Press again to stop, name the meeting, and get a full transcript with speaker labels saved to disk.
+- **Dictation** -- press a hotkey, speak, press again. Your words are transcribed and pasted into whatever app is focused. Sub-second turnaround with a fast model.
+- **Meeting recording** -- press a hotkey to record your mic + system audio (what you hear). Press again to stop, name the meeting, and get a full transcript with speaker labels saved to disk.
 
 Runs as a system tray icon on Windows.
 
 **What runs where:**
-- **Dictation transcription** — 100% local GPU. No network calls.
-- **Meeting transcription + speaker identification** — 100% local GPU. No network calls.
-- **Meeting minutes / action items** — requires an LLM (e.g., Claude). The transcript stays on your machine; only the text you choose to send leaves it.
+- **Dictation transcription** -- 100% local GPU. No network calls.
+- **Meeting transcription + speaker identification** -- 100% local GPU. No network calls.
+- **Meeting minutes / action items** -- requires an LLM (e.g., Claude). The transcript stays on your machine; only the text you choose to send leaves it.
 
 ---
 
@@ -24,7 +24,7 @@ Runs as a system tray icon on Windows.
 | WASAPI loopback | Captures system audio without virtual cables |
 | pystray | System tray icon and menu |
 
-Models download once on first run and are cached locally in a `models/` folder. Subsequent launches load from cache — works fully offline.
+Models download once on first run and are cached locally in a `models/` folder. Subsequent launches load from cache -- works fully offline.
 
 ---
 
@@ -34,7 +34,7 @@ Models download once on first run and are cached locally in a `models/` folder. 
 |-------------|---------|
 | **OS** | Windows 10 or 11 |
 | **Python** | 3.10 or newer (3.13 recommended) |
-| **GPU** | NVIDIA with CUDA support (RTX 20/30/40/50 series, GTX 10-series) |
+| **GPU** | NVIDIA with CUDA support recommended (RTX 20/30/40/50 series, GTX 10-series). CPU-only mode available but 5-10x slower. |
 | **VRAM** | 2 GB minimum (tiny/base models), 4 GB+ recommended, 8 GB+ for large-v3 |
 | **Disk** | ~200 MB base install + model sizes (see table below) |
 | **HF Account** | Free [Hugging Face](https://huggingface.co) account (required for meeting mode speaker diarization) |
@@ -45,27 +45,30 @@ Models download once on first run and are cached locally in a `models/` folder. 
 
 1. **Install Python** if you don't have it: [python.org/downloads](https://www.python.org/downloads/). Check "Add to PATH" during install.
 
-2. **Extract the zip** to wherever you want (e.g., `C:\Tools\whisper-sync\`).
+2. **Clone the repo:**
+   ```powershell
+   git clone https://github.com/Pendentive/whisper-sync.git
+   cd whisper-sync
+   ```
 
-3. **Open PowerShell** in the extracted folder (right-click → "Open in Terminal" or Shift+right-click → "Open PowerShell window here").
-
-4. **Run the installer:**
+3. **Run the installer:**
    ```powershell
    powershell -ExecutionPolicy Bypass -File install.ps1
    ```
 
-5. **Follow the prompts.** The installer will:
+4. **Follow the prompts.** The installer shows progress bars and will:
    - Detect your GPU and pick the right CUDA version
    - Create a Python virtual environment
    - Install all dependencies
    - Download base transcription models (~225 MB)
-   - Optionally create a Windows startup shortcut
+   - Ask where you want recordings saved
+   - Offer to create a desktop shortcut and Windows startup entry
 
-6. **Launch:**
+5. **Launch:**
    ```powershell
    powershell -ExecutionPolicy Bypass -File start.ps1
    ```
-   Or just double-click the startup shortcut if you created one.
+   Or just double-click the desktop shortcut if you created one.
 
 ---
 
@@ -75,7 +78,7 @@ Speaker diarization (identifying who said what) requires a free Hugging Face tok
 
 1. **Create an account** at [huggingface.co/join](https://huggingface.co/join)
 
-2. **Accept the model license terms** — visit both pages and click "Agree":
+2. **Accept the model license terms** -- visit both pages and click "Agree":
    - [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)
    - [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
 
@@ -96,17 +99,25 @@ Speaker diarization (identifying who said what) requires a free Hugging Face tok
 
 ### Tray Icon
 
-After launch, a small circle appears in your system tray (bottom-right near the clock). The color tells you the current state:
+After launch, a dual-ring icon appears in your system tray (bottom-right near the clock). The inner circle shows microphone status and the outer ring shows speaker/loopback status.
 
-| Color | State |
-|-------|-------|
-| Gray | Idle — ready to record |
-| Blue | Dictating — recording your voice |
-| Red | Meeting — recording mic + system audio |
-| Orange | Saving — writing audio to disk |
-| Yellow | Transcribing — running the AI model |
-| Green | Done — transcription complete |
-| Magenta | Error — check logs |
+| Inner Circle | State |
+|--------------|-------|
+| Gray | Idle -- ready to record |
+| Blue | Dictating -- recording your voice |
+| Red | Meeting -- recording mic + system audio |
+| Orange | Saving -- writing audio to disk |
+| Yellow | Transcribing -- running the AI model |
+| Green | Done -- transcription complete |
+| Magenta | Error -- check logs |
+
+| Outer Ring | Meaning |
+|------------|---------|
+| Gray | No speaker capture (idle or dictation mode) |
+| Red | Speaker loopback active (meeting mode) |
+| Yellow | Speaker loopback failed during recording |
+
+In dictation mode, the icon shows a blue inner circle with a gray outer ring (no speaker capture needed).
 
 ### Dictation Mode
 
@@ -125,8 +136,8 @@ After launch, a small circle appears in your system tray (bottom-right near the 
 4. A popup asks you to name the meeting (or leave blank for a default name)
 5. Audio is saved as WAV, then transcribed with speaker labels
 6. Output goes to your configured transcriptions folder as:
-   - `recording.wav` — the audio file
-   - `transcript.json` — detailed transcript with timestamps and speaker IDs
+   - `recording.wav` -- the audio file
+   - `transcript.json` -- detailed transcript with timestamps and speaker IDs
 
 ### Click Actions
 
@@ -153,6 +164,10 @@ All settings are accessible via right-click on the tray icon → **Settings**. C
 | **Middle Click** | What middle-clicking does (meeting/dictation/none) |
 | **Dictation Model** | AI model for dictation (smaller = faster, see table) |
 | **Meeting Model** | AI model for meeting transcription (larger = more accurate) |
+| **Device** | Compute device selection -- Auto, GPU, or CPU. Auto detects your GPU and falls back to CPU if unavailable. CPU uses int8 compute. |
+| **Log Window** | Console verbosity level -- Off, Normal, Detailed, or Verbose (see Log Window section below) |
+| **Session Stats** | View dictation and meeting counts, averages, and uptime for the current session |
+| **Change Output Folder** | Change where recordings are saved. Offers to move existing files to the new location. |
 
 **Recommended setup for speed:** Use `tiny` or `base` for dictation (instant paste) and `large-v3` for meetings (best accuracy).
 
@@ -160,15 +175,38 @@ All settings are accessible via right-click on the tray icon → **Settings**. C
 
 By default, WhisperSync uses your system's default microphone and speakers. You can override this in the tray menu:
 
-- **Always Use System Devices** — checked by default, follows Windows audio settings
+- **Always Use System Devices** -- checked by default, follows Windows audio settings
 - Uncheck to manually select specific mic/speaker devices
-- **Device Filter** — filters the device list by audio API (WASAPI recommended on Windows)
+- **Device Filter** -- filters the device list by audio API (WASAPI recommended on Windows)
+
+### Tray Menu Items
+
+Beyond Settings, the tray menu includes these top-level items:
+
+| Menu Item | Description |
+|-----------|-------------|
+| **Recent Dictations** | Last 10 dictations, click any entry to copy it to the clipboard. Persists across restarts. |
+| **Incognito Mode** | RAM-only dictation -- in incognito mode, operational timing logs are still written (e.g. duration, char count) but no transcription text is logged or saved to disk. Meetings are unaffected. |
+| **GitHub Status** | Shows the count of open pull requests if you've configured a GitHub repo. |
+
+---
+
+## Log Window
+
+The Log Window setting controls a live console output window. Four tiers are available:
+
+| Level | What You See |
+|-------|-------------|
+| **Off** | No console window |
+| **Normal** | Clean `[HH:MM]` format with colored output -- green for dictation, blue for meeting, cyan for system, yellow for warnings, magenta for transcription text |
+| **Detailed** | Normal + transcription text previews |
+| **Verbose** | Full debug output |
 
 ---
 
 ## Model Comparison
 
-All models run locally on your GPU. Larger models are more accurate but slower and use more VRAM.
+All models run locally on your GPU (or CPU -- see below). Larger models are more accurate but slower and use more VRAM.
 
 ### Dictation Speed (45 seconds of speech)
 
@@ -210,7 +248,9 @@ WhisperSync uses your NVIDIA GPU via CUDA for fast transcription. Without a GPU,
 - **float16** compute (default): Full GPU speed, requires NVIDIA GPU
 - **int8** compute: Automatic fallback when running on CPU
 
-You can check your GPU status in the tray menu under **Settings** — the bottom of the menu shows your detected GPU, model status, and whether CUDA is active.
+You can also force CPU mode via Settings > Device > CPU. In CPU mode, WhisperSync uses int8 compute with `batch_size=16` (bounded by system RAM, not VRAM). This is 5-10x slower than GPU but works on any machine without NVIDIA hardware. VRAM is properly cleaned when switching from GPU to CPU.
+
+You can check your GPU status in the tray menu under **Settings** -- the bottom of the menu shows your detected GPU, model status, and whether CUDA is active.
 
 ---
 
@@ -246,7 +286,9 @@ The JSON transcript includes per-segment data:
 
 ### Changing Save Locations
 
-Meeting recordings save to `Documents\WhisperSync\transcriptions\` by default. To change this:
+Meeting recordings save to `Documents\WhisperSync\transcriptions\` by default. The easiest way to change this is via the tray menu: **Settings > Change Output Folder**. You'll be asked whether to move existing files to the new location.
+
+You can also edit the path manually:
 
 1. Open `whisper_sync\config.json` in a text editor (created after first settings change)
 2. Add or edit the `output_dir` key:
@@ -258,7 +300,7 @@ Meeting recordings save to `Documents\WhisperSync\transcriptions\` by default. T
 3. Use an **absolute path** (e.g., `D:\Meetings\transcriptions`) to save anywhere, or a **relative path** (e.g., `my-transcriptions`) which resolves relative to the WhisperSync install folder
 4. Restart WhisperSync
 
-You can also open the current output folder at any time via right-click tray menu -> **Open Output Folder**.
+You can open the current output folder at any time via right-click tray menu -> **Open Output Folder**.
 
 ---
 
@@ -266,10 +308,10 @@ You can also open the current output folder at any time via right-click tray men
 
 Out of the box, WhisperSync labels speakers as `SPEAKER_00`, `SPEAKER_01`, etc. With [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (Anthropic's AI coding assistant) or any AI tool that can read files, you can get:
 
-- **Automatic speaker name resolution** — AI analyzes the transcript for name callouts ("Hey David", "Thanks Sarah") and maps generic speaker IDs to real names
-- **Readable transcript** — compact text format (~90% smaller than raw JSON)
-- **Meeting minutes** — action items, decisions, key topics
-- **Persistent speaker memory** — once identified, speakers are remembered across future meetings
+- **Automatic speaker name resolution** -- AI analyzes the transcript for name callouts ("Hey David", "Thanks Sarah") and maps generic speaker IDs to real names
+- **Readable transcript** -- compact text format (~90% smaller than raw JSON)
+- **Meeting minutes** -- action items, decisions, key topics
+- **Persistent speaker memory** -- once identified, speakers are remembered across future meetings
 
 ### Quick Start (Claude Code)
 
@@ -295,20 +337,20 @@ Read the transcript at Documents\WhisperSync\transcriptions\2026\2026-03-11_stan
    - Key Topics (1-2 sentence summaries)
 ```
 
-That's it. Claude identifies speakers, saves the mapping, flattens the transcript, and generates structured minutes — all in one shot.
+That's it. Claude identifies speakers, saves the mapping, flattens the transcript, and generates structured minutes -- all in one shot.
 
 ### Step-by-Step (Manual)
 
 If you prefer to do it without Claude Code:
 
-**1. Find your transcript** — meeting recordings are in your transcriptions folder (default: `Documents\WhisperSync\transcriptions\`):
+**1. Find your transcript** -- meeting recordings are in your transcriptions folder (default: `Documents\WhisperSync\transcriptions\`):
 ```
 transcriptions/2026/2026-03-11_standup/
   recording.wav
   transcript.json     <-- this is what you need
 ```
 
-**2. Flatten the transcript** — the raw JSON is large (~850KB for a 30-min meeting). Convert it:
+**2. Flatten the transcript** -- the raw JSON is large (~850KB for a 30-min meeting). Convert it:
 ```powershell
 .\whisper-env\Scripts\python.exe -m whisper_sync.flatten "path\to\transcript.json"
 ```
@@ -322,12 +364,12 @@ Duration: 12:34 | Speakers: SPEAKER_00, SPEAKER_01
 We should have results by Thursday.
 ```
 
-**3. Identify speakers** — scan the readable transcript for name mentions:
+**3. Identify speakers** -- scan the readable transcript for name mentions:
 - "Hey David, can you..."
 - "Thanks, Sarah"
 - "Dinesh is joining now"
 
-**4. Save speaker map** — add a `speaker_map` to your `transcript.json`:
+**4. Save speaker map** -- add a `speaker_map` to your `transcript.json`:
 ```json
 {
   "speaker_map": {
@@ -380,14 +422,14 @@ This helps narrow down speaker candidates, especially when name callouts are amb
 
 ### Claude Code Skill (Copy-Paste Ready)
 
-If you use Claude Code regularly, you can install this as a reusable skill so you just say `transcribe recording` and the entire workflow runs automatically — speaker identification, transcript flattening, and structured minutes generation.
+If you use Claude Code regularly, you can install this as a reusable skill so you just say `transcribe recording` and the entire workflow runs automatically -- speaker identification, transcript flattening, and structured minutes generation.
 
 **Setup:**
 1. Create the file `.claude/skills/transcribe-recording/SKILL.md` in any project directory
 2. Paste the full skill content below
 3. From then on, just say `transcribe recording` in Claude Code
 
-**Full skill file** — copy everything below into `.claude/skills/transcribe-recording/SKILL.md`:
+**Full skill file** -- copy everything below into `.claude/skills/transcribe-recording/SKILL.md`:
 
 ````markdown
 ---
@@ -405,8 +447,8 @@ $ARGUMENTS
 
 ## Prerequisites
 
-1. **WhisperSync venv** — `whisper-env\Scripts\python.exe -c "import whisperx; print('OK')"`
-2. **Hugging Face token** — required for speaker diarization. Check `~/.huggingface/token`.
+1. **WhisperSync venv** --`whisper-env\Scripts\python.exe -c "import whisperx; print('OK')"`
+2. **Hugging Face token** -- required for speaker diarization. Check `~/.huggingface/token`.
 
 ## Steps
 
@@ -454,7 +496,7 @@ $ARGUMENTS
        "segments": [...]
      }
      ```
-   - Write back to the same file. Do NOT modify segment data — the map is additive only.
+   - Write back to the same file. Do NOT modify segment data -- the map is additive only.
 
 5. **Flatten transcript** (token optimization):
    ```bash
@@ -463,11 +505,11 @@ $ARGUMENTS
    - Produces `transcript-readable.txt` (~15KB vs ~850KB JSON) with speaker names resolved.
 
 6. **Generate minutes.md**:
-   - Read `transcript-readable.txt` (NOT the full JSON — saves ~98% tokens).
+   - Read `transcript-readable.txt` (NOT the full JSON -- saves ~98% tokens).
    - Generate minutes.md using this template:
 
      ```markdown
-     # Meeting Minutes — {meeting name from folder}
+     # Meeting Minutes --{meeting name from folder}
      > Date: {YYYY-MM-DD} | Duration: {MM:SS} | Speakers: {resolved names}
      > Source: local recording via WhisperSync
      > Transcript: transcript.json
@@ -478,7 +520,7 @@ $ARGUMENTS
      - [ ] **{Assignee}**: {specific action with enough detail to execute}
 
      ### Decisions Made
-     - {Decision with specifics — field names, values, approach chosen}
+     - {Decision with specifics -- field names, values, approach chosen}
 
      ### Key Topics
      - {Topic}: {1-2 sentence summary}
@@ -506,8 +548,8 @@ $ARGUMENTS
 ### Tips
 
 - **Best model for meetings**: Use `large-v3` (set via tray menu -> Settings -> Meeting Model). Most accurate for multi-speaker audio.
-- **Re-transcribe**: Changed your mind on the model? Re-run transcription on the saved WAV — the original recording is always preserved.
-- **Token optimization**: Always use `transcript-readable.txt` (not the raw JSON) when feeding into AI tools — it's ~90% smaller.
+- **Re-transcribe**: Changed your mind on the model? Re-run transcription on the saved WAV -- the original recording is always preserved.
+- **Token optimization**: Always use `transcript-readable.txt` (not the raw JSON) when feeding into AI tools -- it's ~90% smaller.
 - **Speaker limits**: If you know the exact speaker count, WhisperX can use that constraint for better diarization accuracy.
 
 ---
@@ -534,7 +576,7 @@ This tests all downloaded models with both meeting mode (30 min, full pipeline) 
 
 ### "CUDA not available" / GPU not detected
 - Ensure NVIDIA drivers are up to date: [nvidia.com/drivers](https://www.nvidia.com/drivers)
-- Run `nvidia-smi` in a terminal — if this fails, your drivers need updating
+- Run `nvidia-smi` in a terminal -- if this fails, your drivers need updating
 - The installer auto-detects your GPU and installs the matching CUDA toolkit
 
 ### No audio captured
@@ -553,9 +595,9 @@ This tests all downloaded models with both meeting mode (30 min, full pipeline) 
 
 ### Hugging Face / diarization errors
 - Verify `~/.huggingface/token` exists and contains your token
-- **"Diarization model access denied"** — you must accept the license terms on BOTH pages:
-  - [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0) — click "Agree"
-  - [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) — click "Agree"
+- **"Diarization model access denied"** -- you must accept the license terms on BOTH pages:
+  - [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0) -- click "Agree"
+  - [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) -- click "Agree"
 - WhisperSync will show a popup with these exact URLs if it detects the access error
 - The diarization model downloads on first meeting transcription (~500 MB)
 
@@ -571,10 +613,13 @@ Dictation history is saved to `logs/data/dictation/YYYY-MM-DD.md`.
 ## Updating
 
 To update to a newer version:
-1. Download the new zip
-2. Extract over your existing installation
-3. Your settings (`config.json`), models (`models/`), and logs (`logs/`) are preserved
-4. Only re-run `install.ps1` if the release notes mention dependency changes
+1. Pull the latest changes:
+   ```powershell
+   cd whisper-sync
+   git pull
+   ```
+2. Your settings (`config.json`), models, and logs are preserved
+3. Only re-run `install.ps1` if the release notes mention dependency changes
 
 ---
 
@@ -592,31 +637,31 @@ Everything below is for developers modifying this app or for an AI assistant (li
 
 | File | Purpose | Key Classes/Functions |
 |------|---------|----------------------|
-| `__main__.py` | **App entry point.** Tray icon, hotkey listener, recording lifecycle, crash recovery. | `WhisperSync` class — `run()`, `_on_hotkey()`, `_start_dictation()`, `_start_meeting()`, `_do_transcribe()`, `_paste_result()`, `_recover_from_crash()` |
-| `capture.py` | **Audio recording.** Multi-stream mic + speaker loopback via WASAPI. | `AudioCapture` class — `start()`, `stop()`, `_audio_callback()` |
-| `transcribe.py` | **WhisperX engine.** Model loading, transcription, alignment, diarization. Two paths: fast (dictation) and full (meeting). | `transcribe_fast(audio_np, model)` — in-memory numpy → text; `transcribe(audio_path, diarize, model)` — file-based full pipeline; `_load_model()`, `_load_align_model()` |
-| `worker.py` | **Subprocess entry point.** Runs transcription in isolated process (crash safety). Receives requests via Queue, returns results. | `worker_main()` — event loop handling `transcribe_fast`, `transcribe`, `reload_model`, `shutdown` requests |
-| `worker_manager.py` | **Subprocess lifecycle.** Spawns/kills/restarts worker process. IPC via multiprocessing.Queue. Crash detection + respawn. | `TranscriptionWorker` class — `start()`, `wait_ready()`, `transcribe_fast()`, `transcribe()`, `reload_model()`, `restart()`, `is_alive()` |
-| `streaming_wav.py` | **Crash-safe WAV writer.** Writes audio incrementally during recording. Can recover orphaned files after crash. | `StreamingWavWriter` class — `write()`, `close()`, `_write_header()`; `fix_orphan(path)` — validates + rewrites header; `cleanup_temp_files(dir)` |
+| `__main__.py` | **App entry point.** Tray icon, hotkey listener, recording lifecycle, crash recovery. | `WhisperSync` class --`run()`, `_on_hotkey()`, `_start_dictation()`, `_start_meeting()`, `_do_transcribe()`, `_paste_result()`, `_recover_from_crash()` |
+| `capture.py` | **Audio recording.** Multi-stream mic + speaker loopback via WASAPI. | `AudioCapture` class --`start()`, `stop()`, `_audio_callback()` |
+| `transcribe.py` | **WhisperX engine.** Model loading, transcription, alignment, diarization. Two paths: fast (dictation) and full (meeting). | `transcribe_fast(audio_np, model)` -- in-memory numpy → text; `transcribe(audio_path, diarize, model)` -- file-based full pipeline; `_load_model()`, `_load_align_model()` |
+| `worker.py` | **Subprocess entry point.** Runs transcription in isolated process (crash safety). Receives requests via Queue, returns results. | `worker_main()` -- event loop handling `transcribe_fast`, `transcribe`, `reload_model`, `shutdown` requests |
+| `worker_manager.py` | **Subprocess lifecycle.** Spawns/kills/restarts worker process. IPC via multiprocessing.Queue. Crash detection + respawn. | `TranscriptionWorker` class --`start()`, `wait_ready()`, `transcribe_fast()`, `transcribe()`, `reload_model()`, `restart()`, `is_alive()` |
+| `streaming_wav.py` | **Crash-safe WAV writer.** Writes audio incrementally during recording. Can recover orphaned files after crash. | `StreamingWavWriter` class --`write()`, `close()`, `_write_header()`; `fix_orphan(path)` -- validates + rewrites header; `cleanup_temp_files(dir)` |
 | `config.py` | **Config manager.** Loads `config.defaults.json`, deep-merges with user `config.json` overrides. | `load()` → merged dict; `save(overrides)` → writes config.json |
-| `paths.py` | **Path resolver.** Standalone vs repo mode detection, model cache dir, output dir. | `is_standalone()` — checks `.standalone` marker; `get_install_root()`, `get_model_cache()`, `get_default_output_dir()` |
-| `model_status.py` | **Model management.** Download, cache validation, bootstrap (auto-download tiny+base, prompt for larger). | `get_model_status(name)` → bool; `download_model(name)` → downloads to HF cache; `bootstrap_models(config)` — first-run setup |
+| `paths.py` | **Path resolver.** Standalone vs repo mode detection, model cache dir, output dir. | `is_standalone()` -- checks `.standalone` marker; `get_install_root()`, `get_model_cache()`, `get_default_output_dir()` |
+| `model_status.py` | **Model management.** Download, cache validation, bootstrap (auto-download tiny+base, prompt for larger). | `get_model_status(name)` → bool; `download_model(name)` → downloads to HF cache; `bootstrap_models(config)` -- first-run setup |
 | `icons.py` | **Tray icon generator.** Creates colored 64x64 PNG circles with labels. No external assets needed. | `_circle_icon(color, label)` → PIL Image. Colors: idle=#888, recording=#F44, dictation=#4AF, saving=#FB3, transcribing=#DD3, done=#4D4, error=#F4F, queued=#F80 |
 | `paste.py` | **Text output.** Routes transcribed text to clipboard+Ctrl+V or simulated keystrokes. | `paste(text, method)`, `paste_clipboard(text)`, `paste_keystrokes(text)` |
 | `flatten.py` | **Transcript converter.** JSON → readable speaker-attributed text (~90% token reduction). | `flatten(transcript_path)` → writes `transcript-readable.txt`; `PAUSE_THRESHOLD = 2.0` seconds |
 | `dictation_log.py` | **Dictation history.** Appends entries to daily markdown log files. | `append(text, duration)` → `logs/data/dictation/YYYY/YYYY-MM-DD.md` |
-| `crash_diagnostics.py` | **Crash safety.** Global exception hook + Windows Event Log query for recent python.exe crashes. | `install_excepthook()` — registers handler; `check_previous_crash()` → str or None |
-| `watchdog.py` | **Auto-restart daemon.** Monitors main process, respawns on non-zero exit. Gives up after 5 rapid crashes. | `main()` — loop with `MAX_RESTARTS=5`, `COOLDOWN_SECONDS=5`, `RESET_AFTER_SECONDS=300` |
+| `crash_diagnostics.py` | **Crash safety.** Global exception hook + Windows Event Log query for recent python.exe crashes. | `install_excepthook()` -- registers handler; `check_previous_crash()` → str or None |
+| `watchdog.py` | **Auto-restart daemon.** Monitors main process, respawns on non-zero exit. Gives up after 5 rapid crashes. | `main()` -- loop with `MAX_RESTARTS=5`, `COOLDOWN_SECONDS=5`, `RESET_AFTER_SECONDS=300` |
 | `logger.py` | **Logging setup.** File-based logging to `logs/app/whisper-sync-YYYY-MM-DD.log`. DEBUG to file, INFO to console. | `logger` singleton |
 | `benchmark.py` | **Performance testing.** Tests all downloaded models in both meeting and dictation modes. | `python -m whisper_sync.benchmark [wav_path]` |
-| `__init__.py` | Package marker. Empty. | — |
+| `__init__.py` | Package marker. Empty. | --|
 
 ### Non-Python Files
 
 | File | Location | Purpose |
 |------|----------|---------|
 | `config.defaults.json` | `whisper_sync/` | Default configuration. Merged under user overrides. Contains hotkeys, model defaults (large-v3), paste method, sample rate. |
-| `config.json` | `whisper_sync/` | User overrides. Created on first settings change. Only contains keys the user changed — everything else falls back to defaults. |
+| `config.json` | `whisper_sync/` | User overrides. Created on first settings change. Only contains keys the user changed -- everything else falls back to defaults. |
 | `whisper-capture.ico` | `whisper_sync/` | Application icon (64x64). Used in Windows shortcuts. |
 | `.standalone` | `whisper_sync/` | Marker file. If present, app runs in standalone mode (output → `~/Documents/WhisperSync/`). If absent, repo mode (output → repo `meetings/local-transcriptions/`). Created by `install.ps1`. |
 | `requirements.txt` | Top level | Pip dependencies: `whisperx`, `sounddevice`, `pystray`, `Pillow`, `keyboard`, `pyperclip`. |
@@ -703,7 +748,7 @@ User presses Ctrl+Shift+M
 
 ### Subprocess Architecture
 
-The transcription engine runs in a **separate subprocess** (`worker.py`) for crash isolation. GPU operations (especially CUDA) can segfault — a segfault in the worker doesn't kill the main UI process.
+The transcription engine runs in a **separate subprocess** (`worker.py`) for crash isolation. GPU operations (especially CUDA) can segfault -- a segfault in the worker doesn't kill the main UI process.
 
 ```
 Main Process (__main__.py)          Worker Process (worker.py)
@@ -724,28 +769,28 @@ Main Process (__main__.py)          Worker Process (worker.py)
 
 WhisperSync adapts to your GPU automatically. Three layers prevent CUDA out-of-memory crashes:
 
-1. **VRAM-tier batch sizing** — At startup, detects total GPU memory and sets a safe `batch_size`:
+1. **VRAM-tier batch sizing** -- At startup, detects total GPU memory and sets a safe `batch_size`:
    - 8 GB or less: `batch_size=4`
    - 8–12 GB: `batch_size=8`
    - 12 GB+: `batch_size=16`
    - CPU mode: `batch_size=16` (uses system RAM, not VRAM)
 
-2. **Audio-length reduction** — Long recordings get a smaller batch_size to avoid OOM:
+2. **Audio-length reduction** -- Long recordings get a smaller batch_size to avoid OOM:
    - Under 60s: use base batch_size
    - 60–180s: halve the batch_size
    - Over 180s: quarter the batch_size
 
-3. **OOM catch-and-retry** — If CUDA still runs out of memory, the error is caught, `torch.cuda.empty_cache()` reclaims fragmented VRAM, and the transcription retries at half batch_size. Up to 3 retries before falling back to crash recovery.
+3. **OOM catch-and-retry** -- If CUDA still runs out of memory, the error is caught, `torch.cuda.empty_cache()` reclaims fragmented VRAM, and the transcription retries at half batch_size. Up to 3 retries before falling back to crash recovery.
 
 You can override auto-detection by setting `"batch_size": 8` (or any integer) in `config.json`. Set `"batch_size": "auto"` to re-enable adaptive sizing.
 
-### Meeting Recording — Disk-Only Audio
+### Meeting Recording -- Disk-Only Audio
 
 Meeting recordings use **disk-only** audio capture. The mic callback streams audio to a WAV file on disk in real-time but does NOT accumulate audio in RAM. This prevents `MemoryError` crashes on long meetings (previously, a 90-minute meeting would consume ~700 MB of RAM for audio data alone).
 
 When the meeting stops, the streaming WAV is either moved directly to the output folder (mic-only) or read back and merged with speaker loopback audio (stereo).
 
-Dictation mode still uses RAM (recordings are short — typically under 30 seconds).
+Dictation mode still uses RAM (recordings are short -- typically under 30 seconds).
 
 ### Orphan Worker Cleanup
 
@@ -788,7 +833,7 @@ The installer detects the GPU name via `nvidia-smi --query-gpu=name --format=csv
 ```
 whisperx (speech-to-text)
 ├── faster-whisper (CTranslate2 backend)
-├── torch (CPU version — MUST be overridden with CUDA version)
+├── torch (CPU version -- MUST be overridden with CUDA version)
 ├── torchaudio
 ├── transformers (HuggingFace model loading)
 ├── pyannote.audio (speaker diarization, gated models)
@@ -849,9 +894,9 @@ models--openai--whisper-large-v3\
 | whisper-medium | ~1.5 GB | ~1.5 GB | ~4 GB | High accuracy |
 | whisper-large-v2 | ~2.9 GB | ~3 GB | ~8 GB | Best (older) |
 | whisper-large-v3 | ~2.9 GB | ~3 GB | ~8 GB | Best (recommended) |
-| wav2vec2-conformer | ~360 MB | ~400 MB | — | Word-level alignment |
-| segmentation-3.0 | ~360 MB | ~400 MB | — | Speaker segmentation (gated) |
-| speaker-diarization-3.1 | ~17 MB | ~20 MB | — | Speaker pipeline config (gated) |
+| wav2vec2-conformer | ~360 MB | ~400 MB | --| Word-level alignment |
+| segmentation-3.0 | ~360 MB | ~400 MB | --| Speaker segmentation (gated) |
+| speaker-diarization-3.1 | ~17 MB | ~20 MB | --| Speaker pipeline config (gated) |
 
 ### Manual Model Download (When Automated Download Fails)
 
@@ -895,7 +940,7 @@ Should print `True`.
 
 ### Gated Models (Diarization)
 
-The pyannote diarization models are **gated** — you must:
+The pyannote diarization models are **gated** -- you must:
 1. Have a HuggingFace account
 2. Visit each model page and click "Agree" to accept the license
 3. Have a valid HF token saved at `~/.huggingface/token`
@@ -1124,10 +1169,10 @@ SYMPTOM: Meeting transcription works but no speaker labels, or diarization error
 4. Diarization runs but all segments are SPEAKER_00
    → Audio has only one detectable speaker
    → Or: Audio quality too low for speaker separation
-   → Not a bug — pyannote's limitation with poor audio
+   → Not a bug -- pyannote's limitation with poor audio
 
 5. Wrong speaker count / speakers mixed up
-   → Normal pyannote behavior — it estimates speaker count
+   → Normal pyannote behavior -- it estimates speaker count
    → No fix in WhisperSync (pyannote limitation)
    → Tip: Re-transcribe and manually edit speaker_map in transcript.json
 ```
@@ -1181,7 +1226,7 @@ Remove-Item .\whisper_sync\config.json -ErrorAction SilentlyContinue
 # 3. Re-run installer
 powershell -ExecutionPolicy Bypass -File install.ps1
 
-# Models at ~/.cache/huggingface/ are preserved — no re-download needed
+# Models at ~/.cache/huggingface/ are preserved -- no re-download needed
 ```
 
 To also clear cached models (full reset):
@@ -1222,7 +1267,7 @@ Each tree is ordered by most likely cause first. Work through it top to bottom.
 ### Step 4: If Nothing Works
 
 1. Read the latest log file: `whisper_sync/logs/app/whisper-sync-YYYY-MM-DD.log`
-2. Look for Python tracebacks — the last exception is usually the root cause
+2. Look for Python tracebacks -- the last exception is usually the root cause
 3. If the error is in `transcribe.py`, the issue is usually model/GPU related
 4. If the error is in `capture.py`, the issue is usually audio device related
 5. If the error is in `__main__.py`, the issue is usually configuration or hotkey related
@@ -1231,12 +1276,12 @@ Each tree is ordered by most likely cause first. Work through it top to bottom.
 
 If you need to edit Python files to fix an issue:
 
-- **Entry point**: `__main__.py` — UI logic, hotkeys, recording lifecycle
-- **Audio**: `capture.py` — device selection, WASAPI setup
-- **Transcription**: `transcribe.py` — model loading, whisperX pipeline
-- **Subprocess**: `worker.py` + `worker_manager.py` — IPC, crash recovery
-- **Config**: `config.py` — settings loading/saving
-- **Paths**: `paths.py` — standalone vs repo mode detection
+- **Entry point**: `__main__.py` -- UI logic, hotkeys, recording lifecycle
+- **Audio**: `capture.py` -- device selection, WASAPI setup
+- **Transcription**: `transcribe.py` -- model loading, whisperX pipeline
+- **Subprocess**: `worker.py` + `worker_manager.py` -- IPC, crash recovery
+- **Config**: `config.py` -- settings loading/saving
+- **Paths**: `paths.py` -- standalone vs repo mode detection
 
 **Important constants to know:**
 - Dictation timeout: 60 seconds (`worker_manager.py`)
@@ -1253,3 +1298,9 @@ If you need to edit Python files to fix an issue:
 3. **PyTorch override**: whisperX pulls CPU-only torch. The installer forces CUDA torch. If CUDA stops working, this override is the first thing to check.
 4. **Config merge**: Defaults + user overrides, deep merged. User config.json only contains changed keys. Deleting it resets everything.
 5. **Standalone marker**: The `.standalone` file determines path resolution. Without it, the app assumes it's running inside the development repo.
+
+---
+
+## License
+
+MIT License -- see [LICENSE](LICENSE)

@@ -49,10 +49,6 @@ class TranscriptionWorker:
         self._request_counter = 0
         self._lock = threading.Lock()
 
-    def update_config(self, cfg: dict) -> None:
-        """Update the config snapshot used for future spawns."""
-        self._cfg = cfg
-
     def _next_id(self) -> int:
         self._request_counter += 1
         return self._request_counter

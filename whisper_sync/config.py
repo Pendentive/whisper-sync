@@ -16,6 +16,7 @@ _VALID_KEYS = {
     "sample_rate", "use_system_devices", "left_click", "middle_click",
     "suppress_llm_warning", "github_repo", "github_poll_interval",
     "github_notifications", "log_window", "device", "incognito",
+    "always_available_dictation", "backup_device", "backup_model",
 }
 
 
@@ -74,3 +75,19 @@ def save(cfg: dict) -> None:
     with open(save_path, "w") as f:
         json.dump(clean, f, indent=2)
         f.write("\n")
+
+    # Keep the legacy bootstrap pointer in sync so the app can find the
+    # config after an output_dir change + restart.
+    if "output_dir" in clean:
+        legacy_path = get_legacy_config_path()
+        try:
+            bootstrap = {}
+            if legacy_path.exists():
+                with open(legacy_path) as f:
+                    bootstrap = json.load(f)
+            bootstrap["output_dir"] = clean["output_dir"]
+            with open(legacy_path, "w") as f:
+                json.dump(bootstrap, f, indent=2)
+                f.write("\n")
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning(f"Could not update legacy bootstrap pointer: {exc}")

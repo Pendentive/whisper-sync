@@ -35,10 +35,12 @@ from .paths import (get_install_root, get_default_output_dir, is_standalone,
                      get_legacy_dictation_log_dir, get_config_path as get_data_config_path,
                      get_speaker_config_path)
 from .worker_manager import TranscriptionWorker, WorkerCrashedError
+from .backup_worker import BackupTranscriber
 from . import dictation_log
 from .streaming_wav import fix_orphan
 from .crash_diagnostics import install_excepthook, check_previous_crash
 from .flatten import flatten as flatten_transcript
+from .notifications import notify
 from .rebuild_index import rebuild_root_index
 from .speakers import identify_speakers, write_speaker_map, update_config, get_config_path
 
@@ -89,6 +91,7 @@ class WhisperSync:
         self._meeting_start_time: datetime | None = None
         dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
         self.worker = TranscriptionWorker(self.cfg, preload_model=dictation_model)
+        self._backup = BackupTranscriber(self.cfg)
         self._github_poller = None
         self._github_prs = []
         self._dictation_history = dictation_log.load_recent(10)  # persist across restarts
@@ -257,8 +260,8 @@ class WhisperSync:
         return get_dictation_log_dir()
 
     def _start_dictation(self):
-        if not self.worker.is_ready():
-            logger.warning("Worker not ready yet — ignoring dictation request")
+        if not self.worker.is_ready() and not (self._meeting_transcribing and self._backup.is_enabled()):
+            logger.warning("Worker not ready yet - ignoring dictation request")
             return
         self.mode = "dictation"
         self._update_icon()
@@ -289,22 +292,45 @@ class WhisperSync:
         self._update_icon()
 
         dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
+        use_backup = self._meeting_transcribing and self._backup.is_enabled()
 
         def _process():
             import time as _time
 
-            # If meeting is transcribing, flash queued icon — worker handles
-            # dictation between meeting stages but there may be a brief wait
-            if self._meeting_transcribing:
-                self._flash_queued()
-
             t0 = _time.perf_counter()
             try:
-                # Longer timeout when queued behind a meeting stage
-                timeout = 180 if self._meeting_transcribing else 60
-                text = self.worker.transcribe_fast(audio["mic"], model_override=dictation_model, timeout=timeout)
-                t1 = _time.perf_counter()
-                logger.debug(f"transcribe_fast: {t1 - t0:.2f}s")
+                text = None
+                used_backup = False
+                if use_backup:
+                    # Meeting is transcribing - use lightweight backup model
+                    # instead of queuing on the busy worker
+                    try:
+                        text = self._backup.transcribe(audio["mic"])
+                        used_backup = True
+                        t1 = _time.perf_counter()
+                        backup_model = self.cfg.get("backup_model", "base")
+                        backup_device = self._backup.device
+                        logger.info(
+                            f"Dictation (backup, {backup_device} {backup_model}): "
+                            f"{t1 - t0:.2f}s"
+                        )
+                    except Exception as backup_err:
+                        # Backup failed - fall back to queuing on the main worker
+                        logger.warning(f"Backup transcriber failed: {backup_err}")
+                        logger.info("Falling back to main worker (queued)")
+                        self._flash_queued()
+                        timeout = 180
+                        text = self.worker.transcribe_fast(audio["mic"], model_override=dictation_model, timeout=timeout)
+                        t1 = _time.perf_counter()
+                        logger.debug(f"transcribe_fast (fallback): {t1 - t0:.2f}s")
+                else:
+                    # Normal path or backup disabled
+                    if self._meeting_transcribing:
+                        self._flash_queued()
+                    timeout = 180 if self._meeting_transcribing else 60
+                    text = self.worker.transcribe_fast(audio["mic"], model_override=dictation_model, timeout=timeout)
+                    t1 = _time.perf_counter()
+                    logger.debug(f"transcribe_fast: {t1 - t0:.2f}s")
                 if text:
                     paste(text, self.cfg["paste_method"])
                 t2 = _time.perf_counter()
@@ -314,7 +340,8 @@ class WhisperSync:
                     logger.info(f"Dictation: {t2 - t0:.2f}s -- {delivery} ({char_count} chars)")
                 else:
                     log_dictation_result(text or "", t2 - t0, delivery, char_count)
-                logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={dictation_model}")
+                effective_model = self.cfg.get("backup_model", "base") if used_backup else dictation_model
+                logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={effective_model}{' (backup)' if used_backup else ''}")
                 # Update session stats
                 self._stats["dictations"] += 1
                 self._stats["total_dictation_chars"] += char_count
@@ -375,6 +402,19 @@ class WhisperSync:
                 pyperclip.copy(text)
                 dictation_log.append(text, 0)
                 logger.info(f"Crash-recovered dictation copied to clipboard: {text[:80]}...")
+                # #38: Toast with recovered text info and Copy button
+                try:
+                    _recovered_text = text
+                    def _copy_recovered(t=_recovered_text):
+                        import pyperclip as _pc
+                        _pc.copy(t)
+                    notify(
+                        "Dictation recovered",
+                        f"{len(text)} chars recovered from crash",
+                        buttons=[{"label": "Copy to Clipboard", "action": _copy_recovered}],
+                    )
+                except Exception:
+                    logger.debug("Recovery toast failed", exc_info=True)
             else:
                 logger.info("Crash-recovered dictation produced no text")
             # Clean up the WAV now that text is on clipboard + in the .md log
@@ -1180,6 +1220,9 @@ class WhisperSync:
                     log_transcript_preview("", speakers=_meet_segments)
 
                 # --- Speaker identification (runs for BOTH Save and Save & Summarize) ---
+                # #37 (deferred): Toast-based speaker ID was explored but the tkinter
+                # dialog provides autocomplete, confidence colors, and multi-speaker
+                # editing that ToastInputTextBox cannot replicate. Keeping tkinter flow.
                 llm_ok = self._is_claude_cli_available()
                 if llm_ok:
                     try:
@@ -1264,6 +1307,22 @@ class WhisperSync:
                     rebuild_root_index(self._output_dir())
                 except Exception as e:
                     logger.warning(f"Index rebuild failed (non-fatal): {e}")
+
+                # #36: Toast with meeting stats and Open Folder button
+                try:
+                    _toast_body = f"{_meet_words} words, {_meet_speakers} speakers"
+                    _folder_path = str(meeting_dir)
+                    def _open_meeting_folder(p=_folder_path):
+                        import subprocess as _sp
+                        _sp.Popen(["explorer", p])
+                    notify(
+                        "Meeting transcribed",
+                        _toast_body,
+                        buttons=[{"label": "Open Folder", "action": _open_meeting_folder}],
+                    )
+                except Exception as e:
+                    logger.debug(f"Meeting toast failed (non-fatal): {e}")
+
                 self._meeting_transcribing = False
                 # Flash "done" only if user is idle (not mid-dictation)
                 if self.mode is None:
@@ -1608,6 +1667,34 @@ class WhisperSync:
             for dev, label in device_options
         ]
 
+        # --- Always Available Dictation ---
+        backup_device_cfg = self.cfg.get("backup_device", "auto")
+        backup_model_cfg = self.cfg.get("backup_model", "base")
+        backup_model_options = ["tiny", "base", "small"]
+        backup_device_options = [
+            ("auto", "Auto"),
+            ("gpu", "GPU"),
+            ("cpu", "CPU"),
+        ]
+        backup_device_items = [
+            pystray.MenuItem(
+                label,
+                self._cb(self._set_backup_device, dev),
+                checked=lambda item, d=dev: self.cfg.get("backup_device", "auto") == d,
+                radio=True,
+            )
+            for dev, label in backup_device_options
+        ]
+        backup_model_items = [
+            pystray.MenuItem(
+                f"{name} ({MODEL_OPTIONS.get(name, '')})",
+                self._cb(self._set_backup_model, name),
+                checked=lambda item, n=name: self.cfg.get("backup_model", "base") == n,
+                radio=True,
+            )
+            for name in backup_model_options
+        ]
+
         # --- Incognito mode ---
         incognito_on = self.cfg.get("incognito", False)
         incognito_items = [
@@ -1667,6 +1754,17 @@ class WhisperSync:
                                  pystray.Menu(*meeting_model_items)),
                 pystray.MenuItem(f"Device\t{current_device} - {gpu_name or 'CPU'}",
                                  pystray.Menu(*device_items)),
+                pystray.MenuItem("Always Available Dictation", pystray.Menu(
+                    pystray.MenuItem(
+                        "Enabled",
+                        lambda: self._toggle_always_available_dictation(),
+                        checked=lambda item: self.cfg.get("always_available_dictation", True),
+                    ),
+                    pystray.MenuItem(f"Backup Device\t{backup_device_cfg}",
+                                     pystray.Menu(*backup_device_items)),
+                    pystray.MenuItem(f"Backup Model\t{backup_model_cfg}",
+                                     pystray.Menu(*backup_model_items)),
+                )),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Change Output Folder...",
                                  lambda: self._change_output_folder()),
@@ -1704,6 +1802,20 @@ class WhisperSync:
         state = "on" if self.cfg["incognito"] else "off"
         logger.info(f"Incognito mode: {state}")
         self._save_and_refresh()
+        # #40: Toast warning when incognito toggles
+        try:
+            if self.cfg["incognito"]:
+                notify(
+                    "Incognito Mode Active",
+                    "No data saved to disk. Dictation recovery is OFF.",
+                )
+            else:
+                notify(
+                    "Incognito Mode Off",
+                    "Dictation data will be saved to disk",
+                )
+        except Exception:
+            pass  # toast is best-effort
 
     def _refresh_menu(self):
         if self.tray:
@@ -1731,15 +1843,37 @@ class WhisperSync:
             if not self.cfg.get("github_notifications", True):
                 return
             # Notify on actionable changes
+            repo = self.cfg.get("github_repo", "")
             old_map = {pr.number: pr.review_state for pr in old_prs}
             for pr in new_prs:
                 old_state = old_map.get(pr.number)
                 if old_state == pr.review_state:
                     continue
-                if pr.review_state == "suggestions":
-                    self._notify(f"PR #{pr.number} needs attention: {pr.suggestion_count} suggestion(s)")
+                if pr.review_state == "clean":
+                    self._notify(
+                        f"PR #{pr.number} ready to merge",
+                        pr.title,
+                        buttons=[
+                            {"label": "Merge", "action": lambda _pr=pr: self._merge_pr(repo, _pr.number)},
+                            {"label": "View on GitHub", "action": lambda _pr=pr: self._open_pr_url(_pr.url)},
+                        ],
+                    )
+                elif pr.review_state == "suggestions":
+                    self._notify(
+                        f"PR #{pr.number}: {pr.suggestion_count} suggestion(s)",
+                        pr.title,
+                        buttons=[
+                            {"label": "View on GitHub", "action": lambda _pr=pr: self._open_pr_url(_pr.url)},
+                        ],
+                    )
                 elif pr.review_state == "human-review":
-                    self._notify(f"PR #{pr.number} flagged for human review")
+                    self._notify(
+                        f"PR #{pr.number} flagged for human review",
+                        pr.title,
+                        buttons=[
+                            {"label": "View on GitHub", "action": lambda _pr=pr: self._open_pr_url(_pr.url)},
+                        ],
+                    )
 
         def _on_initial_poll(old_prs, new_prs):
             """First poll — update menu regardless of change detection."""
@@ -1761,16 +1895,9 @@ class WhisperSync:
                         break
             threading.Thread(target=_wait_first_poll, daemon=True).start()
 
-    def _notify(self, message: str):
-        """Show a Windows notification. Uses msg command (works on Win 10/11)."""
-        import subprocess as _sp
-        try:
-            _sp.Popen(
-                ["msg", "*", f"WhisperSync: {message}"],
-                creationflags=0x08000000,  # CREATE_NO_WINDOW
-            )
-        except Exception:
-            logger.debug(f"Notification failed: {message}")
+    def _notify(self, title: str, body: str = "", *, buttons=None, on_click=None):
+        """Show a Windows toast notification via windows-toasts."""
+        notify(title, body, buttons=buttons, on_click=on_click)
 
     def _github_menu_items(self) -> list:
         """Build menu items for GitHub PR status."""
@@ -1820,7 +1947,12 @@ class WhisperSync:
             webbrowser.open(url)
 
     def _merge_pr(self, repo: str, pr_number: int):
-        """Merge a PR via gh CLI."""
+        """Merge a PR via gh CLI.
+
+        NOTE: This method may be called from a toast notification thread
+        (via notifications.py button callbacks). The threading is handled
+        in notifications.py -- this method itself is blocking.
+        """
         import subprocess as _sp
         try:
             result = _sp.run(
@@ -1830,13 +1962,13 @@ class WhisperSync:
             )
             if result.returncode == 0:
                 logger.info(f"PR #{pr_number} merged successfully")
-                self._notify(f"PR #{pr_number} merged to main")
+                self._notify("PR merged", f"PR #{pr_number} merged to main")
                 # Refresh after merge
                 if self._github_poller:
                     self._github_poller.poll_now()
             else:
                 logger.warning(f"PR #{pr_number} merge failed: {result.stderr.strip()}")
-                self._notify(f"PR #{pr_number} merge failed")
+                self._notify("Merge failed", f"PR #{pr_number} merge failed -- check logs")
         except Exception as e:
             logger.warning(f"PR merge error: {e}")
 
@@ -2071,9 +2203,21 @@ class WhisperSync:
 
         logger.info(f"Switching device: {old} -> {device} ({old_resolved} -> {new_resolved})")
         self.worker.update_config(dict(self.cfg))
+        _previous_device = old
         def _do_restart():
             self.worker.restart()
             logger.info(f"Worker restarted on {new_resolved}")
+            # #39: Toast confirming device switch with Switch Back button
+            try:
+                def _switch_back(prev=_previous_device):
+                    self._set_compute_device(prev)
+                notify(
+                    "Device switched",
+                    f"Now using {new_resolved}",
+                    buttons=[{"label": "Switch Back", "action": _switch_back}],
+                )
+            except Exception:
+                pass  # toast is best-effort
         threading.Thread(target=_do_restart, daemon=True).start()
 
     def _get_device_label(self) -> str:
@@ -2099,6 +2243,39 @@ class WhisperSync:
                 return "GPU"
         else:
             return "CPU"
+
+    def _toggle_always_available_dictation(self):
+        self.cfg["always_available_dictation"] = not self.cfg.get("always_available_dictation", True)
+        state = "enabled" if self.cfg["always_available_dictation"] else "disabled"
+        logger.info(f"Always Available Dictation: {state}")
+        if not self.cfg["always_available_dictation"]:
+            self._backup.unload()
+        self._save_and_refresh()
+
+    def _set_backup_device(self, device: str):
+        if self.cfg.get("backup_device", "auto") == device:
+            return
+        self.cfg["backup_device"] = device
+        logger.info(f"Backup device: {device}")
+        self._backup.reload_if_needed()
+        self._save_and_refresh()
+
+    def _set_backup_model(self, model_name: str):
+        if self.cfg.get("backup_model", "base") == model_name:
+            return
+        self.cfg["backup_model"] = model_name
+        logger.info(f"Backup model: {model_name}")
+        # Check VRAM and warn if needed
+        primary_model = self.cfg.get("model", "large-v3")
+        warning = self._backup.get_vram_warning(primary_model, model_name)
+        if warning:
+            try:
+                notify("VRAM Warning", warning)
+            except Exception:
+                pass
+            logger.warning(warning)
+        self._backup.reload_if_needed()
+        self._save_and_refresh()
 
     def _set_model(self, key: str, model_name: str):
         logger.info(f"Setting {key} = {model_name}")
@@ -2307,7 +2484,18 @@ class WhisperSync:
         logger.info(f"Log file: {get_log_path()}")
         if self.cfg.get("incognito"):
             logger.info("Incognito mode active -- dictation data not stored on disk")
+        if self._backup.is_enabled():
+            backup_model = self.cfg.get("backup_model", "base")
+            backup_device = self.cfg.get("backup_device", "auto")
+            logger.info(f"Always Available Dictation: on (backup model: {backup_model}, device: {backup_device})")
         logger.info("Right-click tray icon for menu.")
+
+        # Startup toast notification
+        compute = self.cfg.get("compute_type", "float16")
+        notify(
+            "WhisperSync running",
+            f"Model: {dictation_model} | Compute: {compute}",
+        )
 
         # Start transcription worker subprocess (loads models in isolation)
         self.worker.start()
