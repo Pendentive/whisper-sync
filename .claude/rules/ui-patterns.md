@@ -65,3 +65,27 @@ Four tiers controlled by the `log_window` config key:
 - **verbose** - full debug output, prefixed with `[WhisperSync]`
 
 File logging always captures DEBUG level regardless of console tier. Log files rotate daily.
+
+## Tray Icon Anatomy (Three-Ring Model)
+
+The tray icon uses a layered three-ring design:
+
+- **Outer ring** (3px): reflects speaker/channel health status.
+- **Middle circle**: primary indicator for mic status and recording state.
+- **Inner dot** (4px, optional): dictation overlay indicator. Appears ONLY during overlay dictation (dictation while a meeting is active).
+
+### Color State Table
+
+| State | Outer Ring | Middle Circle | Inner Dot |
+|-------|-----------|---------------|-----------|
+| Idle | Gray | Gray | None |
+| Recording (meeting) | Green | Red | None |
+| Dictation (standalone) | Gray | Blue | None |
+| Dictation (overlay, during meeting) | Green | Red | Blue |
+| Transcribing | Gray | Yellow | None |
+| Done (flash) | Gray | Green | None |
+| Error | Gray | Red (pulse) | None |
+
+### Yellow Double-Flash Convention
+
+The yellow double-flash is the universal "loading/queuing" signal. Timing: 150ms on, 150ms off, 150ms on. Used when a hotkey press is received while a model is still loading or a previous operation is queued.
