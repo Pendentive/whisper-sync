@@ -62,7 +62,7 @@ def _make_three_ring_icon(outer_color: str, middle_color: str,
         dot_radius = 4
         cx, cy = size // 2, size // 2
         draw.ellipse(
-            [cx - dot_radius, cy - dot_radius, cx + dot_radius, cy + dot_radius],
+            [cx - dot_radius, cy - dot_radius, cx + dot_radius - 1, cy + dot_radius - 1],
             fill=inner_color,
         )
 
@@ -80,7 +80,7 @@ def _circle_icon(color: str, size: int = 64) -> Image.Image:
 
 
 def idle_icon() -> Image.Image:
-    return _make_three_ring_icon("#808080", "#808080")
+    return _make_three_ring_icon(COLOR_IDLE, COLOR_IDLE)
 
 
 def recording_icon(speaker_ok: bool = True) -> Image.Image:

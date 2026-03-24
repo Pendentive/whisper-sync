@@ -64,7 +64,9 @@ class BackupTranscriber:
         def _do_preload():
             self._loading = True
             try:
-                self._load()
+                with self._lock:
+                    if self._model is None:
+                        self._load()
             finally:
                 self._loading = False
 
@@ -140,7 +142,7 @@ class BackupTranscriber:
 
         if backup_device in ("gpu", "cuda"):
             main_device = self.cfg.get("device", "auto")
-            if main_device != "cpu":
+            if main_device in ("gpu", "cuda"):
                 logger.warning("Backup model on GPU while main model also on GPU - may cause VRAM pressure")
             return "cuda"
 

@@ -185,9 +185,12 @@ class WhisperSync:
 
     def _yellow_flash(self):
         """Universal loading/queuing signal: two quick yellow flashes (150ms on/off/on)."""
+        if getattr(self, '_flashing', False):
+            return
+        self._flashing = True
         def _flash():
-            from .icons import yellow_flash_icon
             try:
+                from .icons import yellow_flash_icon
                 original = self.tray.icon
                 for _ in range(2):
                     self.tray.icon = yellow_flash_icon()
@@ -196,6 +199,8 @@ class WhisperSync:
                     time.sleep(0.15)
             except Exception:
                 pass  # tray may not be ready
+            finally:
+                self._flashing = False
         threading.Thread(target=_flash, daemon=True).start()
 
     # --- Click dispatch ---
@@ -1977,7 +1982,7 @@ class WhisperSync:
                                  pystray.Menu(*dictation_model_items)),
                 pystray.MenuItem(f"Meeting Model\t{self.cfg['model']}",
                                  pystray.Menu(*meeting_model_items)),
-                pystray.MenuItem(f"Device\t{current_device} - {gpu_name or 'CPU'}",
+                pystray.MenuItem(f"Device\t{self._get_device_label()}",
                                  pystray.Menu(*device_items)),
                 pystray.MenuItem("Always Available Dictation", pystray.Menu(
                     pystray.MenuItem(

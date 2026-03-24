@@ -78,13 +78,18 @@ The tray icon uses a layered three-ring design:
 
 | State | Outer Ring | Middle Circle | Inner Dot |
 |-------|-----------|---------------|-----------|
-| Idle | Gray | Gray | None |
-| Recording (meeting) | Green | Red | None |
-| Dictation (standalone) | Gray | Blue | None |
-| Dictation (overlay, during meeting) | Green | Red | Blue |
-| Transcribing | Gray | Yellow | None |
-| Done (flash) | Gray | Green | None |
-| Error | Gray | Red (pulse) | None |
+| Idle | Gray (#808080) | Gray (#808080) | None |
+| Recording (meeting) | Dark red (#CC3333) | Light red (#FF4444) | None |
+| Recording (speaker fail) | Yellow (#FFAA00) | Light red (#FF4444) | None |
+| Dictation (standalone) | White/light gray (#CCCCCC) | Blue (#4488FF) | None |
+| Dictation (overlay, during meeting) | Dark red (#CC3333) | Light red (#FF4444) | Blue (#4488FF) |
+| Dictation (overlay, during transcription) | Dark amber (#CC8800) | Amber (#FFAA00) | Blue (#4488FF) |
+| Transcribing | Dark amber (#CC8800) | Amber (#FFAA00) | None |
+| Saving | Dark amber (#CC8800) | Amber (#FFAA00) | None |
+| Summarizing | Dark purple (#9944CC) | Light purple (#CC66FF) | None |
+| Queued | Dark orange (#CC6600) | Orange (#FF8800) | None |
+| Done | Dark green (#44CC44) | Light green (#66FF66) | None |
+| Error | Dark magenta (#CC44CC) | Light magenta (#FF66FF) | None |
 
 ### Yellow Double-Flash Convention
 

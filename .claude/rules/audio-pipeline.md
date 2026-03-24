@@ -35,7 +35,7 @@ WhisperSync captures stereo audio: microphone on channel 0, system loopback (spe
 - The backup model pre-loads on meeting start (background thread, CPU, ~1s load time).
 - Once loaded, the backup model stays in memory until the app closes. There is no unload timer.
 - `backup_device` is always CPU unless explicitly overridden to GPU in config.
-- Default backup model selection by VRAM tier: `small` (8+ GB VRAM), `tiny` (< 8 GB VRAM), `base` (no GPU).
+- Default backup_model is `base`. The installer can override to `small` or `tiny` based on detected VRAM during installation. No runtime auto-selection.
 - Model merging: dictation and meeting share the primary model instance. The backup model is always a separate instance.
 
 ## Critical Rules
