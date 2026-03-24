@@ -51,12 +51,16 @@ Models download once on first run and are cached locally in a `models/` folder. 
    cd whisper-sync
    ```
 
-3. **Run the installer:**
+3. **Run the installer** (choose one):
    ```powershell
+   # GUI installer (recommended)
+   python -m whisper_sync.installer_gui
+
+   # CLI installer (alternative)
    powershell -ExecutionPolicy Bypass -File install.ps1
    ```
 
-4. **Follow the prompts.** The installer shows progress bars and will:
+4. **Follow the prompts.** The installer will:
    - Detect your GPU and pick the right CUDA version
    - Create a Python virtual environment
    - Install all dependencies

@@ -151,6 +151,10 @@ class TranscriptionWorker:
     def is_ready(self) -> bool:
         return self._ready and self.is_alive()
 
+    def update_config(self, cfg: dict):
+        """Update the config snapshot for the next worker spawn."""
+        self._cfg = cfg
+
     def restart(self) -> None:
         """Kill and respawn the worker (e.g., after a crash).
 
