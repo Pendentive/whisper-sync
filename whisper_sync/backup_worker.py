@@ -90,46 +90,42 @@ class BackupTranscriber:
             if self._model is None:
                 self._load()
 
-            import whisperx
-
-            # Normalize audio to the format whisperx expects
+            # Normalize audio for faster_whisper
             if audio_np.dtype == np.int16:
                 audio_np = audio_np.astype(np.float32) / 32768.0
             audio_np = np.ascontiguousarray(audio_np.flatten(), dtype=np.float32)
 
             language = self.cfg.get("language", "en")
-            batch_size = 8 if self._device == "cpu" else 16
 
             logger.info(
-                f"Backup transcribe [{self._device}] {self._model_name} "
-                f"(batch={batch_size})..."
+                f"Backup transcribe [{self._device}] {self._model_name}..."
             )
-            result = self._model.transcribe(
-                audio_np, batch_size=batch_size, language=language
+            segments, _ = self._model.transcribe(
+                audio_np, beam_size=5, language=language, vad_filter=True
             )
-            text = " ".join(
-                seg.get("text", "") for seg in result.get("segments", [])
-            ).strip()
+            text = " ".join(seg.text.strip() for seg in segments)
             return text
 
     def _load(self):
-        """Lazily load the backup model."""
-        import whisperx
+        """Lazily load the backup model.
+
+        Uses faster_whisper directly instead of whisperx.load_model to avoid
+        initializing PyAnnote VAD in the main process. WhisperX's load_model
+        triggers torch/MKL in a way that conflicts with the worker subprocess's
+        torch context, causing segfaults. The backup model only needs raw
+        transcription for dictation, not VAD/alignment/diarization.
+        """
+        from faster_whisper import WhisperModel
 
         model_name = self.cfg.get("backup_model", "base")
         device = self._resolve_device()
         compute_type = "int8" if device == "cpu" else self.cfg.get("compute_type", "float16")
 
-        from .paths import get_model_cache
-        model_cache = get_model_cache()
-
         logger.info(f"Backup model loading [{device}] {model_name} ({compute_type})...")
-        self._model = whisperx.load_model(
+        self._model = WhisperModel(
             model_name,
             device=device,
             compute_type=compute_type,
-            language=self.cfg.get("language", "en"),
-            download_root=str(model_cache),
         )
         self._device = device
         self._compute_type = compute_type
