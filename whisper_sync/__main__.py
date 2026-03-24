@@ -1062,6 +1062,8 @@ class WhisperSync:
                             root.after(10, lambda: _autocomplete(ent, var, names))
 
                     def _autocomplete(ent, var, names):
+                        if _closing[0]:
+                            return
                         current = var.get()
                         if not current:
                             _close_listbox()
@@ -1105,13 +1107,30 @@ class WhisperSync:
             btn_frame = tk.Frame(root, bg=bg)
             btn_frame.pack(pady=(14, 12))
 
+            _closing = [False]
+
             def _confirm():
-                result[0] = {spk_id: var.get() for spk_id, var in dropdowns.items()}
-                root.destroy()
+                if _closing[0]:
+                    return
+                _closing[0] = True
+                try:
+                    result[0] = {spk_id: var.get() for spk_id, var in dropdowns.items()}
+                except Exception:
+                    pass
+                try:
+                    root.destroy()
+                except Exception as e:
+                    logger.debug(f"Speaker confirm cleanup: {e}")
 
             def _skip():
+                if _closing[0]:
+                    return
+                _closing[0] = True
                 result[0] = None
-                root.destroy()
+                try:
+                    root.destroy()
+                except Exception as e:
+                    logger.debug(f"Speaker dialog close: {e}")
 
             self._flat_button(btn_frame, "Confirm", _confirm,
                               bg=accent, fg="#1e1e2e", hover_bg="#74c7ec", bold=True).pack(side=tk.RIGHT, padx=8)
@@ -1324,8 +1343,8 @@ class WhisperSync:
                     logger.debug(f"Meeting toast failed (non-fatal): {e}")
 
                 self._meeting_transcribing = False
-                # Flash "done" only if user is idle (not mid-dictation)
-                if self.mode is None:
+                # Reset mode and flash done (unless user started a new recording)
+                if self.mode in (None, "transcribing"):
                     self.mode = "done"
                     self._update_icon()
                     self._schedule_idle(3, blink=True)
@@ -1498,8 +1517,18 @@ class WhisperSync:
         import pyperclip
         pyperclip.copy(text)
 
+    def _open_dictation_logs(self):
+        """Open the dictation logs folder in Explorer."""
+        from .paths import get_dictation_log_dir
+        log_dir = get_dictation_log_dir()
+        if log_dir.exists():
+            import subprocess
+            subprocess.Popen(["explorer", str(log_dir)])
+        else:
+            logger.info("No dictation logs folder found")
+
     def _clear_dictation_history(self):
-        """Clear all dictation history and refresh menu."""
+        """Clear the in-memory dictation history (menu only, logs on disk are preserved)."""
         self._dictation_history.clear()
         self._refresh_menu()
 
@@ -1521,7 +1550,10 @@ class WhisperSync:
             )
         items.append(pystray.Menu.SEPARATOR)
         items.append(
-            pystray.MenuItem("Clear History", lambda: self._clear_dictation_history())
+            pystray.MenuItem("Open Logs", self._cb(self._open_dictation_logs))
+        )
+        items.append(
+            pystray.MenuItem("Clear History", self._cb(self._clear_dictation_history))
         )
         return pystray.Menu(*items)
 
@@ -1704,10 +1736,9 @@ class WhisperSync:
                 checked=lambda item: self.cfg.get("incognito", False),
             ),
         ]
-        if incognito_on:
-            incognito_items.append(
-                pystray.MenuItem("  RAM only -- no data stored on disk", None, enabled=False),
-            )
+        incognito_items.append(
+            pystray.MenuItem("  RAM-only dictation, no disk writes", None, enabled=False),
+        )
 
         # Left-click fires the default menu item
         left_action = self.cfg.get("left_click", "meeting")
