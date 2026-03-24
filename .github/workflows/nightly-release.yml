@@ -1,10 +1,10 @@
 name: Nightly Release (dev to main)
 
 on:
-  schedule:
-    # Run at 4:00 AM UTC daily (11:00 PM CT)
-    - cron: '0 4 * * *'
-  # Allow manual trigger
+  # schedule:
+  #   # Run at 4:00 AM UTC daily (11:00 PM CT)
+  #   - cron: '0 4 * * *'
+  # Manual trigger only (re-enable schedule after setting Actions PR permissions)
   workflow_dispatch:
 
 permissions:
