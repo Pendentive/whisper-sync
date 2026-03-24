@@ -35,6 +35,7 @@ from .paths import (get_install_root, get_default_output_dir, is_standalone,
                      get_legacy_dictation_log_dir, get_config_path as get_data_config_path,
                      get_speaker_config_path)
 from .worker_manager import TranscriptionWorker, WorkerCrashedError
+from .backup_worker import BackupTranscriber
 from . import dictation_log
 from .streaming_wav import fix_orphan
 from .crash_diagnostics import install_excepthook, check_previous_crash
@@ -90,6 +91,7 @@ class WhisperSync:
         self._meeting_start_time: datetime | None = None
         dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
         self.worker = TranscriptionWorker(self.cfg, preload_model=dictation_model)
+        self._backup = BackupTranscriber(self.cfg)
         self._github_poller = None
         self._github_prs = []
         self._dictation_history = dictation_log.load_recent(10)  # persist across restarts
@@ -258,8 +260,8 @@ class WhisperSync:
         return get_dictation_log_dir()
 
     def _start_dictation(self):
-        if not self.worker.is_ready():
-            logger.warning("Worker not ready yet — ignoring dictation request")
+        if not self.worker.is_ready() and not (self._meeting_transcribing and self._backup.is_enabled()):
+            logger.warning("Worker not ready yet - ignoring dictation request")
             return
         self.mode = "dictation"
         self._update_icon()
@@ -290,22 +292,45 @@ class WhisperSync:
         self._update_icon()
 
         dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
+        use_backup = self._meeting_transcribing and self._backup.is_enabled()
 
         def _process():
             import time as _time
 
-            # If meeting is transcribing, flash queued icon — worker handles
-            # dictation between meeting stages but there may be a brief wait
-            if self._meeting_transcribing:
-                self._flash_queued()
-
             t0 = _time.perf_counter()
             try:
-                # Longer timeout when queued behind a meeting stage
-                timeout = 180 if self._meeting_transcribing else 60
-                text = self.worker.transcribe_fast(audio["mic"], model_override=dictation_model, timeout=timeout)
-                t1 = _time.perf_counter()
-                logger.debug(f"transcribe_fast: {t1 - t0:.2f}s")
+                text = None
+                used_backup = False
+                if use_backup:
+                    # Meeting is transcribing - use lightweight backup model
+                    # instead of queuing on the busy worker
+                    try:
+                        text = self._backup.transcribe(audio["mic"])
+                        used_backup = True
+                        t1 = _time.perf_counter()
+                        backup_model = self.cfg.get("backup_model", "base")
+                        backup_device = self._backup.device
+                        logger.info(
+                            f"Dictation (backup, {backup_device} {backup_model}): "
+                            f"{t1 - t0:.2f}s"
+                        )
+                    except Exception as backup_err:
+                        # Backup failed - fall back to queuing on the main worker
+                        logger.warning(f"Backup transcriber failed: {backup_err}")
+                        logger.info("Falling back to main worker (queued)")
+                        self._flash_queued()
+                        timeout = 180
+                        text = self.worker.transcribe_fast(audio["mic"], model_override=dictation_model, timeout=timeout)
+                        t1 = _time.perf_counter()
+                        logger.debug(f"transcribe_fast (fallback): {t1 - t0:.2f}s")
+                else:
+                    # Normal path or backup disabled
+                    if self._meeting_transcribing:
+                        self._flash_queued()
+                    timeout = 180 if self._meeting_transcribing else 60
+                    text = self.worker.transcribe_fast(audio["mic"], model_override=dictation_model, timeout=timeout)
+                    t1 = _time.perf_counter()
+                    logger.debug(f"transcribe_fast: {t1 - t0:.2f}s")
                 if text:
                     paste(text, self.cfg["paste_method"])
                 t2 = _time.perf_counter()
@@ -315,7 +340,8 @@ class WhisperSync:
                     logger.info(f"Dictation: {t2 - t0:.2f}s -- {delivery} ({char_count} chars)")
                 else:
                     log_dictation_result(text or "", t2 - t0, delivery, char_count)
-                logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={dictation_model}")
+                effective_model = self.cfg.get("backup_model", "base") if used_backup else dictation_model
+                logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={effective_model}{' (backup)' if used_backup else ''}")
                 # Update session stats
                 self._stats["dictations"] += 1
                 self._stats["total_dictation_chars"] += char_count
@@ -1641,6 +1667,34 @@ class WhisperSync:
             for dev, label in device_options
         ]
 
+        # --- Always Available Dictation ---
+        backup_device_cfg = self.cfg.get("backup_device", "auto")
+        backup_model_cfg = self.cfg.get("backup_model", "base")
+        backup_model_options = ["tiny", "base", "small"]
+        backup_device_options = [
+            ("auto", "Auto"),
+            ("gpu", "GPU"),
+            ("cpu", "CPU"),
+        ]
+        backup_device_items = [
+            pystray.MenuItem(
+                label,
+                self._cb(self._set_backup_device, dev),
+                checked=lambda item, d=dev: self.cfg.get("backup_device", "auto") == d,
+                radio=True,
+            )
+            for dev, label in backup_device_options
+        ]
+        backup_model_items = [
+            pystray.MenuItem(
+                f"{name} ({MODEL_OPTIONS.get(name, '')})",
+                self._cb(self._set_backup_model, name),
+                checked=lambda item, n=name: self.cfg.get("backup_model", "base") == n,
+                radio=True,
+            )
+            for name in backup_model_options
+        ]
+
         # --- Incognito mode ---
         incognito_on = self.cfg.get("incognito", False)
         incognito_items = [
@@ -1700,6 +1754,17 @@ class WhisperSync:
                                  pystray.Menu(*meeting_model_items)),
                 pystray.MenuItem(f"Device\t{current_device} - {gpu_name or 'CPU'}",
                                  pystray.Menu(*device_items)),
+                pystray.MenuItem("Always Available Dictation", pystray.Menu(
+                    pystray.MenuItem(
+                        "Enabled",
+                        lambda: self._toggle_always_available_dictation(),
+                        checked=lambda item: self.cfg.get("always_available_dictation", True),
+                    ),
+                    pystray.MenuItem(f"Backup Device\t{backup_device_cfg}",
+                                     pystray.Menu(*backup_device_items)),
+                    pystray.MenuItem(f"Backup Model\t{backup_model_cfg}",
+                                     pystray.Menu(*backup_model_items)),
+                )),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Change Output Folder...",
                                  lambda: self._change_output_folder()),
@@ -2179,6 +2244,39 @@ class WhisperSync:
         else:
             return "CPU"
 
+    def _toggle_always_available_dictation(self):
+        self.cfg["always_available_dictation"] = not self.cfg.get("always_available_dictation", True)
+        state = "enabled" if self.cfg["always_available_dictation"] else "disabled"
+        logger.info(f"Always Available Dictation: {state}")
+        if not self.cfg["always_available_dictation"]:
+            self._backup.unload()
+        self._save_and_refresh()
+
+    def _set_backup_device(self, device: str):
+        if self.cfg.get("backup_device", "auto") == device:
+            return
+        self.cfg["backup_device"] = device
+        logger.info(f"Backup device: {device}")
+        self._backup.reload_if_needed()
+        self._save_and_refresh()
+
+    def _set_backup_model(self, model_name: str):
+        if self.cfg.get("backup_model", "base") == model_name:
+            return
+        self.cfg["backup_model"] = model_name
+        logger.info(f"Backup model: {model_name}")
+        # Check VRAM and warn if needed
+        primary_model = self.cfg.get("model", "large-v3")
+        warning = self._backup.get_vram_warning(primary_model, model_name)
+        if warning:
+            try:
+                notify("VRAM Warning", warning)
+            except Exception:
+                pass
+            logger.warning(warning)
+        self._backup.reload_if_needed()
+        self._save_and_refresh()
+
     def _set_model(self, key: str, model_name: str):
         logger.info(f"Setting {key} = {model_name}")
         if self.cfg.get(key) == model_name:
@@ -2386,6 +2484,10 @@ class WhisperSync:
         logger.info(f"Log file: {get_log_path()}")
         if self.cfg.get("incognito"):
             logger.info("Incognito mode active -- dictation data not stored on disk")
+        if self._backup.is_enabled():
+            backup_model = self.cfg.get("backup_model", "base")
+            backup_device = self.cfg.get("backup_device", "auto")
+            logger.info(f"Always Available Dictation: on (backup model: {backup_model}, device: {backup_device})")
         logger.info("Right-click tray icon for menu.")
 
         # Startup toast notification
