@@ -315,7 +315,7 @@ class WhisperSync:
         return get_dictation_log_dir()
 
     def _start_dictation(self):
-        if not self.worker.is_ready() and not (self._meeting_transcribing and self._backup.is_enabled()):
+        if not self.worker.is_ready() and not (self._meeting_transcribing and BackupTranscriber.is_enabled(self.cfg)):
             logger.warning("Worker not ready yet - ignoring dictation request")
             return
         self.mode = "dictation"
@@ -347,7 +347,7 @@ class WhisperSync:
         self._update_icon()
 
         dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
-        use_backup = self._meeting_transcribing and self._backup.is_enabled()
+        use_backup = self._meeting_transcribing and BackupTranscriber.is_enabled(self.cfg)
 
         def _process():
             import time as _time
@@ -364,7 +364,7 @@ class WhisperSync:
                         used_backup = True
                         t1 = _time.perf_counter()
                         backup_model = self.cfg.get("backup_model", "base")
-                        backup_device = self._backup.device
+                        backup_device = self.cfg.get("backup_device", "cpu")
                         logger.info(
                             f"Dictation (backup, {backup_device} {backup_model}): "
                             f"{t1 - t0:.2f}s"
@@ -449,7 +449,7 @@ class WhisperSync:
 
         meeting_state = "recording" if self.mode == "meeting" else "transcribing"
         backup_model = self.cfg.get("backup_model", "base")
-        backup_device = self._backup.device
+        backup_device = self.cfg.get("backup_device", "cpu")
         logger.info(f"Dictation requested during meeting {meeting_state} (using backup model)")
         logger.info(f"Backup model: {backup_model} on {backup_device}")
 
@@ -494,7 +494,7 @@ class WhisperSync:
                 duration = t1 - t0
                 char_count = len(text) if text else 0
                 backup_model = self.cfg.get("backup_model", "base")
-                backup_device = self._backup.device
+                backup_device = self.cfg.get("backup_device", "cpu")
                 logger.info(
                     f"Dictation during meeting: {duration:.1f}s, {char_count} chars "
                     f"(backup {backup_device} {backup_model})"
@@ -2479,7 +2479,7 @@ class WhisperSync:
         state = "enabled" if self.cfg["always_available_dictation"] else "disabled"
         logger.info(f"Always Available Dictation: {state}")
         if not self.cfg["always_available_dictation"]:
-            self._backup.unload()
+            self._backup.stop()
         self._save_and_refresh()
 
     def _set_backup_device(self, device: str):
@@ -2487,7 +2487,8 @@ class WhisperSync:
             return
         self.cfg["backup_device"] = device
         logger.info(f"Backup device: {device}")
-        self._backup.reload_if_needed()
+        self._backup.stop()
+        self._backup.preload()
         self._save_and_refresh()
 
     def _set_backup_model(self, model_name: str):
@@ -2495,16 +2496,8 @@ class WhisperSync:
             return
         self.cfg["backup_model"] = model_name
         logger.info(f"Backup model: {model_name}")
-        # Check VRAM and warn if needed
-        primary_model = self.cfg.get("model", "large-v3")
-        warning = self._backup.get_vram_warning(primary_model, model_name)
-        if warning:
-            try:
-                notify("VRAM Warning", warning)
-            except Exception:
-                pass
-            logger.warning(warning)
-        self._backup.reload_if_needed()
+        self._backup.stop()
+        self._backup.preload()
         self._save_and_refresh()
 
     def _set_model(self, key: str, model_name: str):
@@ -2603,6 +2596,7 @@ class WhisperSync:
         if self.recorder.is_recording:
             self.recorder.stop()
         self.worker.stop()
+        self._backup.stop()
         keyboard.unhook_all()
         subprocess.Popen(
             [sys.executable, "-m", "whisper_sync"],
@@ -2615,6 +2609,7 @@ class WhisperSync:
         if self.recorder.is_recording:
             self.recorder.stop()
         self.worker.stop()
+        self._backup.stop()
         keyboard.unhook_all()
         if self.tray:
             self.tray.stop()
@@ -2714,9 +2709,9 @@ class WhisperSync:
         logger.info(f"Log file: {get_log_path()}")
         if self.cfg.get("incognito"):
             logger.info("Incognito mode active -- dictation data not stored on disk")
-        if self._backup.is_enabled():
+        if BackupTranscriber.is_enabled(self.cfg):
             backup_model = self.cfg.get("backup_model", "base")
-            backup_device = self.cfg.get("backup_device", "auto")
+            backup_device = self.cfg.get("backup_device", "cpu")
             logger.info(f"Always Available Dictation: on (backup model: {backup_model}, device: {backup_device})")
         logger.info("Right-click tray icon for menu.")
 
@@ -2754,6 +2749,7 @@ class WhisperSync:
             # Always release keyboard hooks to prevent stuck modifier keys
             keyboard.unhook_all()
             self.worker.stop()
+            self._backup.stop()
             if self._github_poller:
                 self._github_poller.stop()
 
