@@ -59,7 +59,8 @@ def find_python():
             )
             if result.returncode == 0:
                 import re
-                m = re.search(r"Python (\d+)\.(\d+)", result.stdout)
+                version_text = result.stdout + result.stderr
+                m = re.search(r"Python (\d+)\.(\d+)", version_text)
                 if m and int(m.group(1)) >= 3 and int(m.group(2)) >= 10:
                     return cmd
         except Exception:
@@ -73,6 +74,7 @@ class InstallerApp:
         self.root.title("WhisperSync Installer")
         self.root.configure(bg=BG)
         self.root.resizable(False, False)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Center window
         w, h = 520, 640
@@ -186,10 +188,15 @@ class InstallerApp:
         # -- Progress Area --
         ttk.Label(main, text="Progress:", style="Dark.TLabel").pack(anchor="w")
 
-        self.log_text = tk.Text(main, height=10, bg=BG_LIGHT, fg=FG,
+        log_frame = tk.Frame(main, bg=BG_LIGHT)
+        log_frame.pack(fill="both", expand=True, pady=(2, 6))
+        self.log_text = tk.Text(log_frame, height=10, bg=BG_LIGHT, fg=FG,
                                 font=("Consolas", 9), relief="flat", bd=4,
                                 wrap="word", state="disabled", insertbackground=FG)
-        self.log_text.pack(fill="both", expand=True, pady=(2, 6))
+        log_scroll = tk.Scrollbar(log_frame, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=log_scroll.set)
+        log_scroll.pack(side="right", fill="y")
+        self.log_text.pack(side="left", fill="both", expand=True)
 
         # Tag configs for colored log output
         self.log_text.tag_configure("ok", foreground=GREEN)
@@ -246,11 +253,25 @@ class InstallerApp:
     def _set_progress(self, value):
         self.root.after(0, lambda: self.progress_var.set(value))
 
+    def _on_close(self):
+        """Handle window close. Warn if install is running."""
+        if self.installing:
+            import tkinter.messagebox as mb
+            if not mb.askokcancel("Installation Running",
+                                  "Installation is in progress. Closing may leave a partial install.\n\nClose anyway?"):
+                return
+        self.root.destroy()
+
     def _on_action(self):
         if self.install_complete:
             self._launch()
             return
         if self.installing:
+            return
+        # Validate output directory
+        output_dir = self.output_var.get().strip()
+        if not output_dir:
+            self._log("Please enter an output folder.", "error")
             return
         self.installing = True
         self.action_btn.configure(state="disabled", text="Installing...")
@@ -356,12 +377,16 @@ class InstallerApp:
             if not marker.exists():
                 marker.write_text("")
 
-            bootstrap_script = self.script_root / "ws-bootstrap-gui.py"
+            import tempfile
+            fd, bootstrap_path = tempfile.mkstemp(suffix=".py", prefix="ws-bootstrap-")
+            os.close(fd)
+            bootstrap_script = Path(bootstrap_path)
             bootstrap_code = (
                 "import warnings, os, sys\n"
-                "warnings.filterwarnings('ignore')\n"
+                "warnings.filterwarnings('ignore', message='torchcodec', category=UserWarning, module='pyannote')\n"
+                "warnings.filterwarnings('ignore', message='TensorFloat', category=UserWarning, module='pyannote')\n"
                 "os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'\n"
-                "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n"
+                f"sys.path.insert(0, {repr(str(self.script_root))})\n"
                 "from whisper_sync.model_status import bootstrap_models\n"
                 "from whisper_sync import config\n"
                 "bootstrap_models(config.load())\n"
@@ -378,9 +403,17 @@ class InstallerApp:
             # -- Step 5: Write config --
             step("Writing configuration")
             output_path = Path(output_dir)
-            output_path.mkdir(parents=True, exist_ok=True)
+            # Guard against .whispersync existing as a file
             ws_dir = output_path / ".whispersync"
-            ws_dir.mkdir(parents=True, exist_ok=True)
+            if ws_dir.exists() and ws_dir.is_file():
+                self._log("  .whispersync exists as a file, removing", "warn")
+                ws_dir.unlink()
+            try:
+                output_path.mkdir(parents=True, exist_ok=True)
+                ws_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                self._fail(f"Cannot create output folder: {e}")
+                return
             config_path = ws_dir / "config.json"
 
             # Preserve existing config if present
@@ -390,8 +423,9 @@ class InstallerApp:
                     existing_cfg = json.loads(config_path.read_text(encoding="utf-8"))
                     self._log("  Found existing config, preserving settings", "ok")
                 except (json.JSONDecodeError, OSError):
-                    pass
+                    self._log("  Existing config was corrupt, starting fresh", "warn")
 
+            # Only write known config keys
             existing_cfg["output_dir"] = output_dir.replace("\\", "/")
             config_path.write_text(json.dumps(existing_cfg, indent=2),
                                    encoding="utf-8")
@@ -481,14 +515,16 @@ class InstallerApp:
             self._fail(f"Unexpected error: {e}")
 
     def _fail(self, message):
-        """Handle installation failure."""
+        """Handle installation failure. Re-enables all inputs for retry."""
         self._log(f"\n{message}", "error")
         self._set_status("Installation failed")
         self.installing = False
-        self.root.after(0, lambda: self.action_btn.configure(
-            state="normal", text="Retry Install",
-            bg=RED, activebackground=YELLOW,
-        ))
+        def _reenable():
+            self.action_btn.configure(state="normal", text="Retry Install",
+                                      bg=RED, activebackground=YELLOW)
+            self.output_entry.configure(state="normal")
+            self.hf_entry.configure(state="normal")
+        self.root.after(0, _reenable)
 
     def _create_shortcut(self, lnk_path, launcher_path, icon_path):
         """Create a Windows shortcut using VBScript."""
@@ -496,7 +532,10 @@ class InstallerApp:
         if lnk_path.exists():
             lnk_path.unlink()
 
-        vbs_path = Path(os.environ.get("TEMP", "/tmp")) / "ws-shortcut.vbs"
+        import tempfile
+        fd, vbs_path = tempfile.mkstemp(suffix=".vbs", prefix="ws-shortcut-")
+        os.close(fd)
+        vbs_path = Path(vbs_path)
         vbs_content = (
             'Set WshShell = WScript.CreateObject("WScript.Shell")\n'
             f'Set lnk = WshShell.CreateShortcut("{lnk_path}")\n'
@@ -510,8 +549,10 @@ class InstallerApp:
         )
         vbs_path.write_text(vbs_content, encoding="ascii")
         try:
-            subprocess.run(["cscript", "//nologo", str(vbs_path)],
-                           capture_output=True, timeout=10)
+            result = subprocess.run(["cscript", "//nologo", str(vbs_path)],
+                                    capture_output=True, timeout=10)
+            if result.returncode != 0:
+                raise RuntimeError(f"cscript failed: {result.stderr.strip()}")
         finally:
             vbs_path.unlink(missing_ok=True)
 
