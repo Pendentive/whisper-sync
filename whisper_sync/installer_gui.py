@@ -998,7 +998,8 @@ class InstallerApp:
             bootstrap_script = Path(bootstrap_path)
             bootstrap_code = (
                 "import warnings, os, sys\n"
-                "warnings.filterwarnings('ignore')\n"
+                "warnings.filterwarnings('ignore', message='torchcodec', category=UserWarning, module='pyannote')\n"
+                "warnings.filterwarnings('ignore', message='TensorFloat', category=UserWarning, module='pyannote')\n"
                 "os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'\n"
                 f"sys.path.insert(0, {repr(str(self.script_root))})\n"
                 "from whisper_sync.model_status import bootstrap_models\n"
@@ -1379,7 +1380,8 @@ class InstallerApp:
             check_script = Path(check_path)
             check_script.write_text(
                 "import warnings, os, sys\n"
-                "warnings.filterwarnings('ignore')\n"
+                "warnings.filterwarnings('ignore', message='torchcodec', category=UserWarning, module='pyannote')\n"
+                "warnings.filterwarnings('ignore', message='TensorFloat', category=UserWarning, module='pyannote')\n"
                 f"sys.path.insert(0, {repr(str(self.script_root))})\n"
                 "from whisper_sync.model_status import is_model_cached\n"
                 f"print('yes' if is_model_cached({repr(model_name)}) "
@@ -1417,7 +1419,8 @@ class InstallerApp:
             bench_script = Path(bench_path)
             bench_script.write_text(
                 "import warnings, os, sys, time, json, numpy as np\n"
-                "warnings.filterwarnings('ignore')\n"
+                "warnings.filterwarnings('ignore', message='torchcodec', category=UserWarning, module='pyannote')\n"
+                "warnings.filterwarnings('ignore', message='TensorFloat', category=UserWarning, module='pyannote')\n"
                 "os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'\n"
                 f"sys.path.insert(0, {repr(str(self.script_root))})\n"
                 "from whisper_sync.transcribe import "
