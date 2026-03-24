@@ -256,10 +256,53 @@ while (-not $outputDir) {
     } catch { Warn "Can't use that path: $_"; Info "Try a different folder" }
 }
 $wsDir = "$outputDir\.whispersync"
-if ((Test-Path $wsDir) -and -not (Test-Path $wsDir -PathType Container)) {
-    Warn ".whispersync exists at $wsDir but is a file, not a directory -- skipping"
-} elseif (-not (Test-Path $wsDir)) {
-    New-Item -ItemType Directory -Path $wsDir -Force | Out-Null
+while ($true) {
+    if ((Test-Path $wsDir) -and -not (Test-Path $wsDir -PathType Container)) {
+        Write-Host ""
+        Warn ".whispersync exists at $wsDir but is a file, not a directory."
+        Info "WhisperSync needs this to be a folder. Delete the file or choose a different output folder."
+        $fix = Prompt "(D)elete the file / (C)hoose a different folder / (Q)uit"
+        switch ($fix.ToLower()) {
+            "d" {
+                try {
+                    Remove-Item $wsDir -Force -ErrorAction Stop
+                    Ok "Deleted $wsDir"
+                } catch {
+                    Warn "Could not delete: $_"
+                    continue
+                }
+            }
+            "c" {
+                $outputDir = $null
+                while (-not $outputDir) {
+                    $customOut = Prompt "Paste a full path for the output folder"
+                    if (-not $customOut -or -not $customOut.Trim()) { continue }
+                    if ([System.IO.Path]::IsPathRooted($customOut.Trim())) {
+                        $candidate = $customOut.Trim()
+                    } else {
+                        Warn "'$($customOut.Trim())' is not a full path - use something like C:\..."
+                        continue
+                    }
+                    try {
+                        if (-not (Test-Path $candidate)) { New-Item -ItemType Directory -Path $candidate -Force -ErrorAction Stop | Out-Null }
+                        if (Test-Path $candidate -PathType Container) { $outputDir = $candidate }
+                        else { Warn "That path exists but is not a folder" }
+                    } catch { Warn "Can't use that path: $_"; Info "Try a different folder" }
+                }
+                $wsDir = "$outputDir\.whispersync"
+                continue
+            }
+            "q" {
+                Warn "Installation cancelled."
+                exit 1
+            }
+            default { Warn "Please enter D, C, or Q"; continue }
+        }
+    }
+    if (-not (Test-Path $wsDir)) {
+        New-Item -ItemType Directory -Path $wsDir -Force | Out-Null
+    }
+    break
 }
 $ConfigPath = "$wsDir\config.json"
 

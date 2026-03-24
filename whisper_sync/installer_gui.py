@@ -9,6 +9,8 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 from pathlib import Path
 
+from .paths import get_default_output_dir
+
 VERSION = "1.0"
 
 # -- Colors --
@@ -149,8 +151,7 @@ class InstallerApp:
         folder_frame = ttk.Frame(main, style="Dark.TFrame")
         folder_frame.pack(fill="x", pady=(2, 8))
 
-        docs_folder = Path(os.path.expanduser("~/Documents"))
-        default_out = str(docs_folder / "whispersync-meetings")
+        default_out = str(get_default_output_dir())
 
         self.output_var = tk.StringVar(value=default_out)
         self.output_entry = tk.Entry(folder_frame, textvariable=self.output_var,
