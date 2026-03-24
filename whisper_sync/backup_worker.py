@@ -1,17 +1,8 @@
-"""Lightweight backup transcriber for dictation during meetings.
+"""Backup transcription worker for dictation during meetings.
 
-When the main worker subprocess is busy with meeting transcription,
-this module provides a fallback path using a smaller model loaded
-directly in the main process. It runs in a background thread (not a
-separate process) since dictation audio is short (5-30s) and
-transcription completes in 1-3s on CPU or <1s on GPU with a small model.
-
-The model is loaded lazily on first use and kept in memory for
-subsequent calls. Call unload() to free it explicitly.
-
-NOTE: WhisperX is loaded in the main process thread for simplicity.
-The backup model is small and transcription is brief (~1-3s). If
-stability issues arise, migrate to a subprocess model.
+Spawns a second TranscriptionWorker subprocess on CPU with a smaller model.
+The subprocess uses the same worker_main entry point as the primary worker.
+Main process never imports torch/CTranslate2 (avoids segfaults).
 """
 
 import threading
@@ -19,172 +10,93 @@ import threading
 import numpy as np
 
 from .logger import logger
-
-# Approximate VRAM usage per model in GB (float16 on GPU)
-MODEL_VRAM_GB = {
-    "tiny": 1.0,
-    "base": 1.0,
-    "small": 2.0,
-    "medium": 4.0,
-    "large-v2": 3.0,
-    "large-v3": 3.0,
-}
-
-VRAM_THRESHOLD = 0.80  # warn if combined usage exceeds 80% of total
+from . import config
 
 
 class BackupTranscriber:
-    """Lightweight backup transcriber for dictation during meetings.
+    """Manages a backup transcription subprocess for dictation during meetings.
 
-    Loads lazily on first use. Runs in the calling thread (main process).
-    Uses a smaller model on CPU or GPU depending on config.
+    Spawned on first meeting start. Stays alive until app closes.
+    Uses TranscriptionWorker (same as primary) but configured for CPU.
     """
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
-        self._model = None
-        self._device = None
-        self._compute_type = None
-        self._model_name = None
-        self._loading = False
-        self._lock = threading.Lock()
+        self._worker = None
+        self._spawning = False
+        self._spawn_lock = threading.Lock()
+
+    def preload(self):
+        """Spawn backup subprocess and pre-load model. Called on meeting start.
+
+        Idempotent: does nothing if already spawned or spawning.
+        Runs spawn in a background thread so it doesn't block meeting start.
+        """
+        if self._worker is not None or self._spawning:
+            return
+
+        def _do_spawn():
+            with self._spawn_lock:
+                if self._worker is not None:
+                    return
+                self._spawning = True
+                try:
+                    from .worker_manager import TranscriptionWorker
+
+                    backup_model = self.cfg.get("backup_model", "base")
+                    backup_cfg = {**self.cfg}
+                    backup_cfg["device"] = "cpu"
+                    backup_cfg["model"] = backup_model
+                    backup_cfg["compute_type"] = "int8"
+
+                    logger.info(f"Spawning backup worker (CPU, {backup_model})...")
+                    worker = TranscriptionWorker(backup_cfg, preload_model=backup_model)
+                    worker.start()
+
+                    if worker.wait_ready(timeout=30):
+                        self._worker = worker
+                        logger.info(f"Backup worker ready (CPU, {backup_model})")
+                    else:
+                        logger.warning("Backup worker failed to start within 30s")
+                        worker.stop()
+                finally:
+                    self._spawning = False
+
+        threading.Thread(target=_do_spawn, daemon=True, name="backup-spawn").start()
 
     @property
     def is_loading(self) -> bool:
-        return self._loading
-
-    def is_enabled(self) -> bool:
-        return self.cfg.get("always_available_dictation", True)
-
-    def preload(self):
-        """Pre-load backup model. Currently disabled pending subprocess rewrite.
-
-        Loading any CTranslate2 model in the main process segfaults because the
-        worker subprocess already owns a CTranslate2/torch context. The backup
-        model needs its own subprocess (like TranscriptionWorker).
-        """
-        # TODO: Reimplement using a second TranscriptionWorker subprocess
-        logger.debug("Backup preload skipped (subprocess implementation pending)")
+        """True while subprocess is spawning or model is loading."""
+        return self._spawning
 
     @property
-    def device(self) -> str:
-        """Current device string, or 'not loaded' if model is not loaded."""
-        return self._device or "not loaded"
+    def is_ready(self) -> bool:
+        """True when backup worker is alive and model is loaded."""
+        return self._worker is not None and self._worker.is_ready()
 
     def transcribe(self, audio_np: np.ndarray) -> str:
-        """Transcribe audio using the backup model. Loads model on first call.
+        """Transcribe audio using the backup subprocess.
 
-        Args:
-            audio_np: Raw audio as float32 or int16 numpy array (16kHz mono).
-
-        Returns:
-            Transcribed text. Raises on failure (caller handles).
+        Sends a transcribe_fast request to the backup worker.
+        Raises RuntimeError if backup worker is not available.
         """
-        with self._lock:
-            # Backup transcription disabled - CTranslate2 cannot load in main process
-            # TODO: Reimplement with subprocess-based worker
-            raise RuntimeError(
-                "Backup transcription unavailable (subprocess implementation pending). "
-                "Dictation will queue on the primary worker instead."
-            )
+        if self._worker is None:
+            raise RuntimeError("Backup worker not started")
+        if not self._worker.is_ready():
+            raise RuntimeError("Backup worker not ready")
 
-    def _load(self):
-        """Lazily load the backup model.
+        return self._worker.transcribe_fast(audio_np)
 
-        Uses faster_whisper directly instead of whisperx.load_model to avoid
-        initializing PyAnnote VAD in the main process. WhisperX's load_model
-        triggers torch/MKL in a way that conflicts with the worker subprocess's
-        torch context, causing segfaults. The backup model only needs raw
-        transcription for dictation, not VAD/alignment/diarization.
-        """
-        from faster_whisper import WhisperModel
+    def stop(self):
+        """Shut down the backup subprocess."""
+        if self._worker is not None:
+            logger.info("Stopping backup worker...")
+            self._worker.stop()
+            self._worker = None
 
-        model_name = self.cfg.get("backup_model", "base")
-        device = self._resolve_device()
-        compute_type = "int8" if device == "cpu" else self.cfg.get("compute_type", "float16")
-
-        logger.info(f"Backup model loading [{device}] {model_name} ({compute_type})...")
-        self._model = WhisperModel(
-            model_name,
-            device=device,
-            compute_type=compute_type,
-        )
-        self._device = device
-        self._compute_type = compute_type
-        self._model_name = model_name
-        logger.info(f"Backup model ready [{device}] {model_name}")
-
-    def _resolve_device(self) -> str:
-        """Determine device for backup model. Always CPU unless explicitly overridden."""
-        backup_device = self.cfg.get("backup_device", "cpu")
-
-        if backup_device in ("gpu", "cuda"):
-            main_device = self.cfg.get("device", "auto")
-            if main_device in ("gpu", "cuda"):
-                logger.warning("Backup model on GPU while main model also on GPU - may cause VRAM pressure")
-            return "cuda"
-
-        return "cpu"
-
-    def unload(self):
-        """Free the backup model from memory."""
-        with self._lock:
-            if self._model is not None:
-                logger.info("Unloading backup model")
-                self._model = None
-                self._device = None
-                self._compute_type = None
-                self._model_name = None
-                # Try to free GPU memory
-                try:
-                    import torch
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                except Exception:
-                    pass
-
-    def needs_reload(self) -> bool:
-        """Check if config changed and model needs reloading."""
-        if self._model is None:
-            return False
-        return (
-            self._model_name != self.cfg.get("backup_model", "base")
-            or self._device != self._resolve_device()
-        )
-
-    def reload_if_needed(self):
-        """Reload the backup model if config has changed."""
-        if self.needs_reload():
-            self.unload()
-            # Will lazy-load on next transcribe()
-
-    def get_vram_warning(self, primary_model: str, backup_model: str) -> str | None:
-        """Check if primary + backup would exceed 80% VRAM.
-
-        Returns warning string or None if OK.
-        """
-        try:
-            import torch
-            if not torch.cuda.is_available():
-                return None  # no GPU, no VRAM concern
-
-            total_vram = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-            primary_vram = MODEL_VRAM_GB.get(primary_model, 3.0)
-            backup_vram = MODEL_VRAM_GB.get(backup_model, 1.0)
-            combined = primary_vram + backup_vram
-            threshold = total_vram * VRAM_THRESHOLD
-
-            if combined > threshold:
-                backup_device = self.cfg.get("backup_device", "auto")
-                if backup_device == "auto":
-                    advice = "Backup will use CPU in auto mode."
-                else:
-                    advice = "Consider switching to a smaller model or CPU to avoid OOM."
-                return (
-                    f"{primary_model} + {backup_model} need ~{combined:.1f} GB VRAM "
-                    f"({total_vram:.1f} GB total, {threshold:.1f} GB safe limit). "
-                    f"{advice}"
-                )
-        except Exception:
-            pass
-        return None
+    @staticmethod
+    def is_enabled(cfg: dict = None) -> bool:
+        """Check if always-available dictation is enabled."""
+        if cfg is None:
+            cfg = config.load()
+        return cfg.get("always_available_dictation", True)
