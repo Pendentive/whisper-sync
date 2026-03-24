@@ -4,9 +4,11 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import tkinter as tk
-from tkinter import filedialog, ttk
+import warnings
+from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
 
 VERSION = "1.0"
@@ -24,6 +26,14 @@ ENTRY_BG = "#0f3460"
 ENTRY_FG = "#e0e0e0"
 BTN_BG = "#4fc3f7"
 BTN_FG = "#1a1a2e"
+
+# Suppress known harmless warnings before any imports trigger them
+warnings.filterwarnings("ignore", message="torchcodec is not installed correctly",
+                        category=UserWarning, module=r"pyannote\.audio\.core\.io")
+warnings.filterwarnings("ignore", message="TensorFloat-32.*has been disabled",
+                        module=r"pyannote\.audio\.utils\.reproducibility")
+warnings.filterwarnings("ignore", message=r"std\(\): degrees of freedom is <= 0",
+                        category=UserWarning)
 
 
 def detect_gpu():
@@ -52,7 +62,7 @@ def detect_gpu():
 
 def find_python():
     """Find a suitable Python 3.10+ executable."""
-    for cmd in ["python", "python3", "py"]:
+    for cmd in ["py", "python3", "python"]:
         try:
             result = subprocess.run(
                 [cmd, "--version"], capture_output=True, text=True, timeout=10,
@@ -377,24 +387,29 @@ class InstallerApp:
             if not marker.exists():
                 marker.write_text("")
 
-            import tempfile
             fd, bootstrap_path = tempfile.mkstemp(suffix=".py", prefix="ws-bootstrap-")
-            os.close(fd)
             bootstrap_script = Path(bootstrap_path)
-            bootstrap_code = (
-                "import warnings, os, sys\n"
-                "warnings.filterwarnings('ignore', message='torchcodec', category=UserWarning, module='pyannote')\n"
-                "warnings.filterwarnings('ignore', message='TensorFloat', category=UserWarning, module='pyannote')\n"
-                "os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'\n"
-                f"sys.path.insert(0, {repr(str(self.script_root))})\n"
-                "from whisper_sync.model_status import bootstrap_models\n"
-                "from whisper_sync import config\n"
-                "bootstrap_models(config.load())\n"
-            )
-            bootstrap_script.write_text(bootstrap_code, encoding="utf-8")
-            ok = self._run_command([venv_python, str(bootstrap_script)],
-                                   label="Download models")
-            bootstrap_script.unlink(missing_ok=True)
+            try:
+                bootstrap_code = (
+                    "import warnings, os, sys\n"
+                    "warnings.filterwarnings('ignore', message='torchcodec is not installed correctly',\n"
+                    "                        category=UserWarning, module=r'pyannote\\.audio\\.core\\.io')\n"
+                    "warnings.filterwarnings('ignore', message='TensorFloat-32.*has been disabled',\n"
+                    "                        module=r'pyannote\\.audio\\.utils\\.reproducibility')\n"
+                    "warnings.filterwarnings('ignore', message=r'std\\(\\): degrees of freedom is <= 0',\n"
+                    "                        category=UserWarning)\n"
+                    "os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'\n"
+                    f"sys.path.insert(0, {repr(str(self.script_root))})\n"
+                    "from whisper_sync.model_status import bootstrap_models\n"
+                    "from whisper_sync import config\n"
+                    "bootstrap_models(config.load())\n"
+                )
+                os.write(fd, bootstrap_code.encode("utf-8"))
+                os.close(fd)
+                ok = self._run_command([venv_python, str(bootstrap_script)],
+                                       label="Download models")
+            finally:
+                bootstrap_script.unlink(missing_ok=True)
             if not ok:
                 self._log("  Model download had issues, you can download later via the tray menu", "warn")
             else:
@@ -403,17 +418,20 @@ class InstallerApp:
             # -- Step 5: Write config --
             step("Writing configuration")
             output_path = Path(output_dir)
-            # Guard against .whispersync existing as a file
-            ws_dir = output_path / ".whispersync"
-            if ws_dir.exists() and ws_dir.is_file():
-                self._log("  .whispersync exists as a file, removing", "warn")
-                ws_dir.unlink()
-            try:
-                output_path.mkdir(parents=True, exist_ok=True)
-                ws_dir.mkdir(parents=True, exist_ok=True)
-            except OSError as e:
-                self._fail(f"Cannot create output folder: {e}")
+
+            # Check that path is not an existing file
+            if output_path.is_file():
+                self._fail(f"Output path is an existing file: {output_dir}")
                 return
+
+            output_path.mkdir(parents=True, exist_ok=True)
+            ws_dir = output_path / ".whispersync"
+
+            if ws_dir.is_file():
+                self._fail(f"Config directory path is an existing file: {ws_dir}")
+                return
+
+            ws_dir.mkdir(parents=True, exist_ok=True)
             config_path = ws_dir / "config.json"
 
             # Preserve existing config if present
@@ -427,7 +445,15 @@ class InstallerApp:
 
             # Only write known config keys
             existing_cfg["output_dir"] = output_dir.replace("\\", "/")
-            config_path.write_text(json.dumps(existing_cfg, indent=2),
+            valid_keys = {
+                "hotkeys", "paste_method", "language", "model", "dictation_model",
+                "compute_type", "output_dir", "mic_device", "speaker_device",
+                "sample_rate", "use_system_devices", "left_click", "middle_click",
+                "suppress_llm_warning", "github_repo", "github_poll_interval",
+                "github_notifications", "log_window", "device", "incognito",
+            }
+            filtered_cfg = {k: v for k, v in existing_cfg.items() if k in valid_keys}
+            config_path.write_text(json.dumps(filtered_cfg, indent=2),
                                    encoding="utf-8")
 
             # Write bootstrap pointer (legacy location)
@@ -438,12 +464,15 @@ class InstallerApp:
             self._log(f"  Config saved to {config_path}", "ok")
 
             # -- Step 6: HuggingFace token --
+            step("Saving HuggingFace token")
             hf_token = self.hf_var.get().strip()
             if hf_token:
                 hf_dir = Path.home() / ".huggingface"
                 hf_dir.mkdir(parents=True, exist_ok=True)
                 (hf_dir / "token").write_text(hf_token, encoding="ascii")
                 self._log("  HuggingFace token saved", "ok")
+            else:
+                self._log("  No token provided, skipping", "ok")
 
             # -- Step 7: Create shortcuts --
             step("Creating shortcuts")
@@ -463,8 +492,9 @@ class InstallerApp:
             if not self.desktop_var.get() and not self.startup_var.get():
                 self._log("  No shortcuts requested, skipping", "ok")
 
-            # -- Step 7: Verify --
-            step("Verifying installation")
+            # -- Verify --
+            self._set_status("Verifying installation")
+            self._log("\n[Verify] Checking installation", "step")
             # Check CUDA
             verify_result = subprocess.run(
                 [venv_python, "-c",
@@ -506,6 +536,7 @@ class InstallerApp:
             self._log("\nWhisperSync installed successfully!", "ok")
             self._log(f"Recordings will save to: {output_dir}", "ok")
             self.install_complete = True
+            self.installing = False
             self.root.after(0, lambda: self.action_btn.configure(
                 state="normal", text="Launch WhisperSync",
                 bg=GREEN, activebackground=ACCENT,
@@ -532,10 +563,8 @@ class InstallerApp:
         if lnk_path.exists():
             lnk_path.unlink()
 
-        import tempfile
-        fd, vbs_path = tempfile.mkstemp(suffix=".vbs", prefix="ws-shortcut-")
-        os.close(fd)
-        vbs_path = Path(vbs_path)
+        fd, vbs_path_str = tempfile.mkstemp(suffix=".vbs", prefix="ws-shortcut-")
+        vbs_path = Path(vbs_path_str)
         vbs_content = (
             'Set WshShell = WScript.CreateObject("WScript.Shell")\n'
             f'Set lnk = WshShell.CreateShortcut("{lnk_path}")\n'
@@ -547,12 +576,14 @@ class InstallerApp:
             f'lnk.IconLocation = "{icon_path}, 0"\n'
             'lnk.Save\n'
         )
-        vbs_path.write_text(vbs_content, encoding="ascii")
         try:
+            os.write(fd, vbs_content.encode("ascii"))
+            os.close(fd)
             result = subprocess.run(["cscript", "//nologo", str(vbs_path)],
                                     capture_output=True, timeout=10)
             if result.returncode != 0:
-                raise RuntimeError(f"cscript failed: {result.stderr.strip()}")
+                stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
+                self._log(f"  Shortcut script failed: {stderr_text}", "warn")
         finally:
             vbs_path.unlink(missing_ok=True)
 
