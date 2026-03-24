@@ -93,6 +93,7 @@ class BackupTranscriber:
 
     def _load(self):
         """Lazily load the backup model."""
+        import os
         import whisperx
 
         model_name = self.cfg.get("backup_model", "base")
@@ -103,6 +104,7 @@ class BackupTranscriber:
         model_cache = get_model_cache()
 
         logger.info(f"Loading backup model [{device}] {model_name} ({compute_type})...")
+        logger.info(f"Backup worker spawned (pid={os.getpid()})")
         self._model = whisperx.load_model(
             model_name,
             device=device,
@@ -113,6 +115,7 @@ class BackupTranscriber:
         self._device = device
         self._compute_type = compute_type
         self._model_name = model_name
+        logger.info(f"Backup worker ready")
         logger.info(f"Backup model ready [{device}] {model_name}")
 
     def _resolve_device(self) -> str:
