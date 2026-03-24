@@ -1517,8 +1517,18 @@ class WhisperSync:
         import pyperclip
         pyperclip.copy(text)
 
+    def _open_dictation_logs(self):
+        """Open the dictation logs folder in Explorer."""
+        from .paths import get_dictation_log_dir
+        log_dir = get_dictation_log_dir()
+        if log_dir.exists():
+            import subprocess
+            subprocess.Popen(["explorer", str(log_dir)])
+        else:
+            logger.info("No dictation logs folder found")
+
     def _clear_dictation_history(self):
-        """Clear all dictation history and refresh menu."""
+        """Clear the in-memory dictation history (menu only, logs on disk are preserved)."""
         self._dictation_history.clear()
         self._refresh_menu()
 
@@ -1539,6 +1549,9 @@ class WhisperSync:
                 pystray.MenuItem(label, self._cb(self._copy_dictation, full_text))
             )
         items.append(pystray.Menu.SEPARATOR)
+        items.append(
+            pystray.MenuItem("Open Logs", lambda: self._open_dictation_logs())
+        )
         items.append(
             pystray.MenuItem("Clear History", lambda: self._clear_dictation_history())
         )
@@ -1718,15 +1731,14 @@ class WhisperSync:
         incognito_on = self.cfg.get("incognito", False)
         incognito_items = [
             pystray.MenuItem(
-                "Incognito Mode\tRAM-only dictation",
+                "Incognito Mode",
                 lambda: self._toggle_incognito(),
                 checked=lambda item: self.cfg.get("incognito", False),
             ),
         ]
-        if incognito_on:
-            incognito_items.append(
-                pystray.MenuItem("  RAM only -- no data stored on disk", None, enabled=False),
-            )
+        incognito_items.append(
+            pystray.MenuItem("  RAM-only dictation, no disk writes", None, enabled=False),
+        )
 
         # Left-click fires the default menu item
         left_action = self.cfg.get("left_click", "meeting")
