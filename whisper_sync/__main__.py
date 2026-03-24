@@ -25,7 +25,9 @@ import pystray
 
 from . import config
 from .capture import AudioRecorder, get_default_devices, get_host_apis, list_devices, save_wav, save_stereo_wav
-from .icons import idle_icon, recording_icon, dictation_icon, saving_icon, transcribing_icon, done_icon, queued_icon, error_icon
+from .icons import (idle_icon, recording_icon, dictation_icon, saving_icon,
+                     transcribing_icon, done_icon, queued_icon, error_icon,
+                     dictation_during_recording_icon, dictation_during_transcription_icon)
 from .logger import logger, get_log_path, set_console_level, log_dictation_result, log_meeting_result, log_transcript_preview
 from .model_status import get_model_status, download_model, bootstrap_models
 from .paste import paste
@@ -92,6 +94,8 @@ class WhisperSync:
         dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
         self.worker = TranscriptionWorker(self.cfg, preload_model=dictation_model)
         self._backup = BackupTranscriber(self.cfg)
+        self._dictation_overlay = False  # True while dictation runs during a meeting
+        self._overlay_recorder = None    # Separate AudioRecorder for dictation during meetings
         self._github_poller = None
         self._github_prs = []
         self._dictation_history = dictation_log.load_recent(10)  # persist across restarts
@@ -149,13 +153,26 @@ class WhisperSync:
             return
         # For meeting mode, check speaker loopback health for outer ring
         speaker_ok = getattr(self.recorder, "speaker_loopback_active", True) if hasattr(self, "recorder") else True
+
+        # Dictation overlay during meeting takes priority for icon display
+        if self._dictation_overlay:
+            if self.mode == "meeting":
+                icon, title = dictation_during_recording_icon(speaker_ok=speaker_ok), "Dictating (meeting recording)..."
+            elif self._meeting_transcribing:
+                icon, title = dictation_during_transcription_icon(), "Dictating (meeting transcribing)..."
+            else:
+                icon, title = dictation_icon(), "Dictating..."
+            self.tray.icon = icon
+            self.tray.title = f"WhisperSync: {title}"
+            return
+
         icons = {
             "meeting": (recording_icon(speaker_ok=speaker_ok), "Recording meeting..."),
             "dictation": (dictation_icon(), "Dictating..."),
             "saving": (saving_icon(), "Saving audio..."),
             "transcribing": (transcribing_icon(), "Transcribing..."),
             "done": (done_icon(), "Done!"),
-            "error": (error_icon(), "Error -- check console"),
+            "error": (error_icon(), "Error - check console"),
         }
         if self.mode:
             icon, title = icons[self.mode]
@@ -176,7 +193,7 @@ class WhisperSync:
 
     def _on_left_click(self):
         # Left-click while dictating = discard (stop recording, throw away audio)
-        if self.mode == "dictation":
+        if self.mode == "dictation" or self._dictation_overlay:
             self._discard_dictation()
             return
         self._dispatch_action(self.cfg.get("left_click", "meeting"))
@@ -251,8 +268,22 @@ class WhisperSync:
 
     def toggle_dictation(self):
         with self._lock:
+            # Handle overlay dictation during meetings
+            if self._dictation_overlay:
+                self._stop_overlay_dictation()
+                return
+
             if self.mode == "dictation":
                 self._stop_dictation()
+            elif self.mode == "meeting" or (self.mode is None and self._meeting_transcribing):
+                # Dictation during meeting recording or meeting transcription
+                if self.cfg.get("always_available_dictation", True):
+                    self._start_overlay_dictation()
+                else:
+                    logger.info("Dictation unavailable during meeting (always_available_dictation disabled)")
+                    notify("Dictation unavailable", "Enable always-available dictation in settings")
+            elif self.mode == "saving":
+                logger.debug("Dictation ignored - meeting is saving")
             elif self._can_record():
                 self._start_dictation()
 
@@ -380,6 +411,139 @@ class WhisperSync:
                 self._schedule_idle(2)
 
         threading.Thread(target=_process, daemon=True).start()
+
+    # --- Overlay dictation (dictation during meeting recording/transcription) ---
+
+    def _start_overlay_dictation(self):
+        """Start dictation using a separate audio stream while meeting continues.
+
+        Uses an independent AudioRecorder so the meeting recording is never
+        interrupted. Transcription uses the backup model (CPU or secondary GPU).
+        """
+        # Note: always_available_dictation config flag already gates the call to
+        # this method in toggle_dictation(), so no need to re-check is_enabled() here.
+
+        meeting_state = "recording" if self.mode == "meeting" else "transcribing"
+        backup_model = self.cfg.get("backup_model", "base")
+        backup_device = self._backup.device
+        logger.info(f"Dictation requested during meeting {meeting_state} (using backup model)")
+        logger.info(f"Backup model: {backup_model} on {backup_device}")
+
+        # Create a separate recorder for dictation audio (mic only)
+        self._overlay_recorder = AudioRecorder(sample_rate=self.cfg["sample_rate"])
+        mic = self.cfg.get("mic_device")
+        if self.cfg.get("use_system_devices", True):
+            mic = None
+        self._overlay_recorder.start(mic_device=mic)
+        self._dictation_overlay = True
+        logger.info("Dictation during meeting: recording started")
+        self._update_icon()
+
+    def _stop_overlay_dictation(self):
+        """Stop overlay dictation, transcribe with backup model, paste result."""
+        if not self._overlay_recorder:
+            self._dictation_overlay = False
+            self._update_icon()
+            return
+
+        audio = self._overlay_recorder.stop()
+        self._dictation_overlay = False
+        self._update_icon()
+
+        if "mic" not in audio:
+            logger.debug("Overlay dictation stopped - no audio captured")
+            self._overlay_recorder = None
+            return
+
+        overlay_audio = audio["mic"]
+        self._overlay_recorder = None
+
+        logger.info("Dictation during meeting: transcribing...")
+
+        def _process_overlay():
+            import time as _time
+
+            t0 = _time.perf_counter()
+            try:
+                text = self._backup.transcribe(overlay_audio)
+                t1 = _time.perf_counter()
+                duration = t1 - t0
+                char_count = len(text) if text else 0
+                backup_model = self.cfg.get("backup_model", "base")
+                backup_device = self._backup.device
+                logger.info(
+                    f"Dictation during meeting: {duration:.1f}s, {char_count} chars "
+                    f"(backup {backup_device} {backup_model})"
+                )
+                if text:
+                    paste(text, self.cfg["paste_method"])
+
+                # Update session stats
+                self._stats["dictations"] += 1
+                self._stats["total_dictation_chars"] += char_count
+                self._stats["total_dictation_time"] += duration
+
+                incognito = self.cfg.get("incognito", False)
+                if text and not incognito:
+                    dictation_log.append(text, duration)
+                    self._dictation_history.append({
+                        "text": text,
+                        "timestamp": datetime.now().strftime("%H:%M"),
+                        "chars": len(text),
+                    })
+                    if len(self._dictation_history) > 10:
+                        self._dictation_history = self._dictation_history[-10:]
+                    self._refresh_menu()
+
+                delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
+                if incognito:
+                    logger.info(f"Overlay dictation: {duration:.2f}s - {delivery} ({char_count} chars)")
+                else:
+                    log_dictation_result(text or "", duration, delivery, char_count)
+
+            except Exception as e:
+                logger.error(f"Overlay dictation error: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
+                # Fall back to queuing on main worker if backup fails
+                try:
+                    logger.info("Falling back to main worker for overlay dictation")
+                    dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
+                    timeout = 180
+                    text = self.worker.transcribe_fast(overlay_audio, model_override=dictation_model, timeout=timeout)
+                    if text:
+                        paste(text, self.cfg["paste_method"])
+                    t1 = _time.perf_counter()
+                    duration = t1 - t0
+                    char_count = len(text or "")
+                    logger.info(f"Overlay dictation fallback: {duration:.2f}s, {char_count} chars")
+
+                    # Post-dictation bookkeeping (same as the normal overlay path)
+                    self._stats["dictations"] += 1
+                    self._stats["total_dictation_chars"] += char_count
+                    self._stats["total_dictation_time"] += duration
+
+                    incognito = self.cfg.get("incognito", False)
+                    if text and not incognito:
+                        dictation_log.append(text, duration)
+                        self._dictation_history.append({
+                            "text": text,
+                            "timestamp": datetime.now().strftime("%H:%M"),
+                            "chars": len(text),
+                        })
+                        if len(self._dictation_history) > 10:
+                            self._dictation_history = self._dictation_history[-10:]
+                        self._refresh_menu()
+
+                    delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
+                    if incognito:
+                        logger.info(f"Overlay dictation fallback: {duration:.2f}s - {delivery} ({char_count} chars)")
+                    else:
+                        log_dictation_result(text or "", duration, delivery, char_count)
+                except Exception as fallback_err:
+                    logger.error(f"Overlay dictation fallback also failed: {fallback_err}")
+
+        threading.Thread(target=_process_overlay, daemon=True).start()
 
     def _recover_dictation(self, wav_path: str):
         """Transcribe a recovered dictation WAV from a previous crash.
@@ -537,8 +701,17 @@ class WhisperSync:
         return "".join(c if c.isalnum() or c in " -_" else "" for c in name).strip().replace(" ", "-")
 
     def _discard_dictation(self):
-        """Discard current dictation — stop recording, throw away audio, return to idle."""
+        """Discard current dictation - stop recording, throw away audio, return to idle."""
         with self._lock:
+            # Handle overlay dictation discard
+            if self._dictation_overlay and self._overlay_recorder:
+                self._overlay_recorder.stop()
+                self._overlay_recorder = None
+                self._dictation_overlay = False
+                logger.info("Overlay dictation discarded (left-click)")
+                self._update_icon()
+                return
+
             if self.mode != "dictation":
                 return
             self.recorder.stop()  # stop recording, discard the audio

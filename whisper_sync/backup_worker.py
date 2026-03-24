@@ -102,7 +102,7 @@ class BackupTranscriber:
         from .paths import get_model_cache
         model_cache = get_model_cache()
 
-        logger.info(f"Loading backup model [{device}] {model_name} ({compute_type})...")
+        logger.info(f"Backup model loading [{device}] {model_name} ({compute_type})...")
         self._model = whisperx.load_model(
             model_name,
             device=device,
