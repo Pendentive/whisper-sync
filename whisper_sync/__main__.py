@@ -1343,8 +1343,8 @@ class WhisperSync:
                     logger.debug(f"Meeting toast failed (non-fatal): {e}")
 
                 self._meeting_transcribing = False
-                # Flash "done" only if user is idle (not mid-dictation)
-                if self.mode is None:
+                # Reset mode and flash done (unless user started a new recording)
+                if self.mode in (None, "transcribing"):
                     self.mode = "done"
                     self._update_icon()
                     self._schedule_idle(3, blink=True)
@@ -1718,7 +1718,7 @@ class WhisperSync:
         incognito_on = self.cfg.get("incognito", False)
         incognito_items = [
             pystray.MenuItem(
-                "Incognito Mode",
+                "Incognito Mode\tRAM-only dictation",
                 lambda: self._toggle_incognito(),
                 checked=lambda item: self.cfg.get("incognito", False),
             ),
