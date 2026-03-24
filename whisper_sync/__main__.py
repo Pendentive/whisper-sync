@@ -1119,8 +1119,8 @@ class WhisperSync:
                     pass
                 try:
                     root.destroy()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Speaker confirm cleanup: {e}")
 
             def _skip():
                 if _closing[0]:
@@ -1129,8 +1129,8 @@ class WhisperSync:
                 result[0] = None
                 try:
                     root.destroy()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Speaker dialog close: {e}")
 
             self._flat_button(btn_frame, "Confirm", _confirm,
                               bg=accent, fg="#1e1e2e", hover_bg="#74c7ec", bold=True).pack(side=tk.RIGHT, padx=8)
@@ -1550,10 +1550,10 @@ class WhisperSync:
             )
         items.append(pystray.Menu.SEPARATOR)
         items.append(
-            pystray.MenuItem("Open Logs", lambda: self._open_dictation_logs())
+            pystray.MenuItem("Open Logs", self._cb(self._open_dictation_logs))
         )
         items.append(
-            pystray.MenuItem("Clear History", lambda: self._clear_dictation_history())
+            pystray.MenuItem("Clear History", self._cb(self._clear_dictation_history))
         )
         return pystray.Menu(*items)
 
