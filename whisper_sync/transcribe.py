@@ -347,8 +347,124 @@ def stage_align(ctx: dict, result: dict) -> dict:
     )
 
 
+def _channel_diarize(audio_path: str, window_ms: int = 500) -> dict | None:
+    """Channel-based speaker diarization for stereo recordings.
+
+    When mic and remote speakers are on separate stereo channels,
+    use channel energy as ground truth for speaker assignment instead
+    of relying solely on the embedding model (which struggles with
+    mono-mixed remote meeting audio).
+
+    Returns a pyannote-compatible diarization result, or None if
+    the recording is mono or channels are too similar to distinguish.
+    """
+    try:
+        import wave as _wave
+        with _wave.open(audio_path, "rb") as wf:
+            channels = wf.getnchannels()
+            if channels < 2:
+                return None
+            sr = wf.getframerate()
+            frames = wf.getnframes()
+            raw = np.frombuffer(wf.readframes(frames), dtype=np.int16)
+            data = raw.reshape(-1, channels).astype(np.float64)
+
+        # Compute per-channel RMS in sliding windows
+        window_samples = int(sr * window_ms / 1000)
+        n_windows = len(data) // window_samples
+        if n_windows < 2:
+            return None
+
+        ch0_energy = np.array([
+            np.sqrt(np.mean(data[i*window_samples:(i+1)*window_samples, 0]**2))
+            for i in range(n_windows)
+        ])
+        ch1_energy = np.array([
+            np.sqrt(np.mean(data[i*window_samples:(i+1)*window_samples, 1]**2))
+            for i in range(n_windows)
+        ])
+
+        # Check if channels are meaningfully different (one should be mic, other remote)
+        ch0_total = np.sum(ch0_energy)
+        ch1_total = np.sum(ch1_energy)
+        if ch0_total == 0 or ch1_total == 0:
+            return None
+        ratio = min(ch0_total, ch1_total) / max(ch0_total, ch1_total)
+        # If channels are nearly identical (>0.95 ratio), they're likely the same source
+        if ratio > 0.95:
+            logger.info("Stereo channels too similar, falling back to model diarization")
+            return None
+
+        # Assign speaker per window based on dominant channel
+        # Silence threshold: 5% of max energy across both channels
+        silence_thresh = 0.05 * max(np.max(ch0_energy), np.max(ch1_energy))
+        segments = []
+        current_speaker = None
+        seg_start = 0.0
+
+        for i in range(n_windows):
+            e0, e1 = ch0_energy[i], ch1_energy[i]
+            t = i * window_ms / 1000.0
+
+            if e0 < silence_thresh and e1 < silence_thresh:
+                speaker = None  # silence
+            elif e0 > e1 * 1.5:
+                speaker = "SPEAKER_00"  # mic dominant (channel 0)
+            elif e1 > e0 * 1.5:
+                speaker = "SPEAKER_01"  # remote dominant (channel 1)
+            else:
+                speaker = current_speaker  # crosstalk, keep current
+
+            if speaker != current_speaker:
+                if current_speaker is not None:
+                    segments.append({
+                        "speaker": current_speaker,
+                        "start": seg_start,
+                        "end": t,
+                    })
+                current_speaker = speaker
+                seg_start = t
+
+        # Close final segment
+        if current_speaker is not None:
+            segments.append({
+                "speaker": current_speaker,
+                "start": seg_start,
+                "end": n_windows * window_ms / 1000.0,
+            })
+
+        if not segments:
+            return None
+
+        # Build a pyannote-compatible annotation object
+        from pyannote.core import Annotation, Segment
+        annotation = Annotation()
+        for seg in segments:
+            annotation[Segment(seg["start"], seg["end"])] = seg["speaker"]
+
+        n_speakers = len(set(s["speaker"] for s in segments))
+        logger.info(f"Channel diarization: {n_speakers} speakers, {len(segments)} segments")
+        return annotation
+
+    except Exception as e:
+        logger.warning(f"Channel diarization failed, falling back to model: {e}")
+        return None
+
+
 def stage_diarize(ctx: dict) -> dict:
-    """Stage 3: Run speaker diarization pipeline."""
+    """Stage 3: Run speaker diarization pipeline.
+
+    For stereo recordings (mic + remote on separate channels),
+    uses channel-based diarization which is more accurate.
+    Falls back to the PyAnnote embedding model for mono or
+    when channels are too similar.
+    """
+    # Try channel-based diarization first for stereo recordings
+    channel_result = _channel_diarize(ctx["audio_path"])
+    if channel_result is not None:
+        return channel_result
+
+    # Fallback to model-based diarization
     with _lock:
         pipeline = _load_diarize_pipeline()
     logger.info("Diarizing...")
