@@ -16,6 +16,7 @@ _VALID_KEYS = {
     "sample_rate", "use_system_devices", "left_click", "middle_click",
     "suppress_llm_warning", "github_repo", "github_poll_interval",
     "github_notifications", "log_window", "device", "incognito",
+    "always_available_dictation", "backup_device", "backup_model",
 }
 
 
