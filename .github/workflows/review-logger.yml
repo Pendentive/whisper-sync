@@ -1,177 +1,190 @@
 name: Review Logger
 
 on:
-  pull_request:
+  pull_request_target:
     types: [closed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to backfill (0 = all missing)"
+        required: false
+        default: "0"
 
 permissions:
   contents: write
   pull-requests: read
+  issues: read
 
 jobs:
   log-review:
     runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch'
+      || github.event.pull_request.merged == true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.base.ref }}
+          ref: dev
 
-      - name: Collect PR data and append log entry
+      - name: Collect and log PR data
         uses: actions/github-script@v7
         with:
           script: |
-            const pr = context.payload.pull_request;
-
-            // --- Reviews ---
-            const { data: reviews } = await github.rest.pulls.listReviews({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: pr.number,
-              per_page: 100
-            });
-
-            // Find Copilot review
-            const copilotReview = reviews.find(
-              r => r.user.login === 'copilot-pull-request-reviewer[bot]'
-            );
-
-            // --- Review comments (inline suggestions) ---
-            const { data: reviewComments } = await github.rest.pulls.listReviewComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: pr.number,
-              per_page: 100
-            });
-            const copilotComments = reviewComments.filter(
-              c => c.user.login === 'copilot-pull-request-reviewer[bot]'
-            );
-
-            // Build suggestion details
-            const suggestionDetails = copilotComments.map(c => ({
-              file: c.path,
-              line: c.line || c.original_line,
-              body: c.body.substring(0, 300)
-            }));
-
-            // --- Copilot object ---
-            const copilot = copilotReview
-              ? {
-                  reviewed: true,
-                  state: copilotReview.state,
-                  suggestions: copilotComments.length,
-                  suggestion_details: suggestionDetails,
-                  body_summary: (copilotReview.body || '').substring(0, 200)
-                }
-              : {
-                  reviewed: false,
-                  state: null,
-                  suggestions: 0,
-                  suggestion_details: [],
-                  body_summary: ''
-                };
-
-            // --- Files changed ---
-            const { data: files } = await github.rest.pulls.listFiles({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: pr.number,
-              per_page: 100
-            });
-            const filesChanged = files.map(f => f.filename);
-            const linesAdded = files.reduce((sum, f) => sum + f.additions, 0);
-            const linesRemoved = files.reduce((sum, f) => sum + f.deletions, 0);
-
-            // --- Labels / complexity ---
-            const labels = pr.labels.map(l => l.name);
-            const complexityLabel = labels.find(l => l.startsWith('complexity:'));
-            const complexity = complexityLabel
-              ? complexityLabel.replace('complexity:', '')
-              : 'unknown';
-
-            // --- Auto-merge detection ---
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: pr.number,
-              per_page: 100
-            });
-            const autoMergeComment = comments.find(
-              c => c.user.login === 'github-actions[bot]' && c.body.includes('Auto-merged')
-            );
-            const autoMergeSkipped = comments.find(
-              c => c.user.login === 'github-actions[bot]' && c.body.includes('Auto-merge skipped')
-            );
-
-            const autoMergeAttempted = !!(autoMergeComment || autoMergeSkipped);
-            let autoMergeResult = 'not-attempted';
-            if (autoMergeComment) autoMergeResult = 'merged';
-            else if (autoMergeSkipped) autoMergeResult = 'skipped';
-
-            // --- Docs check warnings ---
-            const docsWarnings = [];
-            const docFiles = filesChanged.filter(f =>
-              f.endsWith('.md') || f.endsWith('.txt') || f.endsWith('.rst')
-            );
-            if (docFiles.length === 0 && filesChanged.length > 3) {
-              docsWarnings.push('No documentation files updated despite 4+ files changed');
-            }
-
-            // --- Duration ---
-            const opened = new Date(pr.created_at);
-            const closed = new Date(pr.closed_at);
-            const durationMinutes = Math.round((closed - opened) / 60000);
-
-            // --- Outcome ---
-            let outcome;
-            if (pr.merged) {
-              outcome = autoMergeComment ? 'auto-merged' : 'manually-merged';
-            } else {
-              outcome = 'closed-without-merge';
-            }
-
-            // --- Build entry ---
-            const entry = {
-              pr: pr.number,
-              title: pr.title,
-              branch: pr.head.ref,
-              target: pr.base.ref,
-              author: pr.user.login,
-              opened: pr.created_at,
-              closed: pr.closed_at,
-              merged: pr.merged,
-              complexity,
-              files_changed: filesChanged,
-              lines_added: linesAdded,
-              lines_removed: linesRemoved,
-              triage: { labels },
-              copilot,
-              auto_merge: {
-                attempted: autoMergeAttempted,
-                result: autoMergeResult
-              },
-              docs_check: { warnings: docsWarnings },
-              outcome,
-              duration_minutes: durationMinutes
-            };
-
-            const line = JSON.stringify(entry);
-
-            // --- Write to file ---
             const fs = require('fs');
             const path = require('path');
+
+            // --- Load governance policy ---
+            let policy = {};
+            const policyPath = path.join(process.env.GITHUB_WORKSPACE, '.github', 'governance', 'policy.yaml');
+            if (fs.existsSync(policyPath)) {
+              const yaml = require('js-yaml');
+              policy = yaml.load(fs.readFileSync(policyPath, 'utf8'));
+            }
+            const protectedPatterns = (policy.path_protection || []).map(p => p.pattern);
+
+            // --- Determine which PRs to log ---
             const logPath = path.join(process.env.GITHUB_WORKSPACE, 'docs', 'review-log.jsonl');
             const logDir = path.dirname(logPath);
-
             if (!fs.existsSync(logDir)) {
               fs.mkdirSync(logDir, { recursive: true });
             }
 
-            fs.appendFileSync(logPath, line + '\n');
-            console.log(`Logged PR #${pr.number}: ${outcome} (${durationMinutes}min)`);
+            let loggedPRs = new Set();
+            if (fs.existsSync(logPath)) {
+              const lines = fs.readFileSync(logPath, 'utf8').split('\n').filter(l => l.trim());
+              for (const line of lines) {
+                try { loggedPRs.add(JSON.parse(line).pr); } catch (e) {}
+              }
+            }
+
+            let prNumbers = [];
+            if (context.eventName === 'workflow_dispatch') {
+              const input = parseInt(context.payload.inputs?.pr_number || '0');
+              if (input > 0) {
+                prNumbers = [input];
+              } else {
+                const { data: closedPRs } = await github.rest.pulls.list({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  state: 'closed', base: 'dev', per_page: 100,
+                  sort: 'updated', direction: 'desc'
+                });
+                for (const pr of closedPRs) {
+                  if (pr.merged_at && !loggedPRs.has(pr.number)) prNumbers.push(pr.number);
+                }
+                console.log('Backfill: found ' + prNumbers.length + ' unlogged merged PRs');
+              }
+            } else {
+              prNumbers = [context.payload.pull_request.number];
+            }
+
+            if (prNumbers.length === 0) { console.log('No PRs to log'); return; }
+
+            function matchesProtected(filepath) {
+              for (const pattern of protectedPatterns) {
+                if (pattern.endsWith('/**')) {
+                  if (filepath.startsWith(pattern.slice(0, -3))) return pattern;
+                } else if (filepath === pattern) return pattern;
+              }
+              return null;
+            }
+
+            let newEntries = [];
+            for (const prNumber of prNumbers) {
+              if (loggedPRs.has(prNumber)) { console.log('PR #' + prNumber + ' already logged'); continue; }
+
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner, repo: context.repo.repo, pull_number: prNumber
+              });
+
+              const { data: reviews } = await github.rest.pulls.listReviews({
+                owner: context.repo.owner, repo: context.repo.repo, pull_number: prNumber, per_page: 100
+              });
+              const copilotReview = reviews.find(r => r.user.login === 'copilot-pull-request-reviewer[bot]');
+
+              const { data: reviewComments } = await github.rest.pulls.listReviewComments({
+                owner: context.repo.owner, repo: context.repo.repo, pull_number: prNumber, per_page: 100
+              });
+              const copilotComments = reviewComments.filter(c => c.user.login === 'copilot-pull-request-reviewer[bot]');
+
+              const suggestionDetails = copilotComments.map(c => ({
+                file: c.path,
+                line: c.line || c.original_line,
+                body: c.body.substring(0, 500),
+                confidence: c.body.includes('suggestion') ? 'explicit' : 'comment',
+                created_at: c.created_at,
+                resolved: pr.merged_at ? new Date(pr.merged_at) > new Date(c.created_at) : false
+              }));
+
+              const copilot = copilotReview
+                ? { reviewed: true, state: copilotReview.state, suggestions: copilotComments.length, suggestion_details: suggestionDetails, body_summary: (copilotReview.body || '').substring(0, 300) }
+                : { reviewed: false, state: null, suggestions: 0, suggestion_details: [], body_summary: '' };
+
+              const { data: files } = await github.rest.pulls.listFiles({
+                owner: context.repo.owner, repo: context.repo.repo, pull_number: prNumber, per_page: 100
+              });
+              const filesChanged = files.map(f => ({ name: f.filename, additions: f.additions, deletions: f.deletions, status: f.status }));
+              const linesAdded = files.reduce((sum, f) => sum + f.additions, 0);
+              const linesRemoved = files.reduce((sum, f) => sum + f.deletions, 0);
+
+              const protectedTouched = files.map(f => matchesProtected(f.filename)).filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
+
+              const labels = pr.labels.map(l => l.name);
+              const complexityLabel = labels.find(l => l.startsWith('complexity:'));
+              const complexity = complexityLabel ? complexityLabel.replace('complexity:', '') : 'unknown';
+
+              const { data: commits } = await github.rest.pulls.listCommits({
+                owner: context.repo.owner, repo: context.repo.repo, pull_number: prNumber, per_page: 100
+              });
+              let pushCycles = 0;
+              if (copilotReview) {
+                const reviewTime = new Date(copilotReview.submitted_at);
+                pushCycles = commits.filter(c => new Date(c.commit.committer.date) > reviewTime).length;
+              }
+
+              const { data: comments } = await github.rest.issues.listComments({
+                owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber, per_page: 100
+              });
+              const autoMergeComment = comments.find(c => c.user.login === 'github-actions[bot]' && c.body.includes('Auto-merged'));
+              const autoMergeSkipped = comments.find(c => c.user.login === 'github-actions[bot]' && c.body.includes('Auto-merge skipped'));
+              let mergeMethod = 'unknown';
+              if (autoMergeComment) mergeMethod = 'auto';
+              else if (pr.merged) mergeMethod = 'manual';
+
+              const opened = new Date(pr.created_at);
+              const closed = new Date(pr.closed_at);
+              const durationMinutes = Math.round((closed - opened) / 60000);
+
+              let outcome;
+              if (pr.merged) outcome = autoMergeComment ? 'auto-merged' : 'manually-merged';
+              else outcome = 'closed-without-merge';
+
+              newEntries.push({
+                pr: pr.number, title: pr.title, branch: pr.head.ref, target: pr.base.ref,
+                author: pr.user.login, opened: pr.created_at, closed: pr.closed_at, merged: pr.merged,
+                complexity, files_changed: filesChanged, lines_added: linesAdded, lines_removed: linesRemoved,
+                triage: { labels }, copilot, push_cycles: pushCycles,
+                protected_paths_touched: protectedTouched, merge_method: mergeMethod,
+                auto_merge: { attempted: !!(autoMergeComment || autoMergeSkipped), result: autoMergeComment ? 'merged' : autoMergeSkipped ? 'skipped' : 'not-attempted' },
+                outcome, duration_minutes: durationMinutes
+              });
+              console.log('Collected PR #' + pr.number + ': ' + outcome + ' (' + durationMinutes + 'min)');
+            }
+
+            if (newEntries.length > 0) {
+              newEntries.sort((a, b) => a.pr - b.pr);
+              fs.appendFileSync(logPath, newEntries.map(e => JSON.stringify(e)).join('\n') + '\n');
+              console.log('Logged ' + newEntries.length + ' PR(s)');
+              core.exportVariable('LOGGED_PRS', newEntries.map(e => '#' + e.pr).join(', '));
+              core.exportVariable('LOGGED_COUNT', newEntries.length.toString());
+            } else {
+              console.log('No new entries to log');
+              core.exportVariable('LOGGED_COUNT', '0');
+            }
 
       - name: Commit and push
+        if: env.LOGGED_COUNT != '0'
         run: |
           git config user.name "Pendentive"
           git config user.email "pendentive.info@gmail.com"
@@ -179,6 +192,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "docs: log PR #${{ github.event.pull_request.number }} review data"
+            git commit -m "docs: log review data for PR $LOGGED_PRS"
             git push
           fi

@@ -1,0 +1,240 @@
+name: Governance Analysis
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: dev
+
+      - name: Run governance analysis
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            // --- Load policy ---
+            const policyPath = path.join(process.env.GITHUB_WORKSPACE, '.github', 'governance', 'policy.yaml');
+            if (!fs.existsSync(policyPath)) {
+              console.log('No policy.yaml found, skipping analysis');
+              return;
+            }
+            const yaml = require('js-yaml');
+            const policy = yaml.load(fs.readFileSync(policyPath, 'utf8'));
+            const minPRs = policy.analysis?.min_prs_for_analysis || 3;
+            const categories = policy.analysis?.suggestion_categories || [];
+
+            // --- Load review log ---
+            const logPath = path.join(process.env.GITHUB_WORKSPACE, 'docs', 'review-log.jsonl');
+            if (!fs.existsSync(logPath)) {
+              console.log('No review-log.jsonl found, skipping analysis');
+              return;
+            }
+            const lines = fs.readFileSync(logPath, 'utf8').split('\n').filter(l => l.trim());
+            const entries = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+
+            // --- Check for previous analysis ---
+            const analysisDir = path.join(process.env.GITHUB_WORKSPACE, 'docs', 'analysis');
+            let lastAnalysisDate = null;
+            if (fs.existsSync(analysisDir)) {
+              const existing = fs.readdirSync(analysisDir).filter(f => f.endsWith('-review-analysis.md')).sort();
+              if (existing.length > 0) {
+                lastAnalysisDate = existing[existing.length - 1].substring(0, 10);
+              }
+            }
+
+            // Filter to PRs since last analysis
+            let recentEntries = entries;
+            if (lastAnalysisDate) {
+              recentEntries = entries.filter(e => e.closed > lastAnalysisDate);
+            }
+
+            if (recentEntries.length < minPRs) {
+              console.log('Only ' + recentEntries.length + ' PRs since last analysis (need ' + minPRs + '), skipping');
+              return;
+            }
+
+            // --- Compute metrics ---
+            const totalPRs = recentEntries.length;
+            const mergedPRs = recentEntries.filter(e => e.merged);
+            const autoMerged = recentEntries.filter(e => e.outcome === 'auto-merged');
+            const manualMerged = recentEntries.filter(e => e.outcome === 'manually-merged');
+
+            const withSuggestions = recentEntries.filter(e => e.copilot?.suggestions > 0);
+            const totalSuggestions = recentEntries.reduce((sum, e) => sum + (e.copilot?.suggestions || 0), 0);
+
+            // Categorize suggestions by keyword matching
+            const categoryCounts = {};
+            for (const cat of categories) { categoryCounts[cat] = 0; }
+            for (const entry of recentEntries) {
+              for (const detail of (entry.copilot?.suggestion_details || [])) {
+                const bodyLower = (detail.body || '').toLowerCase();
+                for (const cat of categories) {
+                  if (bodyLower.includes(cat.replace('-', ' ')) || bodyLower.includes(cat)) {
+                    categoryCounts[cat]++;
+                  }
+                }
+              }
+            }
+
+            // Acceptance rate
+            const suggestionsResolved = withSuggestions.filter(e => e.merged).length;
+            const acceptanceRate = withSuggestions.length > 0
+              ? Math.round((suggestionsResolved / withSuggestions.length) * 100)
+              : 100;
+
+            // Average duration
+            const avgDuration = Math.round(
+              mergedPRs.reduce((sum, e) => sum + (e.duration_minutes || 0), 0) / Math.max(mergedPRs.length, 1)
+            );
+
+            // Complexity breakdown
+            const byComplexity = { low: 0, medium: 0, high: 0, unknown: 0 };
+            for (const e of recentEntries) {
+              const c = e.complexity || 'unknown';
+              byComplexity[c] = (byComplexity[c] || 0) + 1;
+            }
+
+            // Protected paths touched
+            const protectedViolations = recentEntries.filter(
+              e => (e.protected_paths_touched || []).length > 0
+            );
+
+            // False positive detection
+            const falsePositiveCategories = [];
+            for (const [cat, count] of Object.entries(categoryCounts)) {
+              if (count > 2 && acceptanceRate < 50) {
+                falsePositiveCategories.push(cat);
+              }
+            }
+
+            // --- Build report ---
+            const today = new Date().toISOString().substring(0, 10);
+            const report = [
+              '# Governance Analysis - ' + today,
+              '',
+              '## Summary',
+              '',
+              '| Metric | Value |',
+              '|--------|-------|',
+              '| PRs analyzed | ' + totalPRs + ' |',
+              '| Merged | ' + mergedPRs.length + ' |',
+              '| Auto-merged | ' + autoMerged.length + ' |',
+              '| Manually merged | ' + manualMerged.length + ' |',
+              '| Avg merge time | ' + avgDuration + ' min |',
+              '| PRs with suggestions | ' + withSuggestions.length + ' |',
+              '| Total suggestions | ' + totalSuggestions + ' |',
+              '| Suggestion acceptance rate | ' + acceptanceRate + '% |',
+              '',
+              '## Complexity Distribution',
+              '',
+              '| Complexity | Count |',
+              '|------------|-------|',
+              '| Low | ' + byComplexity.low + ' |',
+              '| Medium | ' + byComplexity.medium + ' |',
+              '| High | ' + byComplexity.high + ' |',
+              '',
+              '## Suggestions by Category',
+              '',
+              '| Category | Count |',
+              '|----------|-------|',
+            ];
+            for (const [cat, count] of Object.entries(categoryCounts)) {
+              report.push('| ' + cat + ' | ' + count + ' |');
+            }
+            report.push('');
+
+            if (falsePositiveCategories.length > 0) {
+              report.push('## Potential False Positives');
+              report.push('');
+              report.push('These categories have high suggestion counts but low acceptance:');
+              for (const cat of falsePositiveCategories) {
+                report.push('- **' + cat + '**: ' + categoryCounts[cat] + ' suggestions');
+              }
+              report.push('');
+            }
+
+            if (protectedViolations.length > 0) {
+              report.push('## Protected Path Activity');
+              report.push('');
+              for (const e of protectedViolations) {
+                report.push('- PR #' + e.pr + ' (' + e.title + '): ' + e.protected_paths_touched.join(', '));
+              }
+              report.push('');
+            }
+
+            // --- Propose threshold adjustments ---
+            const proposals = [];
+            const thresholds = policy.review_thresholds?.complexity || {};
+
+            if (byComplexity.low / totalPRs > 0.8 && totalPRs > 5) {
+              proposals.push('Consider lowering low_max_lines from ' + (thresholds.low_max_lines || 50) + ' - ' + Math.round(byComplexity.low / totalPRs * 100) + '% of PRs classified as low');
+            }
+
+            if (withSuggestions.length / totalPRs > 0.5 && totalPRs > 5) {
+              proposals.push(Math.round(withSuggestions.length / totalPRs * 100) + '% of PRs received suggestions - review if auto-merge gates are appropriate');
+            }
+
+            if (proposals.length > 0) {
+              report.push('## Proposed Adjustments');
+              report.push('');
+              for (const p of proposals) {
+                report.push('- ' + p);
+              }
+              report.push('');
+            }
+
+            report.push('---');
+            report.push('Analysis period: ' + (lastAnalysisDate || 'all time') + ' to ' + today);
+            report.push('Generated by governance-analysis workflow');
+
+            // --- Write report ---
+            if (!fs.existsSync(analysisDir)) {
+              fs.mkdirSync(analysisDir, { recursive: true });
+            }
+            const reportPath = path.join(analysisDir, today + '-review-analysis.md');
+            fs.writeFileSync(reportPath, report.join('\n') + '\n');
+            console.log('Report written to ' + reportPath);
+
+            core.exportVariable('ANALYSIS_DATE', today);
+            core.exportVariable('ANALYSIS_PRS', totalPRs.toString());
+            core.exportVariable('REPORT_PATH', 'docs/analysis/' + today + '-review-analysis.md');
+
+      - name: Create analysis PR
+        if: env.ANALYSIS_PRS != '' && env.ANALYSIS_PRS != '0'
+        run: |
+          git config user.name "Pendentive"
+          git config user.email "pendentive.info@gmail.com"
+
+          BRANCH="governance/analysis-$ANALYSIS_DATE"
+          git checkout -b "$BRANCH"
+          git add "$REPORT_PATH"
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          git commit -m "docs: governance analysis for $ANALYSIS_DATE ($ANALYSIS_PRS PRs)"
+          git push -u origin "$BRANCH"
+
+          gh pr create \
+            --title "Governance Analysis - $ANALYSIS_DATE" \
+            --body "Weekly governance analysis covering $ANALYSIS_PRS PRs. See $REPORT_PATH for the full report." \
+            --base dev \
+            --head "$BRANCH"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

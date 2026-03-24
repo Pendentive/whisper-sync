@@ -1,0 +1,48 @@
+# Agentic Governance Policy
+# Machine-parsed by GitHub Actions workflows
+# Modified by analysis agent via PRs
+
+merge_policy:
+  auto_merge_enabled: true
+  require_copilot_review: true
+  require_zero_suggestions: true
+  complexity_gates:
+    low: auto
+    medium: auto
+    high: auto
+
+review_thresholds:
+  complexity:
+    low_max_lines: 50
+    medium_max_lines: 200
+    high_above: 200
+
+path_protection:
+  - pattern: "whisper_sync/transcribe.py"
+    reason: "Core audio pipeline"
+    require: architecture_note
+  - pattern: "whisper_sync/worker.py"
+    reason: "Multiprocessing model"
+    require: architecture_note
+  - pattern: "whisper_sync/channel_merge.py"
+    reason: "Per-channel diarization"
+    require: architecture_note
+  - pattern: ".github/workflows/**"
+    reason: "CI/CD pipeline"
+    require: architecture_note
+  - pattern: ".github/governance/**"
+    reason: "Governance rules"
+    require: architecture_note
+
+analysis:
+  schedule: weekly
+  min_prs_for_analysis: 3
+  suggestion_categories:
+    - dead-code
+    - missing-function
+    - error-handling
+    - security
+    - style
+    - performance
+    - naming
+    - documentation
