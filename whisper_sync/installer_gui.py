@@ -535,11 +535,15 @@ class InstallerApp:
         scrollbar.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
 
-        # Mousewheel scrolling
+        # Mousewheel scrolling (guarded against destroyed canvas)
         def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            try:
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            except Exception:
+                pass
 
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        self._page3_mousewheel = _on_mousewheel
 
         self._populate_getstarted()
 
@@ -1539,9 +1543,18 @@ class InstallerApp:
         canvas.pack(side="left", fill="both", expand=True)
 
         def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            try:
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            except Exception:
+                pass
 
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        def _on_close():
+            canvas.unbind_all("<MouseWheel>")
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", _on_close)
 
         def _heading(text):
             tk.Label(
@@ -1634,7 +1647,7 @@ class InstallerApp:
             font=("Segoe UI", 10), relief="flat", bd=0,
             padx=16, pady=4,
             activebackground=ACCENT, activeforeground=BTN_FG,
-            command=win.destroy,
+            command=_on_close,
         ).pack(pady=(8, 12))
 
     # ------------------------------------------------------------------
