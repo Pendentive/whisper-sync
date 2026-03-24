@@ -44,6 +44,8 @@ $pyFiles = @(
     "worker.py",
     "worker_manager.py",
     "backup_worker.py",
+    "notifications.py",
+    "github_status.py",
     "speakers.py",
     "speaker_prompt.md",
     "minutes_prompt.md",
