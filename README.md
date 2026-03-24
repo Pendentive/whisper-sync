@@ -72,9 +72,9 @@ The cascade selects the highest-confidence tier automatically. Stereo recordings
 Dictation works even while a meeting is being recorded and transcribed:
 
 - Meeting recording continues uninterrupted on the primary audio stream
-- Dictation uses a backup model (configurable) on a separate audio stream
-- The tray icon shows a small blue dot overlay to indicate dictation is active during a meeting
-- There is no conflict between the two modes; they run on independent pipelines
+- Dictation uses a configurable backup model (defaults to `base`) so it does not compete with the main worker transcribing the meeting
+- If the backup model is unavailable, dictation falls back to the main worker queue with an extended timeout
+- The tray icon flashes amber briefly when a dictation is queued behind a meeting transcription stage
 
 ---
 
@@ -203,7 +203,7 @@ All settings via right-click tray icon. Key options: dictation/meeting hotkeys, 
 
 ## Transcription Output
 
-- **Dictation**: Text pasted into focused app. History saved to `logs/data/dictation/YYYY-MM-DD.md`.
+- **Dictation**: Text pasted into focused app. History saved to `<output_dir>/.whispersync/dictation-logs/YYYY-MM-DD.md`.
 - **Meeting**: Saved to your transcriptions folder as `recording.wav` + `transcript.json` with timestamps and speaker IDs.
 
 Use `python -m whisper_sync.flatten path/to/transcript.json` to generate a compact `transcript-readable.txt` (~90% smaller than the JSON).
@@ -219,7 +219,7 @@ Out of the box, speakers are labeled `SPEAKER_00`, `SPEAKER_01`, etc. With Claud
 3. Save as `speaker_map` in `transcript.json`
 4. Re-run `flatten` for named output
 
-See the embedded Claude Code skill in this repo for a copy-paste-ready automation workflow.
+See the `.claude/rules/` directory for transcription workflow conventions used with Claude Code.
 
 ---
 
@@ -232,7 +232,7 @@ See the embedded Claude Code skill in this repo for a copy-paste-ready automatio
 | Slow transcription | Use smaller model, check GPU usage in Task Manager |
 | Hotkey not working | Try a different combo in Settings, or run as Administrator |
 | Diarization errors | Verify `~/.huggingface/token` exists, accept both pyannote model licenses |
-| Config issues | Delete `whisper_sync/config.json` to reset to defaults |
+| Config issues | Delete `<output_dir>/.whispersync/config.json` to reset to defaults |
 
 Logs: `whisper_sync/logs/app/whisper-sync-YYYY-MM-DD.log`
 

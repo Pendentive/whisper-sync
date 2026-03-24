@@ -11,7 +11,7 @@ Everything below is for developers modifying this app or for an AI assistant (li
 | File | Purpose | Key Classes/Functions |
 |------|---------|----------------------|
 | `__main__.py` | **App entry point.** Tray icon, hotkey listener, recording lifecycle, crash recovery. | `WhisperSync` class --`run()`, `_on_hotkey()`, `_start_dictation()`, `_start_meeting()`, `_do_transcribe()`, `_paste_result()`, `_recover_from_crash()` |
-| `capture.py` | **Audio recording.** Multi-stream mic + speaker loopback via WASAPI. | `AudioCapture` class --`start()`, `stop()`, `_audio_callback()` |
+| `capture.py` | **Audio recording.** Multi-stream mic + speaker loopback via WASAPI. | `AudioRecorder` class --`start()`, `stop()`, `_mic_callback()`, `_speaker_callback()`, `start_streaming()`, `stop_streaming()` |
 | `transcribe.py` | **WhisperX engine.** Model loading, transcription, alignment, diarization. Two paths: fast (dictation) and full (meeting). | `transcribe_fast(audio_np, model)` -- in-memory numpy to text; `transcribe(audio_path, diarize, model)` -- file-based full pipeline; `_load_model()`, `_load_align_model()` |
 | `worker.py` | **Subprocess entry point.** Runs transcription in isolated process (crash safety). Receives requests via Queue, returns results. | `worker_main()` -- event loop handling `transcribe_fast`, `transcribe`, `reload_model`, `shutdown` requests |
 | `worker_manager.py` | **Subprocess lifecycle.** Spawns/kills/restarts worker process. IPC via multiprocessing.Queue. Crash detection + respawn. | `TranscriptionWorker` class --`start()`, `wait_ready()`, `transcribe_fast()`, `transcribe()`, `reload_model()`, `restart()`, `is_alive()` |
@@ -22,7 +22,7 @@ Everything below is for developers modifying this app or for an AI assistant (li
 | `icons.py` | **Tray icon generator.** Creates colored 64x64 PNG circles with labels. No external assets needed. | `_circle_icon(color, label)` returns PIL Image |
 | `paste.py` | **Text output.** Routes transcribed text to clipboard+Ctrl+V or simulated keystrokes. | `paste(text, method)`, `paste_clipboard(text)`, `paste_keystrokes(text)` |
 | `flatten.py` | **Transcript converter.** JSON to readable speaker-attributed text (~90% token reduction). | `flatten(transcript_path)` writes `transcript-readable.txt`; `PAUSE_THRESHOLD = 2.0` seconds |
-| `dictation_log.py` | **Dictation history.** Appends entries to daily markdown log files. | `append(text, duration)` writes to `logs/data/dictation/YYYY/YYYY-MM-DD.md` |
+| `dictation_log.py` | **Dictation history.** Appends entries to daily markdown log files. | `append(text, duration)` writes to `<output_dir>/.whispersync/dictation-logs/YYYY-MM-DD.md` |
 | `crash_diagnostics.py` | **Crash safety.** Global exception hook + Windows Event Log query for recent python.exe crashes. | `install_excepthook()` -- registers handler; `check_previous_crash()` returns str or None |
 | `watchdog.py` | **Auto-restart daemon.** Monitors main process, respawns on non-zero exit. Gives up after 5 rapid crashes. | `main()` -- loop with `MAX_RESTARTS=5`, `COOLDOWN_SECONDS=5`, `RESET_AFTER_SECONDS=300` |
 | `logger.py` | **Logging setup.** File-based logging to `logs/app/whisper-sync-YYYY-MM-DD.log`. DEBUG to file, INFO to console. | `logger` singleton |
@@ -34,14 +34,14 @@ Everything below is for developers modifying this app or for an AI assistant (li
 | File | Location | Purpose |
 |------|----------|---------|
 | `config.defaults.json` | `whisper_sync/` | Default configuration. Merged under user overrides. |
-| `config.json` | `whisper_sync/` | User overrides. Created on first settings change. |
+| `config.json` | `<output_dir>/.whispersync/` (primary), `whisper_sync/` (legacy fallback) | User overrides. Created on first settings change. |
 | `whisper-capture.ico` | `whisper_sync/` | Application icon (64x64). Used in Windows shortcuts. |
 | `.standalone` | `whisper_sync/` | Marker file. If present, standalone mode. If absent, repo mode. Created by installer. |
 | `requirements.txt` | Top level | Pip dependencies. |
 | `install.ps1` | Top level | CLI installer. |
 | `start.ps1` | Top level | Launcher script. |
-| `build-dist.ps1` | `whisper_sync/` (dev only) | Builds distribution zip. |
-| `setup-env.ps1` | `whisper_sync/` (dev only) | Dev environment bootstrap. |
+| `build-dist.ps1` | Top level (dev only) | Builds distribution zip. |
+| `setup-env.ps1` | Top level (dev only) | Dev environment bootstrap. |
 
 ---
 
@@ -80,9 +80,9 @@ benchmark.py (standalone utility)
 User presses Ctrl+Shift+Space
   -> __main__._on_hotkey("dictation")
   -> __main__._start_dictation()
-    -> capture.AudioCapture.start() [mic only, records to numpy array]
+    -> capture.AudioRecorder.start() [mic only, records to numpy array]
     -> User presses hotkey again
-    -> capture.AudioCapture.stop() -> numpy audio data
+    -> capture.AudioRecorder.stop() -> numpy audio data
     -> worker_manager.transcribe_fast(audio_np)
       -> saves numpy to temp .npy file
       -> sends request to worker subprocess via Queue
@@ -101,10 +101,10 @@ User presses Ctrl+Shift+M
   -> __main__._on_hotkey("meeting")
   -> __main__._start_meeting()
     -> Prompts for meeting name (popup dialog)
-    -> capture.AudioCapture.start() [mic + speaker loopback]
+    -> capture.AudioRecorder.start() [mic + speaker loopback]
       -> streaming_wav.StreamingWavWriter [incremental disk writes]
     -> User presses hotkey again
-    -> capture.AudioCapture.stop() -> WAV file on disk
+    -> capture.AudioRecorder.stop() -> WAV file on disk
     -> worker_manager.transcribe(audio_path, diarize=True)
       -> sends request to worker subprocess via Queue
       -> worker.py receives request
@@ -149,7 +149,7 @@ Override with `"batch_size": 8` in `config.json`. Set `"batch_size": "auto"` to 
 
 ### Meeting Recording -- Disk-Only Audio
 
-Meeting recordings use **disk-only** audio capture. The mic callback streams audio to a WAV file on disk in real-time but does NOT accumulate audio in RAM. Dictation mode still uses RAM (recordings are short).
+Meeting recordings use **disk-only** audio capture for the mic channel. The mic callback streams audio to a WAV file on disk in real-time and does NOT accumulate audio in RAM (controlled by the `disk_only` flag in `start_streaming()`). The speaker loopback channel, however, still accumulates audio in RAM via `_speaker_data` for resampling and stereo merging at stop time. Dictation mode uses RAM for both channels (recordings are short).
 
 ### Orphan Worker Cleanup
 
@@ -196,7 +196,7 @@ pyperclip (clipboard access)
 
 ### Offline Operation
 
-After initial installation and model download, WhisperSync works fully offline. All models cached in `~/.cache/huggingface/hub/`. No network calls during transcription.
+After initial installation and model download, WhisperSync works fully offline. All models cached in `whisper_sync/models/` (the app sets `HF_HUB_CACHE` to this directory). No network calls during transcription.
 
 ---
 
@@ -232,7 +232,7 @@ After initial installation and model download, WhisperSync works fully offline. 
 - `mic_device` / `speaker_device`: `null` = system default
 - `use_system_devices`: When `true`, ignores manual device selections and follows Windows defaults
 
-Config merge: `config.defaults.json` loaded first, then `config.json` deep-merged on top. If `config.json` is corrupted, the app crashes on startup. Fix: delete `config.json` to reset.
+Config merge: `config.defaults.json` loaded first, then user `config.json` deep-merged on top. The app checks `<output_dir>/.whispersync/config.json` first, then falls back to the legacy `whisper_sync/config.json`. If the config file is corrupted, the app crashes on startup. Fix: delete the config.json file to reset.
 
 ---
 
@@ -249,7 +249,7 @@ Config merge: `config.defaults.json` loaded first, then `config.json` deep-merge
 | segmentation-3.0 | ~360 MB | ~400 MB | --| Speaker segmentation (gated) |
 | speaker-diarization-3.1 | ~17 MB | ~20 MB | --| Speaker pipeline config (gated) |
 
-Models are stored in `%USERPROFILE%\.cache\huggingface\hub\`. Gated models (pyannote) require HF account + license acceptance.
+Models are stored in `whisper_sync/models/` (the app sets `HF_HUB_CACHE` to this directory). Gated models (pyannote) require HF account + license acceptance.
 
 ---
 
@@ -258,7 +258,7 @@ Models are stored in `%USERPROFILE%\.cache\huggingface\hub\`. Gated models (pyan
 | Log Type | Path | Content |
 |----------|------|---------|
 | App log | `whisper_sync/logs/app/whisper-sync-YYYY-MM-DD.log` | DEBUG-level application log |
-| Dictation log | `whisper_sync/logs/data/dictation/YYYY/YYYY-MM-DD.md` | Timestamped dictation history |
+| Dictation log | `<output_dir>/.whispersync/dictation-logs/YYYY-MM-DD.md` | Timestamped dictation history |
 | Crash log | Windows Event Log (Application) | Native crashes (segfaults) |
 
 ---
@@ -311,7 +311,7 @@ Get-ChildItem "whisper_sync\logs\app\" | Sort-Object LastWriteTime -Descending |
 4. CUDA errors -> Reinstall PyTorch with correct CUDA version (see mapping above)
 5. PermissionError -> Run as Administrator
 6. Silent crash -> Check log files, run `python -m whisper_sync` directly
-7. Invalid JSON -> Delete `config.json` to reset
+7. Invalid JSON -> Delete `<output_dir>/.whispersync/config.json` to reset
 
 **Transcription Fails:**
 1. Magenta icon immediately -> Model not downloaded, use `download_model()`
@@ -332,14 +332,14 @@ Get-ChildItem "whisper_sync\logs\app\" | Sort-Object LastWriteTime -Descending |
 # Delete venv (models stay cached globally)
 Remove-Item -Recurse -Force .\whisper-env\
 
-# Reset config
-Remove-Item .\whisper_sync\config.json -ErrorAction SilentlyContinue
+# Reset config (path depends on your output_dir setting)
+Remove-Item "<output_dir>\.whispersync\config.json" -ErrorAction SilentlyContinue
 
 # Reinstall
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-To also clear models: `Remove-Item -Recurse -Force "$env:USERPROFILE\.cache\huggingface\hub\models--openai--whisper-*"`
+To also clear models: `Remove-Item -Recurse -Force ".\whisper_sync\models\*"`
 
 ### Key Design Decisions
 
