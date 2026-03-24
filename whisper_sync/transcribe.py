@@ -347,6 +347,76 @@ def stage_align(ctx: dict, result: dict) -> dict:
     )
 
 
+def _create_balanced_mono(audio_path: str) -> str | None:
+    """Create an RMS-balanced mono WAV for diarization from stereo input.
+
+    Normalizes each channel's speech energy independently before mixing,
+    so PyAnnote can hear both speakers equally. Returns path to a temp
+    mono WAV, or None if audio is mono or channels are identical.
+    """
+    import wave as _wave
+    import tempfile
+
+    try:
+        with _wave.open(audio_path, "rb") as wf:
+            n_channels = wf.getnchannels()
+            if n_channels < 2:
+                return None
+            sample_rate = wf.getframerate()
+            raw = wf.readframes(wf.getnframes())
+
+        samples = np.frombuffer(raw, dtype=np.int16).astype(np.float64)
+        ch0 = samples[0::2]
+        ch1 = samples[1::2]
+
+        def voiced_rms(channel, frame_ms=30, voiced_percentile=70):
+            frame_size = int(sample_rate * frame_ms / 1000)
+            n_frames = len(channel) // frame_size
+            if n_frames == 0:
+                rms = np.sqrt(np.mean(channel ** 2))
+                return rms if rms > 0 else 1.0
+            truncated = channel[:n_frames * frame_size].reshape(n_frames, frame_size)
+            frame_energies = np.sqrt(np.mean(truncated ** 2, axis=1))
+            threshold = np.percentile(frame_energies, 100 - voiced_percentile)
+            voiced = frame_energies[frame_energies >= threshold]
+            return float(np.mean(voiced)) if len(voiced) > 0 else 1.0
+
+        rms0 = voiced_rms(ch0)
+        rms1 = voiced_rms(ch1)
+
+        if min(rms0, rms1) / max(rms0, rms1) > 0.95:
+            return None
+
+        target_rms = max(rms0, rms1)
+        gain0 = target_rms / rms0 if rms0 > 0 else 1.0
+        gain1 = target_rms / rms1 if rms1 > 0 else 1.0
+
+        logger.info(f"Stereo balance: ch0 gain={gain0:.2f}x, ch1 gain={gain1:.2f}x "
+                     f"(RMS: {rms0:.0f}/{rms1:.0f})")
+
+        mono = (ch0 * gain0 + ch1 * gain1) / 2.0
+        mono = np.clip(mono, -32768, 32767).astype(np.int16)
+
+        fd, tmp_path = tempfile.mkstemp(suffix=".wav")
+        try:
+            with _wave.open(tmp_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sample_rate)
+                wf.writeframes(mono.tobytes())
+        except Exception:
+            os.unlink(tmp_path)
+            raise
+        finally:
+            os.close(fd)
+
+        return tmp_path
+
+    except Exception as e:
+        logger.warning(f"Stereo balancing failed, using original: {e}")
+        return None
+
+
 def stage_diarize(ctx: dict) -> dict:
     """Stage 3: Run speaker diarization pipeline.
 
@@ -407,14 +477,14 @@ def stage_diarize(ctx: dict) -> dict:
         if quality_ok:
             # Store merged segments in ctx for stage_finalize to use
             ctx["_per_channel_segments"] = merged
-            ctx["_per_channel_result"] = result_ch0  # base result structure
+            # _per_channel_segments consumed by stage_finalize
             # Return a dummy diarize result; stage_finalize will use _per_channel_segments
             return diarize_ch0  # not actually used when _per_channel_segments is set
         else:
             logger.warning("Per-channel quality check failed, falling back to channel diarization")
 
     except Exception as e:
-        logger.warning(f"Per-channel pipeline failed: {e}")
+        logger.warning("Per-channel pipeline failed", exc_info=True)
 
     finally:
         # Clean up temp files
