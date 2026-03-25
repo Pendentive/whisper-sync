@@ -41,32 +41,33 @@ jobs:
             if (context.payload.pull_request) {
               prNumbers = [context.payload.pull_request.number];
             } else if (context.payload.check_suite) {
+              // Process all associated PRs, not just the first
               const prs = context.payload.check_suite.pull_requests;
-              if (prs && prs.length > 0) prNumbers = [prs[0].number];
+              if (prs && prs.length > 0) prNumbers = prs.map(p => p.number);
             } else if (context.payload.review) {
               prNumbers = [context.payload.pull_request.number];
             }
 
-            // For workflow_run triggers (and any trigger with no PR context),
-            // sweep all open PRs. This handles clean PRs where the only
+            // For workflow_run triggers, try payload PRs first
+            if (prNumbers.length === 0 && context.payload.workflow_run) {
+              const prs = context.payload.workflow_run.pull_requests;
+              if (prs && prs.length > 0) {
+                prNumbers = prs.map(p => p.number);
+              }
+            }
+
+            // Sweep fallback: when no PR in payload (workflow_run on dev),
+            // check all open PRs. This handles clean PRs where the only
             // trigger was pull_request_review from Copilot (blocked by GitHub
             // as action_required for bot-initiated reviews).
             if (prNumbers.length === 0) {
-              if (context.payload.workflow_run) {
-                const prs = context.payload.workflow_run.pull_requests;
-                if (prs && prs.length > 0) {
-                  prNumbers = [prs[0].number];
-                }
-              }
-            }
-            if (prNumbers.length === 0) {
-              console.log('No PR in payload, sweeping all open PRs...');
+              console.log('No PR in payload, sweeping all open PRs targeting dev...');
               const { data: openPRs } = await github.rest.pulls.list({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 state: 'open',
                 base: 'dev',
-                per_page: 20
+                per_page: 100
               });
               prNumbers = openPRs.map(pr => pr.number);
               if (prNumbers.length === 0) {
@@ -75,6 +76,9 @@ jobs:
               }
               console.log(`Found ${prNumbers.length} open PRs: ${prNumbers.join(', ')}`);
             }
+
+            // Deduplicate PR numbers
+            prNumbers = [...new Set(prNumbers)];
 
             // Process each PR
             for (const prNumber of prNumbers) {
@@ -92,23 +96,30 @@ jobs:
               const { data: comments } = await github.rest.issues.listComments({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: prNumber
+                issue_number: prNumber,
+                per_page: 100
               });
               if (comments.some(c => c.user.login === 'github-actions[bot]' && c.body.includes('Auto-merged'))) {
                 continue;
               }
 
-              // Check if Copilot has reviewed
+              // Check if Copilot has reviewed (must not be CHANGES_REQUESTED)
               const { data: reviews } = await github.rest.pulls.listReviews({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 pull_number: prNumber
               });
-              const copilotReviewed = reviews.some(
+              const copilotReviews = reviews.filter(
                 r => r.user.login === 'copilot-pull-request-reviewer[bot]'
               );
-              if (!copilotReviewed) {
+              if (copilotReviews.length === 0) {
                 console.log(`PR #${prNumber}: no Copilot review yet`);
+                continue;
+              }
+              // Check the latest Copilot review state
+              const latestReview = copilotReviews[copilotReviews.length - 1];
+              if (latestReview.state === 'CHANGES_REQUESTED') {
+                console.log(`PR #${prNumber}: Copilot requested changes, skipping`);
                 continue;
               }
 
@@ -116,7 +127,8 @@ jobs:
               const { data: reviewComments } = await github.rest.pulls.listReviewComments({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                pull_number: prNumber
+                pull_number: prNumber,
+                per_page: 100
               });
               // Only count comments on the latest commit - old comments from
               // previous pushes should not permanently block auto-merge.
