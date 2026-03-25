@@ -91,7 +91,7 @@ def build_icon(spec: IconSpec, progress: float | None = None,
 
     margin = 2
     ring_width = 3
-    gap = 3
+    gap = 2
     outer_r = size - margin
 
     # Outer ring (full, partial arc, or absent)
@@ -125,7 +125,7 @@ def build_icon(spec: IconSpec, progress: float | None = None,
 
     # Inner dot (overlay dictation indicator)
     if spec.inner is not None:
-        dot_radius = 7
+        dot_radius = 4
         cx, cy = size // 2, size // 2
         draw.ellipse(
             [cx - dot_radius, cy - dot_radius,

@@ -39,7 +39,6 @@ from .worker_manager import TranscriptionWorker, WorkerCrashedError
 from .backup_worker import BackupTranscriber
 from . import dictation_log
 from . import feature_log
-from . import weekly_stats
 from .streaming_wav import fix_orphan
 from .crash_diagnostics import install_excepthook, check_previous_crash
 from .flatten import flatten as flatten_transcript
@@ -337,7 +336,6 @@ class WhisperSync:
         if not self.worker.is_ready() and not (_meeting_tx and BackupTranscriber.is_enabled(self.cfg)):
             logger.warning("Worker not ready yet - ignoring dictation request")
             self._feature_suggest_active = False
-            self._yellow_flash()
             return
         self.state.emit(DICTATION_STARTED, mode="dictation")
         mic = self.cfg.get("mic_device")
@@ -351,8 +349,7 @@ class WhisperSync:
             log_dir = self._dictation_log_dir()
             log_dir.mkdir(parents=True, exist_ok=True)
             ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            prefix = "feature_" if self._feature_suggest_active else ""
-            self._dictation_wav_path = log_dir / f"{prefix}{ts}.wav"
+            self._dictation_wav_path = log_dir / f"{ts}.wav"
             self.recorder.start_streaming(self._dictation_wav_path)
 
     def _stop_dictation(self):
@@ -426,7 +423,6 @@ class WhisperSync:
                         logger.info(f"Feature suggestion saved: {char_count} chars in {t2 - t0:.2f}s")
                         notify("Feature saved", f"Suggestion recorded ({char_count} chars)")
                         self._stats["feature_suggestions"] += 1
-                        weekly_stats.record_feature_suggestion()
                         # Format asynchronously via Claude CLI
                         threading.Thread(
                             target=self._format_feature_async,
@@ -448,7 +444,6 @@ class WhisperSync:
                     self._stats["dictations"] += 1
                     self._stats["total_dictation_chars"] += char_count
                     self._stats["total_dictation_time"] += t2 - t0
-                    weekly_stats.record_dictation(char_count, t2 - t0)
                     incognito = self.cfg.get("incognito", False)
                     if text and not incognito:
                         dictation_log.append(text, t2 - t0)
@@ -559,7 +554,6 @@ class WhisperSync:
                         logger.info(f"Feature suggestion (overlay) saved: {char_count} chars in {duration:.2f}s", extra={"secondary": True})
                         notify("Feature saved", f"Suggestion recorded ({char_count} chars)")
                         self._stats["feature_suggestions"] += 1
-                        weekly_stats.record_feature_suggestion()
                         threading.Thread(
                             target=self._format_feature_async,
                             args=(text, entry_id),
@@ -573,7 +567,6 @@ class WhisperSync:
                     self._stats["dictations"] += 1
                     self._stats["total_dictation_chars"] += char_count
                     self._stats["total_dictation_time"] += duration
-                    weekly_stats.record_dictation(char_count, duration)
 
                     incognito = self.cfg.get("incognito", False)
                     if text and not incognito:
@@ -614,7 +607,6 @@ class WhisperSync:
                     self._stats["dictations"] += 1
                     self._stats["total_dictation_chars"] += char_count
                     self._stats["total_dictation_time"] += duration
-                    weekly_stats.record_dictation(char_count, duration)
 
                     incognito = self.cfg.get("incognito", False)
                     if text and not incognito:
@@ -678,66 +670,6 @@ class WhisperSync:
             Path(wav_path).unlink(missing_ok=True)
         except Exception as e:
             logger.error(f"Failed to recover dictation: {e}")
-            logger.info(f"Audio preserved at: {wav_path}")
-
-    def _recover_feature(self, wav_path: str):
-        """Recover a crashed feature suggestion with interactive notification.
-
-        Unlike dictation recovery (clipboard only), feature recovery routes
-        the transcription to the feature log and applies Claude formatting.
-        Shows a toast with Recover / Cancel options.
-        """
-        logger.info(f"Recovering crashed feature suggestion from: {wav_path}")
-        try:
-            import numpy as np
-            import wave
-            with wave.open(wav_path, "r") as wf:
-                frames = wf.readframes(wf.getnframes())
-                audio_np = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32767.0
-
-            dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
-            text = self.worker.transcribe_fast(audio_np, model_override=dictation_model)
-            if not text:
-                logger.info("Crashed feature suggestion produced no text, cleaning up")
-                Path(wav_path).unlink(missing_ok=True)
-                return
-
-            logger.info(f"Recovered feature text ({len(text)} chars): {text[:80]}...")
-
-            # Show interactive notification with Recover / Cancel options
-            def _do_recover():
-                entry_id = feature_log.append_raw(text, 0)
-                logger.info(f"Feature suggestion recovered to feature log: {entry_id}")
-                # Format via Claude CLI in background
-                threading.Thread(
-                    target=self._format_feature_async,
-                    args=(text, entry_id),
-                    daemon=True,
-                ).start()
-                notify("Feature recovered", f"{len(text)} chars saved to feature log")
-
-            def _do_cancel():
-                logger.info("Feature recovery cancelled by user")
-
-            try:
-                preview = f'"{text[:120]}..."' if len(text) > 120 else f'"{text}"'
-                notify(
-                    "Recover feature suggestion?",
-                    preview,
-                    buttons=[
-                        {"label": "Recover", "action": _do_recover},
-                        {"label": "Cancel", "action": _do_cancel},
-                    ],
-                )
-            except Exception:
-                # If notification fails, auto-recover silently
-                logger.debug("Feature recovery notification failed, auto-recovering", exc_info=True)
-                _do_recover()
-
-            # Clean up WAV after showing notification (actions handle the rest)
-            Path(wav_path).unlink(missing_ok=True)
-        except Exception as e:
-            logger.error(f"Failed to recover feature suggestion: {e}")
             logger.info(f"Audio preserved at: {wav_path}")
 
     def _recover_meetings(self):
@@ -1551,7 +1483,6 @@ class WhisperSync:
                 self._stats["meetings"] += 1
                 self._stats["total_meeting_seconds"] += int(_meet_duration)
                 self._stats["total_meeting_words"] += _meet_words
-                weekly_stats.record_meeting(int(_meet_duration), _meet_words)
 
                 # Log speaker previews at TRANSCRIPT level (detailed tier)
                 _meet_segments = result.get("speaker_segments")
@@ -2284,14 +2215,8 @@ class WhisperSync:
             """First poll — update menu regardless of change detection."""
             _on_change(old_prs, new_prs)
 
-        def _on_feature_scan(open_prs, merged_prs):
-            from . import feature_lifecycle
-            feature_lifecycle.scan_open_prs(open_prs)
-            feature_lifecycle.scan_merged_prs(merged_prs)
-
         self._github_poller = GitHubPoller(
             repo=repo, interval=interval, on_change=_on_change,
-            on_feature_scan=_on_feature_scan,
         )
         self._github_poller.start()
         if self._github_poller.state.available:
@@ -2528,32 +2453,25 @@ class WhisperSync:
         logger.info(f"Output folder changed to: {new_path}")
 
     def _build_session_stats_menu(self):
-        """Build session stats submenu items with weekly and lifetime context."""
+        """Build session stats submenu items."""
         s = self._stats
         uptime = datetime.now() - s["session_start"]
         hours, remainder = divmod(int(uptime.total_seconds()), 3600)
         minutes = remainder // 60
         avg_dict_time = s["total_dictation_time"] / s["dictations"] if s["dictations"] else 0
 
-        week = weekly_stats.get_current_week()
-        lifetime = weekly_stats.get_lifetime()
-        weekly_avg = weekly_stats.get_weekly_average("total_dictation_time")
-
         items = [
             pystray.MenuItem(f"Session uptime: {hours}h {minutes}m", None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(f"Dictations: {s['dictations']} today | {week.get('dictations', 0)} this week", None, enabled=False),
-            pystray.MenuItem(f"Avg dictation: {avg_dict_time:.2f}s | {weekly_avg:.2f}s weekly", None, enabled=False),
-            pystray.MenuItem(f"Chars dictated: {s['total_dictation_chars']:,} today | {week.get('total_dictation_chars', 0):,} this week", None, enabled=False),
+            pystray.MenuItem(f"Dictations: {s['dictations']}", None, enabled=False),
+            pystray.MenuItem(f"Avg dictation time: {avg_dict_time:.2f}s", None, enabled=False),
+            pystray.MenuItem(f"Total chars dictated: {s['total_dictation_chars']:,}", None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(f"Meetings: {s['meetings']} today | {week.get('meetings', 0)} this week", None, enabled=False),
-            pystray.MenuItem(f"Meeting time: {s['total_meeting_seconds'] // 60}m today | {week.get('total_meeting_seconds', 0) // 60}m this week", None, enabled=False),
-            pystray.MenuItem(f"Meeting words: {s['total_meeting_words']:,} today | {week.get('total_meeting_words', 0):,} this week", None, enabled=False),
+            pystray.MenuItem(f"Meetings: {s['meetings']}", None, enabled=False),
+            pystray.MenuItem(f"Total meeting time: {s['total_meeting_seconds'] // 60}m", None, enabled=False),
+            pystray.MenuItem(f"Total meeting words: {s['total_meeting_words']:,}", None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(f"Features: {s['feature_suggestions']} today | {week.get('feature_suggestions', 0)} this week", None, enabled=False),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem(f"Lifetime dictations: {lifetime.get('dictations', 0):,}", None, enabled=False),
-            pystray.MenuItem(f"Lifetime meetings: {lifetime.get('meetings', 0):,}", None, enabled=False),
+            pystray.MenuItem(f"Feature suggestions: {s['feature_suggestions']}", None, enabled=False),
         ]
         return pystray.Menu(*items)
 
@@ -2778,7 +2696,6 @@ class WhisperSync:
 
     def _restart(self):
         import subprocess
-        weekly_stats.flush()
         if self.recorder.is_recording:
             self.recorder.stop()
         self.worker.stop()
@@ -2792,7 +2709,6 @@ class WhisperSync:
             self.tray.stop()
 
     def quit(self):
-        weekly_stats.flush()
         if self.recorder.is_recording:
             self.recorder.stop()
         self.worker.stop()
@@ -2948,12 +2864,9 @@ class WhisperSync:
         def _wait_worker():
             if self.worker.wait_ready(timeout=120):
                 logger.info(f"Dictation model '{dictation_model}' ready (worker pid={self.worker._process.pid})")
-                # Recover any crashed dictations/features found at startup
+                # Recover any crashed dictations found at startup
                 for wav_path in self._recovered_dictation_paths:
-                    if Path(wav_path).name.startswith("feature_"):
-                        self._recover_feature(wav_path)
-                    else:
-                        self._recover_dictation(wav_path)
+                    self._recover_dictation(wav_path)
                 self._recovered_dictation_paths = []
                 # Recover any crashed meetings — show dialog for naming
                 if self._recovered_meeting_paths:
@@ -2966,25 +2879,9 @@ class WhisperSync:
         # Start GitHub PR status polling if configured
         self._start_github_poller()
 
-        # Periodic flush for persistent weekly stats
-        self._stats_flush_stop = threading.Event()
-        def _stats_flush_loop():
-            while not self._stats_flush_stop.wait(weekly_stats._flush_interval):
-                try:
-                    weekly_stats.flush()
-                except Exception:
-                    pass
-        threading.Thread(target=_stats_flush_loop, daemon=True).start()
-
         try:
             self.tray.run()
         finally:
-            # Flush persistent stats before shutdown
-            try:
-                self._stats_flush_stop.set()
-                weekly_stats.flush()
-            except Exception:
-                pass
             # Always release keyboard hooks to prevent stuck modifier keys
             keyboard.unhook_all()
             self.worker.stop()
