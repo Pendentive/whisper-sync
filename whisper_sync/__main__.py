@@ -419,8 +419,8 @@ class WhisperSync:
                     if not text:
                         logger.info("Feature suggestion discarded (no speech detected)")
                     elif self.cfg.get("incognito", False):
-                        logger.info("Feature suggestion skipped: incognito mode enabled")
-                        notify("Feature not saved", "Incognito mode is on; suggestions are not stored on disk")
+                        logger.info("Feature suggestion skipped: whisper mode enabled")
+                        notify("Feature not saved", "Whisper mode is on; suggestions are not stored on disk")
                     else:
                         entry_id = feature_log.append_raw(text, t2 - t0)
                         logger.info(f"Feature suggestion saved: {char_count} chars in {t2 - t0:.2f}s")
@@ -552,8 +552,8 @@ class WhisperSync:
                     if not text:
                         logger.info("Feature suggestion (overlay) discarded (no speech detected)", extra={"secondary": True})
                     elif self.cfg.get("incognito", False):
-                        logger.info("Feature suggestion skipped: incognito mode enabled", extra={"secondary": True})
-                        notify("Feature not saved", "Incognito mode is on; suggestions are not stored on disk")
+                        logger.info("Feature suggestion skipped: whisper mode enabled", extra={"secondary": True})
+                        notify("Feature not saved", "Whisper mode is on; suggestions are not stored on disk")
                     else:
                         entry_id = feature_log.append_raw(text, duration)
                         logger.info(f"Feature suggestion (overlay) saved: {char_count} chars in {duration:.2f}s", extra={"secondary": True})
@@ -2086,18 +2086,16 @@ class WhisperSync:
             for evt, label in _notification_options
         ]
 
-        # --- Incognito mode ---
+        # --- Whisper mode ---
         incognito_on = self.cfg.get("incognito", False)
         incognito_items = [
             pystray.MenuItem(
-                "Incognito Mode",
+                "Whisper Mode",
                 lambda: self._toggle_incognito(),
                 checked=lambda item: self.cfg.get("incognito", False),
             ),
+            pystray.MenuItem("  RAM only dictation, no disk, no logs", None, enabled=False),
         ]
-        incognito_items.append(
-            pystray.MenuItem("  RAM-only dictation, no disk writes", None, enabled=False),
-        )
 
         # Left-click fires the default menu item
         left_action = self.cfg.get("left_click", "meeting")
@@ -2205,18 +2203,18 @@ class WhisperSync:
     def _toggle_incognito(self):
         self.cfg["incognito"] = not self.cfg.get("incognito", False)
         state = "on" if self.cfg["incognito"] else "off"
-        logger.info(f"Incognito mode: {state}")
+        logger.info(f"Whisper mode: {state}")
         self._save_and_refresh()
         # #40: Toast warning when incognito toggles
         try:
             if self.cfg["incognito"]:
                 notify(
-                    "Incognito Mode Active",
-                    "No data saved to disk. Dictation recovery is OFF.",
+                    "Whisper Mode Active",
+                    "RAM only. No disk, no logs, no recovery.",
                 )
             else:
                 notify(
-                    "Incognito Mode Off",
+                    "Whisper Mode Off",
                     "Dictation data will be saved to disk",
                 )
         except Exception:
@@ -2936,7 +2934,7 @@ class WhisperSync:
         logger.info(f"  Middle-click: {self.cfg.get('middle_click', 'dictation')}")
         logger.info(f"Log file: {get_log_path()}")
         if self.cfg.get("incognito"):
-            logger.info("Incognito mode active -- dictation data not stored on disk")
+            logger.info("Whisper mode active - dictation data not stored on disk")
         if BackupTranscriber.is_enabled(self.cfg):
             backup_model = self.cfg.get("backup_model", "base")
             backup_device = self.cfg.get("backup_device", "cpu")
