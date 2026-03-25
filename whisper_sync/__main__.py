@@ -2540,13 +2540,12 @@ class WhisperSync:
         weekly_avg = weekly_stats.get_weekly_average("total_dictation_time")
 
         def _row(label, today_val, week_val):
-            """Format: 'Label: today_val          wk week_val'"""
+            """Format: 'Label: today_val | week_val' with aligned columns."""
             left = f"{label}: {today_val}"
-            right = f"wk {week_val}"
-            # Pad to align wk column (menus use proportional font, but
-            # spaces still give reasonable visual separation)
-            pad = max(1, 28 - len(left))
-            return f"{left}{' ' * pad}{right}"
+            right = str(week_val)
+            # Pad left side to align the vertical bar
+            pad = max(1, 24 - len(left))
+            return f"{left}{' ' * pad}| {right}"
 
         items = [
             pystray.MenuItem(f"Uptime: {hours}h {minutes}m", None, enabled=False),
