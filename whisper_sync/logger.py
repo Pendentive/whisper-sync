@@ -25,6 +25,7 @@ _C_YELLOW = "\033[33m"      # yellow for warnings
 _C_RED = "\033[31m"         # red for errors
 _C_MAGENTA = "\033[35m"     # magenta for transcription text
 _C_WHITE = "\033[37m"       # white for general info
+_C_SECONDARY = "\033[95m"  # light purple for backup/secondary operations
 
 # Enable ANSI on Windows
 if sys.platform == "win32":
@@ -82,6 +83,10 @@ class _ColorFormatter(logging.Formatter):
             msg_color = _C_CYAN
         else:
             msg_color = _C_WHITE
+
+        # Secondary flag overrides text color (backup/overlay operations)
+        if getattr(record, "secondary", False):
+            msg_color = _C_SECONDARY
 
         # Check if this is the verbose [WhisperSync] format
         if self._fmt and "WhisperSync" in self._fmt:
