@@ -26,6 +26,7 @@ _VALID_KEYS = {
     "suppress_llm_warning", "github_repo", "github_poll_interval",
     "github_notifications", "log_window", "device", "incognito",
     "always_available_dictation", "backup_device", "backup_model",
+    "toast_events",
 }
 
 

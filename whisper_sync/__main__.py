@@ -27,7 +27,9 @@ from . import config
 from .capture import AudioRecorder, get_default_devices, get_host_apis, list_devices, save_wav, save_stereo_wav
 from .icons import (idle_icon, recording_icon, dictation_icon, saving_icon,
                      transcribing_icon, done_icon, queued_icon, error_icon,
-                     dictation_during_recording_icon, dictation_during_transcription_icon)
+                     dictation_during_recording_icon, dictation_during_transcription_icon,
+                     build_icon, resolve_icon_key, ICON_REGISTRY, IconAnimator,
+                     yellow_flash_icon)
 from .logger import logger, get_log_path, set_console_level, log_dictation_result, log_meeting_result, log_transcript_preview
 from .model_status import get_model_status, download_model, bootstrap_models
 from .paste import paste
@@ -149,39 +151,26 @@ class WhisperSync:
                 logger.info(f"Migrated dictation logs -> {new_dict_dir}")
 
     def _update_icon(self):
+        """Render tray icon from current state via the declarative icon registry.
+
+        This is a shim that reads old-style state (self.mode, self._meeting_transcribing,
+        self._dictation_overlay) and delegates rendering to the new icon system.
+        Once all call sites migrate to StateManager.emit(), this method will be removed.
+        """
         if self.tray is None:
             return
-        # For meeting mode, check speaker loopback health for outer ring
         speaker_ok = getattr(self.recorder, "speaker_loopback_active", True) if hasattr(self, "recorder") else True
-
-        # Dictation overlay during meeting takes priority for icon display
-        if self._dictation_overlay:
-            if self.mode == "meeting":
-                icon, title = dictation_during_recording_icon(speaker_ok=speaker_ok), "Dictating (meeting recording)..."
-            elif self._meeting_transcribing:
-                icon, title = dictation_during_transcription_icon(), "Dictating (meeting transcribing)..."
-            else:
-                icon, title = dictation_icon(), "Dictating..."
-            self.tray.icon = icon
-            self.tray.title = f"WhisperSync: {title}"
-            return
-
-        icons = {
-            "meeting": (recording_icon(speaker_ok=speaker_ok), "Recording meeting..."),
-            "dictation": (dictation_icon(), "Dictating..."),
-            "saving": (saving_icon(), "Saving audio..."),
-            "transcribing": (transcribing_icon(), "Transcribing..."),
-            "done": (done_icon(), "Done!"),
-            "error": (error_icon(), "Error - check console"),
-        }
-        if self.mode:
-            icon, title = icons[self.mode]
-        elif self._meeting_transcribing:
-            icon, title = transcribing_icon(), "Transcribing meeting..."
-        else:
-            icon, title = idle_icon(), "Idle"
+        key = resolve_icon_key(
+            mode=self.mode,
+            meeting_transcribing=self._meeting_transcribing,
+            dictation_overlay=self._dictation_overlay,
+            speaker_ok=speaker_ok,
+        )
+        spec = ICON_REGISTRY[key]
+        progress = getattr(self, "_progress", None)
+        icon = build_icon(spec, progress=progress)
         self.tray.icon = icon
-        self.tray.title = f"WhisperSync: {title}"
+        self.tray.title = f"WhisperSync: {spec.tooltip}"
 
     def _yellow_flash(self):
         """Universal loading/queuing signal: two quick yellow flashes (150ms on/off/on)."""
