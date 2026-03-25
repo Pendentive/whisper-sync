@@ -1,4 +1,10 @@
-"""Configuration loader -- three-tier: defaults (shipped) + user overrides (config.json)."""
+"""Configuration loader -- three-tier: defaults (shipped) + user overrides (config.json).
+
+Supports an in-process override dict for subprocess isolation: when set via
+``override(cfg_snapshot)``, ``load()`` returns the snapshot instead of reading
+from disk.  This lets the backup worker subprocess pin its own device/model
+without touching the user's config file.
+"""
 
 import json
 from pathlib import Path
@@ -8,6 +14,9 @@ from .paths import get_config_path, get_legacy_config_path
 
 _DIR = Path(__file__).parent
 _DEFAULTS = _DIR / "config.defaults.json"
+
+# When set, load() returns this dict instead of reading from disk.
+_override: dict | None = None
 
 # Only these keys are persisted -- prevents stray objects from corrupting the file
 _VALID_KEYS = {
@@ -31,12 +40,29 @@ def _deep_merge(base: dict, overrides: dict) -> dict:
     return merged
 
 
+def override(cfg_snapshot: dict | None) -> None:
+    """Pin an in-process config override (or clear it with None).
+
+    When set, ``load()`` returns ``cfg_snapshot`` directly, bypassing the
+    config file on disk.  Used by the backup worker subprocess so that
+    transcribe.py sees the backup-specific device/model/compute_type.
+    """
+    global _override
+    _override = dict(cfg_snapshot) if cfg_snapshot is not None else None
+
+
 def load() -> dict:
     """Load defaults, then overlay user overrides from config.json if present.
+
+    If an in-process override has been set via ``override()``, returns that
+    instead of reading from disk.
 
     Checks output_dir/.whispersync/config.json first, then falls back to the
     legacy whisper_sync/config.json for backwards compatibility.
     """
+    if _override is not None:
+        return dict(_override)
+
     with open(_DEFAULTS) as f:
         cfg = json.load(f)
 

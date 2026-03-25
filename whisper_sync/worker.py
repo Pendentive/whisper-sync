@@ -109,6 +109,12 @@ def worker_main(request_queue, response_queue, cfg_snapshot: dict,
     logging.getLogger("whisperx.vads.pyannote").setLevel(logging.WARNING)
     logging.getLogger("whisperx.diarize").setLevel(logging.WARNING)
 
+    # Pin the config snapshot so transcribe.py's config.load() returns
+    # the spawner's cfg (including backup device/model overrides) instead
+    # of reading the user's config file from disk.
+    from . import config as _config_mod
+    _config_mod.override(cfg_snapshot)
+
     # Set model cache env vars before any torch/whisperx imports
     from .paths import get_model_cache
     _MODEL_CACHE = get_model_cache()

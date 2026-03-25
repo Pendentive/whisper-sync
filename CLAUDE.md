@@ -83,10 +83,13 @@ output_dir/
 - **Text style**: No em dash characters. Use single hyphens for asides.
 - **Author**: `--author="Pendentive <pendentive.info@gmail.com>"` for all commits.
 - **PRs**: Always wait for Copilot review before merging. Update docs in the same PR.
+- **Merging**: NEVER merge manually (gh pr merge, GitHub UI). All merges go through auto-merge workflow after Copilot review. No exceptions without explicit user approval in conversation first. See `.github/governance/policy.yaml`.
+- **Spec first**: Use superpowers:brainstorming to define spec, get user approval, then implement via PR.
 
 ## Guardrails
 
 ### Do NOT
+- Merge PRs manually (policy violation - logged by review-logger)
 - Modify `config.defaults.json` without updating `_VALID_KEYS` in `config.py`
 - Add blanket warning suppressions
 - Change multiprocessing context from "spawn"

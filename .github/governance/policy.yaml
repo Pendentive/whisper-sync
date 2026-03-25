@@ -6,6 +6,11 @@ merge_policy:
   auto_merge_enabled: true
   require_copilot_review: true
   require_zero_suggestions: true
+  manual_merge_prohibited: true
+  # All merges must go through auto-merge workflow after Copilot review.
+  # Manual gh pr merge or GitHub UI merge is a policy violation.
+  # The review-logger flags manual merges as anomalies.
+  # Emergency override: requires explicit user approval in conversation first.
   complexity_gates:
     low: auto
     medium: auto
