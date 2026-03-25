@@ -299,12 +299,12 @@ class WhisperSync:
                 # Dictation during meeting recording or meeting transcription
                 if self.cfg.get("always_available_dictation", True):
                     if self._backup.is_loading:
-                        logger.debug("Backup model still loading, triggering yellow flash")
+                        logger.debug("Backup model still loading, triggering yellow flash", extra={"secondary": True})
                         self._yellow_flash()
                         return
                     self._start_overlay_dictation()
                 else:
-                    logger.info("Dictation unavailable during meeting (always_available_dictation disabled)")
+                    logger.info("Dictation unavailable during meeting (always_available_dictation disabled)", extra={"secondary": True})
                     notify("Dictation unavailable", "Enable always-available dictation in settings")
             elif self.mode == "saving":
                 logger.debug("Dictation ignored - meeting is saving")
@@ -367,12 +367,13 @@ class WhisperSync:
                         backup_device = self.cfg.get("backup_device", "cpu")
                         logger.info(
                             f"Dictation (backup, {backup_device} {backup_model}): "
-                            f"{t1 - t0:.2f}s"
+                            f"{t1 - t0:.2f}s",
+                            extra={"secondary": True},
                         )
                     except Exception as backup_err:
                         # Backup failed - fall back to queuing on the main worker
-                        logger.warning(f"Backup transcriber failed: {backup_err}")
-                        logger.info("Falling back to main worker (queued)")
+                        logger.warning(f"Backup transcriber failed: {backup_err}", extra={"secondary": True})
+                        logger.info("Falling back to main worker (queued)", extra={"secondary": True})
                         self._flash_queued()
                         timeout = 180
                         text = self.worker.transcribe_fast(audio["mic"], model_override=dictation_model, timeout=timeout)
@@ -394,7 +395,7 @@ class WhisperSync:
                 if self.cfg.get("incognito"):
                     logger.info(f"Dictation: {t2 - t0:.2f}s -- {delivery} ({char_count} chars)")
                 else:
-                    log_dictation_result(text or "", t2 - t0, delivery, char_count)
+                    log_dictation_result(text or "", t2 - t0, delivery, char_count, secondary=used_backup)
                 effective_model = self.cfg.get("backup_model", "base") if used_backup else dictation_model
                 logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={effective_model}{' (backup)' if used_backup else ''}")
                 # Update session stats
@@ -450,8 +451,8 @@ class WhisperSync:
         meeting_state = "recording" if self.mode == "meeting" else "transcribing"
         backup_model = self.cfg.get("backup_model", "base")
         backup_device = self.cfg.get("backup_device", "cpu")
-        logger.info(f"Dictation requested during meeting {meeting_state} (using backup model)")
-        logger.info(f"Backup model: {backup_model} on {backup_device}")
+        logger.info(f"Dictation requested during meeting {meeting_state} (using backup model)", extra={"secondary": True})
+        logger.info(f"Backup model: {backup_model} on {backup_device}", extra={"secondary": True})
 
         # Create a separate recorder for dictation audio (mic only)
         self._overlay_recorder = AudioRecorder(sample_rate=self.cfg["sample_rate"])
@@ -460,7 +461,7 @@ class WhisperSync:
             mic = None
         self._overlay_recorder.start(mic_device=mic)
         self._dictation_overlay = True
-        logger.info("Dictation during meeting: recording started")
+        logger.info("Dictation during meeting: recording started", extra={"secondary": True})
         self._update_icon()
 
     def _stop_overlay_dictation(self):
@@ -475,14 +476,14 @@ class WhisperSync:
         self._update_icon()
 
         if "mic" not in audio:
-            logger.debug("Overlay dictation stopped - no audio captured")
+            logger.debug("Overlay dictation stopped - no audio captured", extra={"secondary": True})
             self._overlay_recorder = None
             return
 
         overlay_audio = audio["mic"]
         self._overlay_recorder = None
 
-        logger.info("Dictation during meeting: transcribing...")
+        logger.info("Dictation during meeting: transcribing...", extra={"secondary": True})
 
         def _process_overlay():
             import time as _time
@@ -497,7 +498,8 @@ class WhisperSync:
                 backup_device = self.cfg.get("backup_device", "cpu")
                 logger.info(
                     f"Dictation during meeting: {duration:.1f}s, {char_count} chars "
-                    f"(backup {backup_device} {backup_model})"
+                    f"(backup {backup_device} {backup_model})",
+                    extra={"secondary": True},
                 )
                 if text:
                     paste(text, self.cfg["paste_method"])
@@ -521,17 +523,17 @@ class WhisperSync:
 
                 delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
                 if incognito:
-                    logger.info(f"Overlay dictation: {duration:.2f}s - {delivery} ({char_count} chars)")
+                    logger.info(f"Overlay dictation: {duration:.2f}s - {delivery} ({char_count} chars)", extra={"secondary": True})
                 else:
-                    log_dictation_result(text or "", duration, delivery, char_count)
+                    log_dictation_result(text or "", duration, delivery, char_count, secondary=True)
 
             except Exception as e:
-                logger.error(f"Overlay dictation error: {e}")
+                logger.error(f"Overlay dictation error: {e}", extra={"secondary": True})
                 import traceback
                 logger.debug(traceback.format_exc())
                 # Fall back to queuing on main worker if backup fails
                 try:
-                    logger.info("Falling back to main worker for overlay dictation")
+                    logger.info("Falling back to main worker for overlay dictation", extra={"secondary": True})
                     dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
                     timeout = 180
                     text = self.worker.transcribe_fast(overlay_audio, model_override=dictation_model, timeout=timeout)
@@ -540,7 +542,7 @@ class WhisperSync:
                     t1 = _time.perf_counter()
                     duration = t1 - t0
                     char_count = len(text or "")
-                    logger.info(f"Overlay dictation fallback: {duration:.2f}s, {char_count} chars")
+                    logger.info(f"Overlay dictation fallback: {duration:.2f}s, {char_count} chars", extra={"secondary": True})
 
                     # Post-dictation bookkeeping (same as the normal overlay path)
                     self._stats["dictations"] += 1
@@ -561,11 +563,11 @@ class WhisperSync:
 
                     delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
                     if incognito:
-                        logger.info(f"Overlay dictation fallback: {duration:.2f}s - {delivery} ({char_count} chars)")
+                        logger.info(f"Overlay dictation fallback: {duration:.2f}s - {delivery} ({char_count} chars)", extra={"secondary": True})
                     else:
-                        log_dictation_result(text or "", duration, delivery, char_count)
+                        log_dictation_result(text or "", duration, delivery, char_count, secondary=True)
                 except Exception as fallback_err:
-                    logger.error(f"Overlay dictation fallback also failed: {fallback_err}")
+                    logger.error(f"Overlay dictation fallback also failed: {fallback_err}", extra={"secondary": True})
 
         threading.Thread(target=_process_overlay, daemon=True).start()
 
@@ -732,7 +734,7 @@ class WhisperSync:
                 self._overlay_recorder.stop()
                 self._overlay_recorder = None
                 self._dictation_overlay = False
-                logger.info("Overlay dictation discarded (left-click)")
+                logger.info("Overlay dictation discarded (left-click)", extra={"secondary": True})
                 self._update_icon()
                 return
 
@@ -2486,7 +2488,7 @@ class WhisperSync:
         if self.cfg.get("backup_device", "auto") == device:
             return
         self.cfg["backup_device"] = device
-        logger.info(f"Backup device: {device}")
+        logger.info(f"Backup device: {device}", extra={"secondary": True})
         self._backup.stop()
         self._backup.preload()
         self._save_and_refresh()
@@ -2495,7 +2497,7 @@ class WhisperSync:
         if self.cfg.get("backup_model", "base") == model_name:
             return
         self.cfg["backup_model"] = model_name
-        logger.info(f"Backup model: {model_name}")
+        logger.info(f"Backup model: {model_name}", extra={"secondary": True})
         self._backup.stop()
         self._backup.preload()
         self._save_and_refresh()
@@ -2712,7 +2714,7 @@ class WhisperSync:
         if BackupTranscriber.is_enabled(self.cfg):
             backup_model = self.cfg.get("backup_model", "base")
             backup_device = self.cfg.get("backup_device", "cpu")
-            logger.info(f"Always Available Dictation: on (backup model: {backup_model}, device: {backup_device})")
+            logger.info(f"Always Available Dictation: on (backup model: {backup_model}, device: {backup_device})", extra={"secondary": True})
         logger.info("Right-click tray icon for menu.")
 
         # Startup toast notification

@@ -61,19 +61,20 @@ class BackupTranscriber:
                 if backup_device in ("gpu", "cuda") and main_device != "cpu":
                     logger.warning(
                         "Backup model on GPU while main model also on GPU"
-                        " - may cause VRAM pressure"
+                        " - may cause VRAM pressure",
+                        extra={"secondary": True},
                     )
 
-                logger.info(f"Spawning backup worker ({backup_device}, {backup_model})...")
+                logger.info(f"Spawning backup worker ({backup_device}, {backup_model})...", extra={"secondary": True})
                 worker = TranscriptionWorker(backup_cfg, preload_model=backup_model)
                 worker.start()
 
                 if worker.wait_ready(timeout=30):
                     with self._spawn_lock:
                         self._worker = worker
-                    logger.info(f"Backup worker ready ({backup_device}, {backup_model})")
+                    logger.info(f"Backup worker ready ({backup_device}, {backup_model})", extra={"secondary": True})
                 else:
-                    logger.warning("Backup worker failed to start within 30s")
+                    logger.warning("Backup worker failed to start within 30s", extra={"secondary": True})
                     worker.stop()
             finally:
                 with self._spawn_lock:
@@ -111,7 +112,7 @@ class BackupTranscriber:
         """Shut down the backup subprocess."""
         with self._spawn_lock:
             if self._worker is not None:
-                logger.info("Stopping backup worker...")
+                logger.info("Stopping backup worker...", extra={"secondary": True})
                 self._worker.stop()
                 self._worker = None
 
