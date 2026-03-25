@@ -1,38 +1,90 @@
-"""Generate tray icons programmatically (no external assets needed)."""
+"""Generate tray icons programmatically (no external assets needed).
+
+The icon system uses a declarative registry (ICON_REGISTRY) mapping state
+keys to IconSpec dataclasses.  build_icon() renders any spec into a PIL
+Image, with optional progress-ring support (outer ring draws as a clockwise
+arc from 12 o'clock).
+
+resolve_icon_key() maps a composite AppState to the correct registry key.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from dataclasses import dataclass
 
 from PIL import Image, ImageDraw
 
 
-# --- Color constants ---
+# ---------------------------------------------------------------------------
+# Data model
+# ---------------------------------------------------------------------------
 
-COLOR_IDLE = "#808080"
-COLOR_RECORDING_OUTER = "#CC3333"       # Dark red - meeting outer ring
-COLOR_RECORDING_INNER = "#FF4444"       # Lighter red - meeting inner circle
-COLOR_RECORDING_FAIL = "#FFAA00"        # Yellow - channel failing during recording
-COLOR_TRANSCRIBING_OUTER = "#CC8800"    # Dark amber - meeting transcribing outer
-COLOR_TRANSCRIBING_INNER = "#FFAA00"    # Amber - meeting transcribing inner
-COLOR_DONE_OUTER = "#44CC44"            # Dark green - done outer ring
-COLOR_DONE_INNER = "#66FF66"            # Light green - done inner circle
-COLOR_DICTATION_INNER = "#4488FF"       # Blue - mic active
-COLOR_DICTATION_OUTER = "#CCCCCC"       # White/light gray - dictation outer ring
-COLOR_SAVING_OUTER = "#CC8800"          # Dark amber - saving outer ring
-COLOR_SAVING_INNER = "#FFAA00"          # Amber - saving inner circle
-COLOR_SUMMARIZING_OUTER = "#9944CC"     # Dark purple - summarizing outer ring
-COLOR_SUMMARIZING_INNER = "#CC66FF"     # Light purple - summarizing inner circle
-COLOR_QUEUED_OUTER = "#CC6600"          # Dark orange - queued outer ring
-COLOR_QUEUED_INNER = "#FF8800"          # Orange - queued inner circle
-COLOR_ERROR_OUTER = "#CC44CC"           # Dark magenta - error outer ring
-COLOR_ERROR_INNER = "#FF66FF"           # Light magenta - error inner circle
+@dataclass(frozen=True)
+class IconSpec:
+    """Declarative icon definition for a single app state."""
+
+    outer: str
+    """Hex color for the outer ring."""
+
+    middle: str
+    """Hex color for the middle filled circle."""
+
+    inner: str | None = None
+    """Optional hex color for the inner dot (dictation overlay)."""
+
+    tooltip: str = ""
+    """Tray tooltip suffix (shown as 'WhisperSync: {tooltip}')."""
 
 
-def _make_three_ring_icon(outer_color: str, middle_color: str,
-                          inner_color: str | None = None, size: int = 64) -> Image.Image:
-    """Generate icon with outer ring + middle filled circle + optional inner dot.
+# ---------------------------------------------------------------------------
+# Icon registry - single source of truth for all visual states
+# ---------------------------------------------------------------------------
 
-    - Outer ring: 3px wide, 2px margin
-    - Gap: 2px transparent
-    - Middle circle: filled, remaining space
-    - Inner dot: ~4px radius, centered (only for overlay dictation)
+ICON_REGISTRY: dict[str, IconSpec] = {
+    # Idle
+    "idle": IconSpec("#808080", "#808080", tooltip="Idle"),
+
+    # Meeting states
+    "recording.meeting":              IconSpec("#CC3333", "#FF4444", tooltip="Recording meeting..."),
+    "recording.meeting.speaker_fail": IconSpec("#FFAA00", "#FF4444", tooltip="Recording (speaker issue)"),
+
+    # Dictation states
+    "dictation":                              IconSpec("#CCCCCC", "#4488FF", tooltip="Dictating..."),
+    "dictation.overlay.meeting":              IconSpec("#CC3333", "#FF4444", "#4488FF", tooltip="Dictating (meeting)..."),
+    "dictation.overlay.meeting.speaker_fail": IconSpec("#FFAA00", "#FF4444", "#4488FF", tooltip="Dictating (meeting, speaker issue)..."),
+    "dictation.overlay.transcribing":         IconSpec("#CC8800", "#FFAA00", "#4488FF", tooltip="Dictating (transcribing)..."),
+
+    # Pipeline states
+    "saving":        IconSpec("#CC8800", "#FFAA00", tooltip="Saving audio..."),
+    "transcribing":  IconSpec("#CC8800", "#FFAA00", tooltip="Transcribing..."),
+    "summarizing":   IconSpec("#9944CC", "#CC66FF", tooltip="Summarizing..."),
+    "queued":        IconSpec("#CC6600", "#FF8800", tooltip="Queued..."),
+
+    # Terminal states
+    "done":  IconSpec("#44CC44", "#66FF66", tooltip="Done!"),
+    "error": IconSpec("#CC44CC", "#FF66FF", tooltip="Error"),
+
+    # Animation frames
+    "flash": IconSpec("#FFCC00", "#FFCC00", tooltip="Loading..."),
+}
+
+
+# ---------------------------------------------------------------------------
+# Icon builder
+# ---------------------------------------------------------------------------
+
+def build_icon(spec: IconSpec, progress: float | None = None,
+               size: int = 64) -> Image.Image:
+    """Render an icon from a spec.
+
+    Args:
+        spec: IconSpec defining colors.
+        progress: If 0.0-1.0, outer ring draws as a clockwise arc starting
+            at 12 o'clock.  None or >= 1.0 draws the full ring.  0.0 draws
+            no outer ring (just the middle circle).
+        size: Canvas size in pixels.
     """
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -40,105 +92,184 @@ def _make_three_ring_icon(outer_color: str, middle_color: str,
     margin = 2
     ring_width = 3
     gap = 2
-
-    # Outer ring
     outer_r = size - margin
-    draw.ellipse([margin, margin, outer_r - 1, outer_r - 1], fill=outer_color)
-    inner_of_ring = margin + ring_width
-    draw.ellipse(
-        [inner_of_ring, inner_of_ring,
-         outer_r - 1 - ring_width, outer_r - 1 - ring_width],
-        fill=(0, 0, 0, 0),
-    )
+
+    # Outer ring (full, partial arc, or absent)
+    if progress is not None and 0.0 < progress < 1.0:
+        start_angle = -90  # 12 o'clock in PIL coordinates
+        sweep = 360 * progress
+        draw.arc(
+            [margin, margin, outer_r - 1, outer_r - 1],
+            start_angle, start_angle + sweep,
+            fill=spec.outer, width=ring_width,
+        )
+    elif progress is None or progress >= 1.0:
+        draw.ellipse([margin, margin, outer_r - 1, outer_r - 1], fill=spec.outer)
+        inner_of_ring = margin + ring_width
+        draw.ellipse(
+            [inner_of_ring, inner_of_ring,
+             outer_r - 1 - ring_width, outer_r - 1 - ring_width],
+            fill=(0, 0, 0, 0),
+        )
+    # else: progress == 0.0 - no outer ring drawn
 
     # Middle filled circle (after gap)
     mid_start = margin + ring_width + gap
     mid_end = size - margin - ring_width - gap
     if mid_end > mid_start:
-        draw.ellipse([mid_start, mid_start, mid_end - 1, mid_end - 1], fill=middle_color)
+        draw.ellipse([mid_start, mid_start, mid_end - 1, mid_end - 1],
+                     fill=spec.middle)
 
     # Inner dot (overlay dictation indicator)
-    if inner_color is not None:
+    if spec.inner is not None:
         dot_radius = 4
         cx, cy = size // 2, size // 2
         draw.ellipse(
-            [cx - dot_radius, cy - dot_radius, cx + dot_radius - 1, cy + dot_radius - 1],
-            fill=inner_color,
+            [cx - dot_radius, cy - dot_radius,
+             cx + dot_radius - 1, cy + dot_radius - 1],
+            fill=spec.inner,
         )
 
     return img
 
 
-def _circle_icon(color: str, size: int = 64) -> Image.Image:
-    """Backward-compat wrapper - both rings same color."""
-    return _make_three_ring_icon(color, color, size=size)
+# ---------------------------------------------------------------------------
+# State-to-key resolver
+# ---------------------------------------------------------------------------
+
+def resolve_icon_key(mode: str | None = None,
+                     meeting_transcribing: bool = False,
+                     dictation_overlay: bool = False,
+                     speaker_ok: bool = True) -> str:
+    """Map composite app state to an ICON_REGISTRY key.
+
+    Accepts individual fields rather than an AppState to avoid a circular
+    import (state_manager imports from icons).
+    """
+    if dictation_overlay:
+        if mode == "meeting":
+            return ("dictation.overlay.meeting.speaker_fail"
+                    if not speaker_ok else "dictation.overlay.meeting")
+        if meeting_transcribing:
+            return "dictation.overlay.transcribing"
+        return "dictation"
+
+    if mode == "meeting":
+        return "recording.meeting" if speaker_ok else "recording.meeting.speaker_fail"
+    if mode:
+        return mode  # "dictation", "saving", "transcribing", "done", "error"
+    if meeting_transcribing:
+        return "transcribing"
+    return "idle"
 
 
-# --- Public icon constructors ---
-# Each returns a PIL Image suitable for pystray.
-# Meeting icons accept speaker_ok to reflect loopback health.
+# ---------------------------------------------------------------------------
+# Icon animator
+# ---------------------------------------------------------------------------
 
+class IconAnimator:
+    """Frame-by-frame icon animations in background threads."""
+
+    def __init__(self, tray):
+        self._tray = tray
+        self._cancel = threading.Event()
+
+    def flash(self, count: int = 2, interval_ms: int = 150):
+        """Yellow double-flash (universal loading/queuing signal)."""
+        if self._tray is None:
+            return
+        self._cancel.clear()
+
+        def _run():
+            original = self._tray.icon
+            flash_img = build_icon(ICON_REGISTRY["flash"])
+            for _ in range(count):
+                if self._cancel.is_set():
+                    break
+                self._tray.icon = flash_img
+                time.sleep(interval_ms / 1000)
+                self._tray.icon = original
+                time.sleep(interval_ms / 1000)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def flash_between(self, key_a: str, key_b: str,
+                      count: int = 2, interval_ms: int = 150):
+        """Alternating flash between two icon states (e.g., queued/transcribing)."""
+        if self._tray is None:
+            return
+        self._cancel.clear()
+
+        def _run():
+            img_a = build_icon(ICON_REGISTRY[key_a])
+            img_b = build_icon(ICON_REGISTRY[key_b])
+            for _ in range(count):
+                if self._cancel.is_set():
+                    break
+                self._tray.icon = img_a
+                self._tray.title = f"WhisperSync: {ICON_REGISTRY[key_a].tooltip}"
+                time.sleep(interval_ms / 1000)
+                self._tray.icon = img_b
+                self._tray.title = f"WhisperSync: {ICON_REGISTRY[key_b].tooltip}"
+                time.sleep(interval_ms / 1000)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def cancel(self):
+        """Stop current animation."""
+        self._cancel.set()
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible icon functions (deprecated, used during migration)
+# ---------------------------------------------------------------------------
 
 def idle_icon() -> Image.Image:
-    return _make_three_ring_icon(COLOR_IDLE, COLOR_IDLE)
+    return build_icon(ICON_REGISTRY["idle"])
 
 
 def recording_icon(speaker_ok: bool = True) -> Image.Image:
-    """Meeting recording - outer ring reflects speaker loopback status."""
-    outer = COLOR_RECORDING_OUTER if speaker_ok else COLOR_RECORDING_FAIL
-    return _make_three_ring_icon(outer, COLOR_RECORDING_INNER)
+    key = "recording.meeting" if speaker_ok else "recording.meeting.speaker_fail"
+    return build_icon(ICON_REGISTRY[key])
 
 
 def dictation_icon() -> Image.Image:
-    """Dictation - outer white/gray, middle blue."""
-    return _make_three_ring_icon(COLOR_DICTATION_OUTER, COLOR_DICTATION_INNER)
+    return build_icon(ICON_REGISTRY["dictation"])
 
 
 def dictation_during_recording_icon(speaker_ok: bool = True) -> Image.Image:
-    """Dictation active during meeting recording.
-
-    Outer ring = dark red (meeting still recording), or yellow if speaker
-    loopback is unhealthy.
-    Middle = red (recording).
-    Inner dot = blue (dictation active).
-    """
-    outer = COLOR_RECORDING_OUTER if speaker_ok else COLOR_RECORDING_FAIL
-    return _make_three_ring_icon(outer, COLOR_RECORDING_INNER, COLOR_DICTATION_INNER)
+    key = ("dictation.overlay.meeting" if speaker_ok
+           else "dictation.overlay.meeting.speaker_fail")
+    return build_icon(ICON_REGISTRY[key])
 
 
 def dictation_during_transcription_icon() -> Image.Image:
-    """Dictation active during meeting transcription.
-
-    Outer ring = dark amber (meeting transcribing).
-    Middle = amber (transcribing).
-    Inner dot = blue (dictation active).
-    """
-    return _make_three_ring_icon(COLOR_TRANSCRIBING_OUTER, COLOR_TRANSCRIBING_INNER, COLOR_DICTATION_INNER)
+    return build_icon(ICON_REGISTRY["dictation.overlay.transcribing"])
 
 
 def saving_icon() -> Image.Image:
-    return _make_three_ring_icon(COLOR_SAVING_OUTER, COLOR_SAVING_INNER)
+    return build_icon(ICON_REGISTRY["saving"])
 
 
 def transcribing_icon() -> Image.Image:
-    return _make_three_ring_icon(COLOR_TRANSCRIBING_OUTER, COLOR_TRANSCRIBING_INNER)
+    return build_icon(ICON_REGISTRY["transcribing"])
 
 
 def done_icon() -> Image.Image:
-    return _make_three_ring_icon(COLOR_DONE_OUTER, COLOR_DONE_INNER)
+    return build_icon(ICON_REGISTRY["done"])
 
 
 def summarizing_icon() -> Image.Image:
-    return _make_three_ring_icon(COLOR_SUMMARIZING_OUTER, COLOR_SUMMARIZING_INNER)
+    return build_icon(ICON_REGISTRY["summarizing"])
 
 
 def queued_icon() -> Image.Image:
-    return _make_three_ring_icon(COLOR_QUEUED_OUTER, COLOR_QUEUED_INNER)
+    return build_icon(ICON_REGISTRY["queued"])
 
 
 def error_icon() -> Image.Image:
-    return _make_three_ring_icon(COLOR_ERROR_OUTER, COLOR_ERROR_INNER)
+    return build_icon(ICON_REGISTRY["error"])
 
 
 def yellow_flash_icon(size: int = 64) -> Image.Image:
-    return _make_three_ring_icon("#FFCC00", "#FFCC00", size=size)
+    return build_icon(ICON_REGISTRY["flash"], size=size)

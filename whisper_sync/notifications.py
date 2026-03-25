@@ -136,6 +136,93 @@ def notify_progress(title: str, caption: str, *, progress=None, progress_overrid
         _logger.info(f"[toast] {title}: {caption}")
 
 
+def notify_update(tag: str, title: str, body: str, *, progress=None):
+    """Update an existing toast in-place by tag, or create if not exists.
+
+    Toasts with the same tag+group replace each other without spawning a
+    new popup.  Useful for transcription progress updates.
+
+    Args:
+        tag: Unique tag for this toast (e.g. "transcription").
+        title: Notification title.
+        body: Notification body text.
+        progress: Optional float 0.0-1.0 for progress bar.
+    """
+    if not _available:
+        _logger.info(f"[toast] {title}: {body}")
+        return
+
+    try:
+        toast = Toast([title, body])
+        toast.tag = tag
+        toast.group = "whispersync"
+        if progress is not None and _has_progress_bar:
+            toast.progress_bar = ToastProgressBar("", "", progress=progress)
+        _toaster.show_toast(toast)
+    except Exception as exc:
+        _logger.debug(f"Toast update failed: {exc}")
+        _logger.info(f"[toast] {title}: {body}")
+
+
 def has_input_text_box():
     """Return True if ToastInputTextBox is available for speaker ID via toast."""
     return _has_input_text_box
+
+
+# ---------------------------------------------------------------------------
+# Toast listener for StateManager integration
+# ---------------------------------------------------------------------------
+
+# Toast templates keyed by event type.  Only events listed here AND enabled
+# in config["toast_events"] will trigger a toast.
+TOAST_REGISTRY: dict[str, dict] = {
+    "meeting_completed": {
+        "title": "Meeting transcribed",
+        "body": "{words} words, {speakers} speakers",
+    },
+    "dictation_completed": {
+        "title": "Dictation complete",
+        "body": "{words} words",
+    },
+    "error": {
+        "title": "WhisperSync Error",
+        "body": "{message}",
+    },
+    "pr_status_changed": {
+        "title": "PR #{number}: {review_state}",
+        "body": "{title}",
+    },
+}
+
+# Default event types that trigger toasts (stored as list in config.json)
+DEFAULT_TOAST_EVENTS = ["meeting_completed", "error", "pr_status_changed"]
+
+
+class ToastListener:
+    """State event subscriber that shows configurable Windows toasts.
+
+    Register with StateManager.on_any() to receive all events.  Only events
+    whose type is in config["toast_events"] AND has a TOAST_REGISTRY entry
+    will produce a toast.
+    """
+
+    def __init__(self, config: dict):
+        self._config = config
+
+    def __call__(self, event) -> None:
+        enabled = set(self._config.get("toast_events", DEFAULT_TOAST_EVENTS))
+        if event.type not in enabled:
+            return
+
+        template = TOAST_REGISTRY.get(event.type)
+        if not template:
+            return
+
+        try:
+            title = template["title"].format(**event.data)
+            body = template.get("body", "")
+            if body:
+                body = body.format(**event.data)
+            notify(title, body)
+        except (KeyError, IndexError) as exc:
+            _logger.debug(f"Toast template format error for {event.type}: {exc}")
