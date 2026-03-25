@@ -28,6 +28,9 @@ jobs:
           fetch-depth: 0
           ref: dev
 
+      - name: Install dependencies
+        run: npm install js-yaml
+
       - name: Collect and log PR data
         uses: actions/github-script@v7
         with:
