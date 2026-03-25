@@ -91,8 +91,6 @@ class WhisperSync:
         self.cfg = config.load()
         set_console_level(self.cfg.get("log_window", "normal"))
         self.recorder = AudioRecorder(sample_rate=self.cfg["sample_rate"])
-        self.mode = None  # None, "dictation", "meeting", "saving", "transcribing", "done", "error"
-        self._meeting_transcribing = False  # True while meeting transcription runs in background
         self.tray = None
         self.state = None  # Initialized after tray creation in run()
         self._lock = threading.Lock()
@@ -102,7 +100,6 @@ class WhisperSync:
         dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
         self.worker = TranscriptionWorker(self.cfg, preload_model=dictation_model)
         self._backup = BackupTranscriber(self.cfg)
-        self._dictation_overlay = False  # True while dictation runs during a meeting
         self._overlay_recorder = None    # Separate AudioRecorder for dictation during meetings
         self._github_poller = None
         self._github_prs = []
@@ -156,28 +153,6 @@ class WhisperSync:
                             shutil.copy2(f, dest)
                 logger.info(f"Migrated dictation logs -> {new_dict_dir}")
 
-    def _update_icon(self):
-        """Render tray icon from current state via the declarative icon registry.
-
-        This is a shim that reads old-style state (self.mode, self._meeting_transcribing,
-        self._dictation_overlay) and delegates rendering to the new icon system.
-        Once all call sites migrate to StateManager.emit(), this method will be removed.
-        """
-        if self.tray is None:
-            return
-        speaker_ok = getattr(self.recorder, "speaker_loopback_active", True) if hasattr(self, "recorder") else True
-        key = resolve_icon_key(
-            mode=self.mode,
-            meeting_transcribing=self._meeting_transcribing,
-            dictation_overlay=self._dictation_overlay,
-            speaker_ok=speaker_ok,
-        )
-        spec = ICON_REGISTRY[key]
-        progress = getattr(self, "_progress", None)
-        icon = build_icon(spec, progress=progress)
-        self.tray.icon = icon
-        self.tray.title = f"WhisperSync: {spec.tooltip}"
-
     def _yellow_flash(self):
         """Universal loading/queuing signal: two quick yellow flashes (150ms on/off/on)."""
         if getattr(self, '_flashing', False):
@@ -203,8 +178,8 @@ class WhisperSync:
     def _on_left_click(self):
         # Left-click while dictating = discard (stop recording, throw away audio)
         current = self.state.current if self.state else None
-        mode = current.mode if current else self.mode
-        overlay = current.dictation_overlay if current else self._dictation_overlay
+        mode = current.mode if current else None
+        overlay = current.dictation_overlay if current else False
         if mode == "dictation" or overlay:
             self._discard_dictation()
             return
@@ -267,15 +242,15 @@ class WhisperSync:
 
     def _can_record(self) -> bool:
         """Can we start a new recording? Allowed if idle or just transcribing in background."""
-        mode = self.state.current.mode if self.state else self.mode
+        mode = self.state.current.mode if self.state else None
         return mode is None or mode in ("transcribing", "done", "error")
 
     def toggle_dictation(self):
         with self._lock:
             current = self.state.current if self.state else None
-            mode = current.mode if current else self.mode
-            overlay = current.dictation_overlay if current else self._dictation_overlay
-            meeting_tx = current.meeting_transcribing if current else self._meeting_transcribing
+            mode = current.mode if current else None
+            overlay = current.dictation_overlay if current else False
+            meeting_tx = current.meeting_transcribing if current else False
 
             # Handle overlay dictation during meetings
             if overlay:
@@ -304,7 +279,7 @@ class WhisperSync:
         return get_dictation_log_dir()
 
     def _start_dictation(self):
-        _meeting_tx = self.state.current.meeting_transcribing if self.state else self._meeting_transcribing
+        _meeting_tx = self.state.current.meeting_transcribing if self.state else False
         if not self.worker.is_ready() and not (_meeting_tx and BackupTranscriber.is_enabled(self.cfg)):
             logger.warning("Worker not ready yet - ignoring dictation request")
             return
@@ -432,7 +407,7 @@ class WhisperSync:
         # Note: always_available_dictation config flag already gates the call to
         # this method in toggle_dictation(), so no need to re-check is_enabled() here.
 
-        meeting_state = "recording" if (self.state.current.mode if self.state else self.mode) == "meeting" else "transcribing"
+        meeting_state = "recording" if (self.state.current.mode if self.state else None) == "meeting" else "transcribing"
         backup_model = self.cfg.get("backup_model", "base")
         backup_device = self.cfg.get("backup_device", "cpu")
         logger.info(f"Dictation requested during meeting {meeting_state} (using backup model)", extra={"secondary": True})
@@ -444,19 +419,16 @@ class WhisperSync:
         if self.cfg.get("use_system_devices", True):
             mic = None
         self._overlay_recorder.start(mic_device=mic)
-        self._dictation_overlay = True
         logger.info("Dictation during meeting: recording started", extra={"secondary": True})
         self.state.emit(DICTATION_STARTED, dictation_overlay=True)
 
     def _stop_overlay_dictation(self):
         """Stop overlay dictation, transcribe with backup model, paste result."""
         if not self._overlay_recorder:
-            self._dictation_overlay = False
             self.state.emit(IDLE, dictation_overlay=False)
             return
 
         audio = self._overlay_recorder.stop()
-        self._dictation_overlay = False
         self.state.emit(DICTATION_COMPLETED, dictation_overlay=False)
 
         if "mic" not in audio:
@@ -711,16 +683,15 @@ class WhisperSync:
         """Discard current dictation - stop recording, throw away audio, return to idle."""
         with self._lock:
             # Handle overlay dictation discard
-            _overlay = self.state.current.dictation_overlay if self.state else self._dictation_overlay
+            _overlay = self.state.current.dictation_overlay if self.state else False
             if _overlay and self._overlay_recorder:
                 self._overlay_recorder.stop()
                 self._overlay_recorder = None
-                self._dictation_overlay = False
                 logger.info("Overlay dictation discarded (left-click)", extra={"secondary": True})
                 self.state.emit(DICTATION_DISCARDED, dictation_overlay=False)
                 return
 
-            if (self.state.current.mode if self.state else self.mode) != "dictation":
+            if (self.state.current.mode if self.state else None) != "dictation":
                 return
             self.recorder.stop()  # stop recording, discard the audio
             self.recorder.stop_streaming()
@@ -731,7 +702,7 @@ class WhisperSync:
 
     def toggle_meeting(self):
         with self._lock:
-            mode = self.state.current.mode if self.state else self.mode
+            mode = self.state.current.mode if self.state else None
             if mode == "meeting":
                 self._stop_meeting()
             elif self._can_record():
@@ -2701,10 +2672,6 @@ class WhisperSync:
             icon = build_icon(spec, progress=progress)
             self.tray.icon = icon
             self.tray.title = f"WhisperSync: {spec.tooltip}"
-            # Keep old vars in sync for any code paths not yet migrated
-            self.mode = s.mode
-            self._meeting_transcribing = s.meeting_transcribing
-            self._dictation_overlay = s.dictation_overlay
         self.state.on_any(_on_state_change)
 
         # Register toast notification listener
