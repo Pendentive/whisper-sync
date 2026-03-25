@@ -25,11 +25,8 @@ import pystray
 
 from . import config
 from .capture import AudioRecorder, get_default_devices, get_host_apis, list_devices, save_wav, save_stereo_wav
-from .icons import (idle_icon, recording_icon, dictation_icon, saving_icon,
-                     transcribing_icon, done_icon, queued_icon, error_icon,
-                     dictation_during_recording_icon, dictation_during_transcription_icon,
-                     build_icon, resolve_icon_key, ICON_REGISTRY, IconAnimator,
-                     yellow_flash_icon)
+from .icons import (idle_icon, build_icon, resolve_icon_key, ICON_REGISTRY,
+                     IconAnimator)
 from .logger import logger, get_log_path, set_console_level, log_dictation_result, log_meeting_result, log_transcript_preview
 from .model_status import get_model_status, download_model, bootstrap_models
 from .paste import paste
@@ -186,7 +183,6 @@ class WhisperSync:
         if getattr(self, '_flashing', False):
             return
         self._flashing = True
-        from .icons import IconAnimator
         animator = IconAnimator(self.tray)
         animator.flash(count=2, interval_ms=150)
         # Reset flag after animation completes (~600ms)
@@ -266,7 +262,6 @@ class WhisperSync:
 
     def _flash_queued(self):
         """Rapid amber flash to indicate dictation is queued behind a meeting stage."""
-        from .icons import IconAnimator
         animator = IconAnimator(self.tray)
         animator.flash_between("queued", "transcribing", count=2, interval_ms=150)
 

@@ -16,17 +16,18 @@ Local speech-to-text for Windows. GPU-accelerated transcription with speaker dia
 
 | Module | Purpose |
 |--------|---------|
-| `__main__.py` | Entry point. Tray icon, hotkeys, mode state machine, recording flows, GitHub status, incognito, session stats |
+| `__main__.py` | Entry point. Tray icon, hotkeys, recording flows, GitHub status, incognito, session stats. Uses StateManager for all state transitions. |
+| `state_manager.py` | Observable state machine. AppState dataclass, typed StateEvent, event constants, thread-safe emit(), listener subscriptions (on/on_any), event log ringbuffer. All icon/toast updates flow through here. |
 | `transcribe.py` | WhisperX with persistent model cache. Fast path (dictation) and staged pipeline (meeting) |
 | `worker.py` | Multiprocessing transcription worker. CUDA isolation via spawn context |
 | `worker_manager.py` | Spawns/manages worker subprocess. Crash detection and auto-respawn |
 | `capture.py` | Mic + WASAPI loopback recording via sounddevice/PyAudioWPatch |
 | `channel_merge.py` | Per-channel diarization with confidence fusion for stereo recordings |
-| `config.py` | Config load/save. Merges defaults with user overrides. Only `_VALID_KEYS` persisted |
+| `config.py` | Config load/save. Merges defaults with user overrides. Only `_VALID_KEYS` persisted. Includes `toast_events` for notification config. |
 | `paths.py` | Data directory resolution. Standalone vs repo mode. All `.whispersync/` accessors |
 | `logger.py` | Tiered logging (off/normal/detailed/verbose). File handler always DEBUG |
-| `icons.py` | Dual-ring tray icon generation via PIL. No external image assets |
-| `notifications.py` | Windows toast notifications with button callbacks |
+| `icons.py` | Declarative icon registry (ICON_REGISTRY + IconSpec). build_icon() with progress-ring arc. IconAnimator for flash animations. Backward-compat wrappers for migration. |
+| `notifications.py` | Windows toast notifications with button callbacks. ToastListener (state event subscriber), TOAST_REGISTRY (configurable templates), notify_update() for in-place toasts via Tag/Group. |
 | `github_status.py` | Background PR polling via `gh` CLI. Copilot review state tracking |
 | `speakers.py` | AI speaker identification via Claude CLI |
 | `dictation_log.py` | Append-only daily markdown logs in `.whispersync/dictation-logs/` |
@@ -48,7 +49,7 @@ Two-phase bootstrap:
 
 Load order: defaults -> real config -> legacy config (fallback).
 
-Key settings: `model`, `dictation_model`, `output_dir`, `device` (auto/cpu/cuda), `hotkeys`, `paste_method`, `log_window`, `incognito`, `github_repo`, `left_click`, `middle_click`.
+Key settings: `model`, `dictation_model`, `output_dir`, `device` (auto/cpu/cuda), `hotkeys`, `paste_method`, `log_window`, `incognito`, `github_repo`, `left_click`, `middle_click`, `toast_events` (list of event types that trigger Windows toasts).
 
 ## Data Directory
 
@@ -77,7 +78,8 @@ output_dir/
 - **Config changes**: `config.save(cfg)` only. Never write config files directly.
 - **Worker comms**: Request/response queues with `request_id`. No shared state.
 - **Worker errors**: Catch exceptions, send `{type: "error", ...}`. Never let exceptions kill silently.
-- **Icons**: Generated in `icons.py`. No external image/font assets.
+- **Icons**: Generated via `icons.py` ICON_REGISTRY. No external image/font assets. Add new states by adding an IconSpec to the registry.
+- **State changes**: Always via `self.state.emit(EVENT, mode=..., data=...)`. Never set `self.mode` directly.
 - **Warning suppression**: Scoped only. Must specify `message=`, `category=`, and/or `module=`.
 - **Commits**: `fix(whisper-sync):`, `feat(whisper-sync):`, `ci:`, `docs:` prefixes.
 - **Text style**: No em dash characters. Use single hyphens for asides.
