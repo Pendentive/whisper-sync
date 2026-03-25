@@ -336,6 +336,7 @@ class WhisperSync:
         if not self.worker.is_ready() and not (_meeting_tx and BackupTranscriber.is_enabled(self.cfg)):
             logger.warning("Worker not ready yet - ignoring dictation request")
             self._feature_suggest_active = False
+            self._yellow_flash()
             return
         self.state.emit(DICTATION_STARTED, mode="dictation")
         mic = self.cfg.get("mic_device")
