@@ -39,6 +39,7 @@ from .worker_manager import TranscriptionWorker, WorkerCrashedError
 from .backup_worker import BackupTranscriber
 from . import dictation_log
 from . import feature_log
+from . import weekly_stats
 from .streaming_wav import fix_orphan
 from .crash_diagnostics import install_excepthook, check_previous_crash
 from .flatten import flatten as flatten_transcript
@@ -423,6 +424,7 @@ class WhisperSync:
                         logger.info(f"Feature suggestion saved: {char_count} chars in {t2 - t0:.2f}s")
                         notify("Feature saved", f"Suggestion recorded ({char_count} chars)")
                         self._stats["feature_suggestions"] += 1
+                        weekly_stats.record_feature_suggestion()
                         # Format asynchronously via Claude CLI
                         threading.Thread(
                             target=self._format_feature_async,
@@ -444,6 +446,7 @@ class WhisperSync:
                     self._stats["dictations"] += 1
                     self._stats["total_dictation_chars"] += char_count
                     self._stats["total_dictation_time"] += t2 - t0
+                    weekly_stats.record_dictation(char_count, t2 - t0)
                     incognito = self.cfg.get("incognito", False)
                     if text and not incognito:
                         dictation_log.append(text, t2 - t0)
@@ -554,6 +557,7 @@ class WhisperSync:
                         logger.info(f"Feature suggestion (overlay) saved: {char_count} chars in {duration:.2f}s", extra={"secondary": True})
                         notify("Feature saved", f"Suggestion recorded ({char_count} chars)")
                         self._stats["feature_suggestions"] += 1
+                        weekly_stats.record_feature_suggestion()
                         threading.Thread(
                             target=self._format_feature_async,
                             args=(text, entry_id),
@@ -567,6 +571,7 @@ class WhisperSync:
                     self._stats["dictations"] += 1
                     self._stats["total_dictation_chars"] += char_count
                     self._stats["total_dictation_time"] += duration
+                    weekly_stats.record_dictation(char_count, duration)
 
                     incognito = self.cfg.get("incognito", False)
                     if text and not incognito:
@@ -607,6 +612,7 @@ class WhisperSync:
                     self._stats["dictations"] += 1
                     self._stats["total_dictation_chars"] += char_count
                     self._stats["total_dictation_time"] += duration
+                    weekly_stats.record_dictation(char_count, duration)
 
                     incognito = self.cfg.get("incognito", False)
                     if text and not incognito:
@@ -1483,6 +1489,7 @@ class WhisperSync:
                 self._stats["meetings"] += 1
                 self._stats["total_meeting_seconds"] += int(_meet_duration)
                 self._stats["total_meeting_words"] += _meet_words
+                weekly_stats.record_meeting(int(_meet_duration), _meet_words)
 
                 # Log speaker previews at TRANSCRIPT level (detailed tier)
                 _meet_segments = result.get("speaker_segments")
@@ -2453,25 +2460,32 @@ class WhisperSync:
         logger.info(f"Output folder changed to: {new_path}")
 
     def _build_session_stats_menu(self):
-        """Build session stats submenu items."""
+        """Build session stats submenu items with weekly and lifetime context."""
         s = self._stats
         uptime = datetime.now() - s["session_start"]
         hours, remainder = divmod(int(uptime.total_seconds()), 3600)
         minutes = remainder // 60
         avg_dict_time = s["total_dictation_time"] / s["dictations"] if s["dictations"] else 0
 
+        week = weekly_stats.get_current_week()
+        lifetime = weekly_stats.get_lifetime()
+        weekly_avg = weekly_stats.get_weekly_average("total_dictation_time")
+
         items = [
             pystray.MenuItem(f"Session uptime: {hours}h {minutes}m", None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(f"Dictations: {s['dictations']}", None, enabled=False),
-            pystray.MenuItem(f"Avg dictation time: {avg_dict_time:.2f}s", None, enabled=False),
-            pystray.MenuItem(f"Total chars dictated: {s['total_dictation_chars']:,}", None, enabled=False),
+            pystray.MenuItem(f"Dictations: {s['dictations']} today | {week.get('dictations', 0)} this week", None, enabled=False),
+            pystray.MenuItem(f"Avg dictation: {avg_dict_time:.2f}s | {weekly_avg:.2f}s weekly", None, enabled=False),
+            pystray.MenuItem(f"Chars dictated: {s['total_dictation_chars']:,} today | {week.get('total_dictation_chars', 0):,} this week", None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(f"Meetings: {s['meetings']}", None, enabled=False),
-            pystray.MenuItem(f"Total meeting time: {s['total_meeting_seconds'] // 60}m", None, enabled=False),
-            pystray.MenuItem(f"Total meeting words: {s['total_meeting_words']:,}", None, enabled=False),
+            pystray.MenuItem(f"Meetings: {s['meetings']} today | {week.get('meetings', 0)} this week", None, enabled=False),
+            pystray.MenuItem(f"Meeting time: {s['total_meeting_seconds'] // 60}m today | {week.get('total_meeting_seconds', 0) // 60}m this week", None, enabled=False),
+            pystray.MenuItem(f"Meeting words: {s['total_meeting_words']:,} today | {week.get('total_meeting_words', 0):,} this week", None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(f"Feature suggestions: {s['feature_suggestions']}", None, enabled=False),
+            pystray.MenuItem(f"Features: {s['feature_suggestions']} today | {week.get('feature_suggestions', 0)} this week", None, enabled=False),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(f"Lifetime dictations: {lifetime.get('dictations', 0):,}", None, enabled=False),
+            pystray.MenuItem(f"Lifetime meetings: {lifetime.get('meetings', 0):,}", None, enabled=False),
         ]
         return pystray.Menu(*items)
 
@@ -2696,6 +2710,7 @@ class WhisperSync:
 
     def _restart(self):
         import subprocess
+        weekly_stats.flush()
         if self.recorder.is_recording:
             self.recorder.stop()
         self.worker.stop()
@@ -2709,6 +2724,7 @@ class WhisperSync:
             self.tray.stop()
 
     def quit(self):
+        weekly_stats.flush()
         if self.recorder.is_recording:
             self.recorder.stop()
         self.worker.stop()
@@ -2879,9 +2895,25 @@ class WhisperSync:
         # Start GitHub PR status polling if configured
         self._start_github_poller()
 
+        # Periodic flush for persistent weekly stats
+        self._stats_flush_stop = threading.Event()
+        def _stats_flush_loop():
+            while not self._stats_flush_stop.wait(weekly_stats._flush_interval):
+                try:
+                    weekly_stats.flush()
+                except Exception:
+                    pass
+        threading.Thread(target=_stats_flush_loop, daemon=True).start()
+
         try:
             self.tray.run()
         finally:
+            # Flush persistent stats before shutdown
+            try:
+                self._stats_flush_stop.set()
+                weekly_stats.flush()
+            except Exception:
+                pass
             # Always release keyboard hooks to prevent stuck modifier keys
             keyboard.unhook_all()
             self.worker.stop()
