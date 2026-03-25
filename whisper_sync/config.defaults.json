@@ -1,7 +1,8 @@
 {
   "hotkeys": {
     "dictation_toggle": "ctrl+shift+space",
-    "meeting_toggle": "ctrl+shift+m"
+    "meeting_toggle": "ctrl+shift+m",
+    "feature_suggest": "ctrl+shift+alt+f"
   },
   "paste_method": "clipboard",
   "language": "en",

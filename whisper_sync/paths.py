@@ -124,6 +124,11 @@ def get_dictation_log_dir() -> Path:
     return get_data_dir() / "dictation-logs"
 
 
+def get_feature_log_dir() -> Path:
+    """Return the directory for feature suggestion logs."""
+    return get_data_dir() / "feature-suggestions"
+
+
 def get_legacy_config_path() -> Path:
     """Return the legacy config.json path (inside code repo)."""
     return _PKG_DIR / "config.json"

@@ -49,6 +49,8 @@ $pyFiles = @(
     "speakers.py",
     "speaker_prompt.md",
     "minutes_prompt.md",
+    "feature_log.py",
+    "feature_prompt.md",
     "split_meeting.py",
     "rebuild_index.py",
     "whisper-capture.ico"

@@ -1,5 +1,12 @@
-"""Daily dictation history -- append-only markdown log per day."""
+"""Daily dictation history -- append-only JSON log per day.
 
+Each daily file (YYYY-MM-DD.json) contains a JSON array of entries:
+    [{"timestamp": "2026-03-25T11:30:45", "duration": 1.28, "chars": 9, "text": "..."}]
+
+Backwards compatible: load_recent() reads both .json (new) and .md (legacy) files.
+"""
+
+import json
 import logging
 import re
 import threading
@@ -11,14 +18,19 @@ from .paths import get_dictation_log_dir
 
 logger = logging.getLogger("whisper_sync")
 
-_LOG_DIR = get_dictation_log_dir()
 _lock = threading.Lock()
 
-_HEADER_RE = re.compile(r"^## (\d{2}:\d{2}):\d{2} \|.*?\| (\d+) chars$")
+# Legacy markdown header regex for backwards-compatible reading
+_HEADER_RE = re.compile(r"^## (\d{2}:\d{2}):(\d{2}) \|.*?\| (\d+) chars$")
+
+
+def _log_dir() -> Path:
+    """Resolve dictation log directory at call time (respects runtime output_dir changes)."""
+    return get_dictation_log_dir()
 
 
 def append(text: str, duration: float) -> None:
-    """Append a dictation entry to today's log file.
+    """Append a dictation entry to today's JSON log file.
 
     Args:
         text: The transcribed text (exactly as pasted).
@@ -27,50 +39,79 @@ def append(text: str, duration: float) -> None:
     if not text or not text.strip():
         return
 
-    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_dir = _log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
     now = datetime.now()
-    log_file = _LOG_DIR / f"{now:%Y-%m-%d}.md"
+    log_file = log_dir / f"{now:%Y-%m-%d}.json"
 
-    entry = f"\n## {now:%H:%M:%S} | {duration:.2f}s | {len(text)} chars\n{text}\n"
+    entry = {
+        "timestamp": now.isoformat(timespec="seconds"),
+        "duration": round(duration, 2),
+        "chars": len(text),
+        "text": text,
+    }
 
     with _lock:
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write(entry)
+        entries = []
+        if log_file.exists():
+            try:
+                entries = json.loads(log_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as e:
+                # Preserve corrupt file to avoid silent data loss
+                logger.warning(f"Could not read existing log {log_file}: {e}")
+                backup_name = f"{log_file.name}.corrupt-{now:%H%M%S}"
+                backup_path = log_file.with_name(backup_name)
+                try:
+                    log_file.rename(backup_path)
+                    logger.warning(f"Renamed corrupt log to {backup_path}")
+                except OSError as rename_err:
+                    logger.error(f"Failed to rename corrupt log: {rename_err}. Aborting append to avoid data loss.")
+                    return
+                entries = []
+        entries.append(entry)
+        log_file.write_text(json.dumps(entries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def load_recent(count: int = 10) -> List[Dict]:
     """Load the most recent dictation entries from log files on disk.
 
-    Reads daily log files in reverse chronological order and parses
-    entries until *count* entries are collected.
+    Reads daily log files (JSON and legacy markdown) in reverse chronological
+    order and collects entries until *count* entries are gathered.
 
     Args:
         count: Maximum number of entries to return.
 
     Returns:
-        List of dicts matching the in-memory history format:
-        ``{"text": str, "timestamp": str, "chars": int}``.
+        List of dicts: ``{"text": str, "timestamp": str, "chars": int}``.
         Oldest first (same order as the in-memory list).
     """
-    if not _LOG_DIR.exists():
+    log_dir = _log_dir()
+    if not log_dir.exists():
         return []
 
-    # Gather log files sorted newest-first
-    log_files = sorted(_LOG_DIR.glob("*.md"), reverse=True)
-    if not log_files:
+    # Gather all log files (json + legacy md), sorted newest-first by stem
+    json_files = {f.stem: f for f in log_dir.glob("*.json")}
+    md_files = {f.stem: f for f in log_dir.glob("*.md")}
+
+    # Merge: prefer .json over .md for the same date
+    all_dates = sorted(set(json_files) | set(md_files), reverse=True)
+    if not all_dates:
         return []
 
     results: List[Dict] = []
 
-    for log_file in log_files:
+    for date_stem in all_dates:
         if len(results) >= count:
             break
         try:
-            entries = _parse_log_file(log_file)
+            if date_stem in json_files:
+                entries = _parse_json_file(json_files[date_stem])
+            else:
+                entries = _parse_md_file(md_files[date_stem])
             results.extend(entries)
         except Exception as e:
-            logger.debug(f"Failed to parse dictation log {log_file}: {e}")
-            continue  # skip corrupt files
+            logger.debug(f"Failed to parse dictation log {date_stem}: {e}")
+            continue
 
     # Keep only the most recent *count*, oldest-first
     results = results[:count]
@@ -78,8 +119,29 @@ def load_recent(count: int = 10) -> List[Dict]:
     return results
 
 
-def _parse_log_file(path: Path) -> List[Dict]:
-    """Parse a single daily log file into entry dicts (newest-first)."""
+def _parse_json_file(path: Path) -> List[Dict]:
+    """Parse a JSON daily log file into entry dicts (newest-first)."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    entries = []
+    for item in data:
+        ts_raw = item.get("timestamp", "")
+        # Extract HH:MM for display (matches legacy format)
+        try:
+            ts_display = datetime.fromisoformat(ts_raw).strftime("%H:%M")
+        except (ValueError, TypeError):
+            ts_display = ts_raw[:5] if len(ts_raw) >= 5 else ts_raw
+        entries.append({
+            "text": item.get("text", ""),
+            "timestamp": ts_display,
+            "chars": item.get("chars", 0),
+        })
+    # Return newest-first
+    entries.reverse()
+    return entries
+
+
+def _parse_md_file(path: Path) -> List[Dict]:
+    """Parse a legacy markdown daily log file into entry dicts (newest-first)."""
     text = path.read_text(encoding="utf-8")
     entries: List[Dict] = []
     current_timestamp = None
@@ -89,7 +151,6 @@ def _parse_log_file(path: Path) -> List[Dict]:
     for line in text.splitlines():
         m = _HEADER_RE.match(line)
         if m:
-            # Flush previous entry
             if current_timestamp is not None:
                 body = "\n".join(body_lines).strip()
                 if body:
@@ -99,12 +160,11 @@ def _parse_log_file(path: Path) -> List[Dict]:
                         "chars": current_chars,
                     })
             current_timestamp = m.group(1)
-            current_chars = int(m.group(2))
+            current_chars = int(m.group(3))
             body_lines = []
         else:
             body_lines.append(line)
 
-    # Flush last entry
     if current_timestamp is not None:
         body = "\n".join(body_lines).strip()
         if body:
@@ -114,6 +174,6 @@ def _parse_log_file(path: Path) -> List[Dict]:
                 "chars": current_chars,
             })
 
-    # Return newest-first so the outer loop collects most-recent across files
+    # Return newest-first
     entries.reverse()
     return entries
