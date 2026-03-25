@@ -335,6 +335,7 @@ class WhisperSync:
         _meeting_tx = self.state.current.meeting_transcribing if self.state else False
         if not self.worker.is_ready() and not (_meeting_tx and BackupTranscriber.is_enabled(self.cfg)):
             logger.warning("Worker not ready yet - ignoring dictation request")
+            self._feature_suggest_active = False
             return
         self.state.emit(DICTATION_STARTED, mode="dictation")
         mic = self.cfg.get("mic_device")
@@ -356,6 +357,7 @@ class WhisperSync:
         self.recorder.stop_streaming()
 
         if "mic" not in audio:
+            self._feature_suggest_active = False
             self.state.emit(IDLE, mode=None)
             return
 
@@ -363,6 +365,10 @@ class WhisperSync:
 
         dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
         use_backup = self.state.current.meeting_transcribing and BackupTranscriber.is_enabled(self.cfg)
+        # Capture feature flag under lock before spawning background thread
+        with self._lock:
+            is_feature = self._feature_suggest_active
+            self._feature_suggest_active = False
 
         def _process():
             import time as _time
@@ -402,23 +408,27 @@ class WhisperSync:
                     text = self.worker.transcribe_fast(audio["mic"], model_override=dictation_model, timeout=timeout)
                     t1 = _time.perf_counter()
                     logger.debug(f"transcribe_fast: {t1 - t0:.2f}s")
-                is_feature = self._feature_suggest_active
-                self._feature_suggest_active = False
                 t2 = _time.perf_counter()
                 char_count = len(text) if text else 0
 
-                if is_feature and text:
-                    # Feature suggestion mode: save to feature log, format via Claude
-                    entry_id = feature_log.append_raw(text, t2 - t0)
-                    logger.info(f"Feature suggestion saved: {char_count} chars in {t2 - t0:.2f}s")
-                    notify("Feature saved", f"Suggestion recorded ({char_count} chars)")
-                    self._stats["feature_suggestions"] += 1
-                    # Format asynchronously via Claude CLI
-                    threading.Thread(
-                        target=self._format_feature_async,
-                        args=(text, entry_id),
-                        daemon=True,
-                    ).start()
+                if is_feature:
+                    # Feature suggestion mode
+                    if not text:
+                        logger.info("Feature suggestion discarded (no speech detected)")
+                    elif self.cfg.get("incognito", False):
+                        logger.info("Feature suggestion skipped: incognito mode enabled")
+                        notify("Feature not saved", "Incognito mode is on; suggestions are not stored on disk")
+                    else:
+                        entry_id = feature_log.append_raw(text, t2 - t0)
+                        logger.info(f"Feature suggestion saved: {char_count} chars in {t2 - t0:.2f}s")
+                        notify("Feature saved", f"Suggestion recorded ({char_count} chars)")
+                        self._stats["feature_suggestions"] += 1
+                        # Format asynchronously via Claude CLI
+                        threading.Thread(
+                            target=self._format_feature_async,
+                            args=(text, entry_id),
+                            daemon=True,
+                        ).start()
                 else:
                     # Normal dictation mode: paste + log
                     if text:
@@ -504,10 +514,16 @@ class WhisperSync:
         if "mic" not in audio:
             logger.debug("Overlay dictation stopped - no audio captured", extra={"secondary": True})
             self._overlay_recorder = None
+            self._feature_suggest_active = False
             return
 
         overlay_audio = audio["mic"]
         self._overlay_recorder = None
+
+        # Capture feature flag before spawning background thread
+        with self._lock:
+            is_feature = self._feature_suggest_active
+            self._feature_suggest_active = False
 
         logger.info("Dictation during meeting: transcribing...", extra={"secondary": True})
 
@@ -527,19 +543,22 @@ class WhisperSync:
                     f"(backup {backup_device} {backup_model})",
                     extra={"secondary": True},
                 )
-                is_feature = self._feature_suggest_active
-                self._feature_suggest_active = False
-
-                if is_feature and text:
-                    entry_id = feature_log.append_raw(text, duration)
-                    logger.info(f"Feature suggestion (overlay) saved: {char_count} chars in {duration:.2f}s", extra={"secondary": True})
-                    notify("Feature saved", f"Suggestion recorded ({char_count} chars)")
-                    self._stats["feature_suggestions"] += 1
-                    threading.Thread(
-                        target=self._format_feature_async,
-                        args=(text, entry_id),
-                        daemon=True,
-                    ).start()
+                if is_feature:
+                    if not text:
+                        logger.info("Feature suggestion (overlay) discarded (no speech detected)", extra={"secondary": True})
+                    elif self.cfg.get("incognito", False):
+                        logger.info("Feature suggestion skipped: incognito mode enabled", extra={"secondary": True})
+                        notify("Feature not saved", "Incognito mode is on; suggestions are not stored on disk")
+                    else:
+                        entry_id = feature_log.append_raw(text, duration)
+                        logger.info(f"Feature suggestion (overlay) saved: {char_count} chars in {duration:.2f}s", extra={"secondary": True})
+                        notify("Feature saved", f"Suggestion recorded ({char_count} chars)")
+                        self._stats["feature_suggestions"] += 1
+                        threading.Thread(
+                            target=self._format_feature_async,
+                            args=(text, entry_id),
+                            daemon=True,
+                        ).start()
                 else:
                     if text:
                         paste(text, self.cfg["paste_method"])
@@ -568,7 +587,6 @@ class WhisperSync:
                         log_dictation_result(text or "", duration, delivery, char_count, secondary=True)
 
             except Exception as e:
-                self._feature_suggest_active = False
                 logger.error(f"Overlay dictation error: {e}", extra={"secondary": True})
                 import traceback
                 logger.debug(traceback.format_exc())

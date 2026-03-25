@@ -16,26 +16,43 @@ from .paths import get_feature_log_dir
 
 logger = logging.getLogger("whisper_sync")
 
-_LOG_DIR = get_feature_log_dir()
-_LOG_FILE = _LOG_DIR / "features.json"
 _lock = threading.Lock()
+
+
+def _log_dir() -> Path:
+    """Resolve feature log directory at call time (respects runtime output_dir changes)."""
+    return get_feature_log_dir()
+
+
+def _log_file() -> Path:
+    return _log_dir() / "features.json"
 
 
 def _read() -> List[Dict]:
     """Read the feature log from disk."""
-    if not _LOG_FILE.exists():
+    path = _log_file()
+    if not path.exists():
         return []
     try:
-        return json.loads(_LOG_FILE.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
-        logger.debug(f"Could not read feature log: {e}")
+        # Preserve corrupt file to avoid silent data loss
+        logger.warning(f"Could not read feature log {path}: {e}")
+        try:
+            timestamp = datetime.now().strftime("%H%M%S")
+            corrupt_path = path.with_suffix(f".json.corrupt-{timestamp}")
+            path.rename(corrupt_path)
+            logger.warning(f"Renamed corrupt feature log to {corrupt_path}")
+        except OSError as rename_err:
+            logger.error(f"Failed to preserve corrupt feature log: {rename_err}")
         return []
 
 
 def _write(entries: List[Dict]) -> None:
     """Write the feature log to disk."""
-    _LOG_DIR.mkdir(parents=True, exist_ok=True)
-    _LOG_FILE.write_text(
+    log_dir = _log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    _log_file().write_text(
         json.dumps(entries, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
@@ -52,7 +69,7 @@ def append_raw(text: str, duration: float) -> str:
         The entry ID (ISO timestamp string) for later updates.
     """
     now = datetime.now()
-    entry_id = now.isoformat(timespec="seconds")
+    entry_id = now.isoformat(timespec="microseconds")
 
     entry = {
         "id": entry_id,

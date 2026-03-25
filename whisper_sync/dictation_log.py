@@ -18,11 +18,15 @@ from .paths import get_dictation_log_dir
 
 logger = logging.getLogger("whisper_sync")
 
-_LOG_DIR = get_dictation_log_dir()
 _lock = threading.Lock()
 
 # Legacy markdown header regex for backwards-compatible reading
 _HEADER_RE = re.compile(r"^## (\d{2}:\d{2}):(\d{2}) \|.*?\| (\d+) chars$")
+
+
+def _log_dir() -> Path:
+    """Resolve dictation log directory at call time (respects runtime output_dir changes)."""
+    return get_dictation_log_dir()
 
 
 def append(text: str, duration: float) -> None:
@@ -35,9 +39,10 @@ def append(text: str, duration: float) -> None:
     if not text or not text.strip():
         return
 
-    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_dir = _log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
     now = datetime.now()
-    log_file = _LOG_DIR / f"{now:%Y-%m-%d}.json"
+    log_file = log_dir / f"{now:%Y-%m-%d}.json"
 
     entry = {
         "timestamp": now.isoformat(timespec="seconds"),
@@ -51,8 +56,18 @@ def append(text: str, duration: float) -> None:
         if log_file.exists():
             try:
                 entries = json.loads(log_file.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                logger.debug(f"Could not read existing log {log_file}, starting fresh")
+            except (json.JSONDecodeError, OSError) as e:
+                # Preserve corrupt file to avoid silent data loss
+                logger.warning(f"Could not read existing log {log_file}: {e}")
+                backup_name = f"{log_file.name}.corrupt-{now:%H%M%S}"
+                backup_path = log_file.with_name(backup_name)
+                try:
+                    log_file.rename(backup_path)
+                    logger.warning(f"Renamed corrupt log to {backup_path}")
+                except OSError as rename_err:
+                    logger.error(f"Failed to rename corrupt log: {rename_err}. Aborting append to avoid data loss.")
+                    return
+                entries = []
         entries.append(entry)
         log_file.write_text(json.dumps(entries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -70,12 +85,13 @@ def load_recent(count: int = 10) -> List[Dict]:
         List of dicts: ``{"text": str, "timestamp": str, "chars": int}``.
         Oldest first (same order as the in-memory list).
     """
-    if not _LOG_DIR.exists():
+    log_dir = _log_dir()
+    if not log_dir.exists():
         return []
 
     # Gather all log files (json + legacy md), sorted newest-first by stem
-    json_files = {f.stem: f for f in _LOG_DIR.glob("*.json")}
-    md_files = {f.stem: f for f in _LOG_DIR.glob("*.md")}
+    json_files = {f.stem: f for f in log_dir.glob("*.json")}
+    md_files = {f.stem: f for f in log_dir.glob("*.md")}
 
     # Merge: prefer .json over .md for the same date
     all_dates = sorted(set(json_files) | set(md_files), reverse=True)
