@@ -44,7 +44,15 @@ from . import dictation_log
 from .streaming_wav import fix_orphan
 from .crash_diagnostics import install_excepthook, check_previous_crash
 from .flatten import flatten as flatten_transcript
-from .notifications import notify
+from .notifications import notify, ToastListener
+from .state_manager import (
+    StateManager, AppState,
+    MEETING_STARTED, MEETING_STOPPED, MEETING_COMPLETED,
+    DICTATION_STARTED, DICTATION_COMPLETED, DICTATION_DISCARDED,
+    TRANSCRIPTION_STARTED, TRANSCRIPTION_PROGRESS, TRANSCRIPTION_COMPLETED,
+    ERROR, MODEL_LOADING, MODEL_READY, MODEL_DOWNLOADING,
+    PR_STATUS_CHANGED, SPEAKER_HEALTH_CHANGED, QUEUED, IDLE,
+)
 from .rebuild_index import rebuild_root_index
 from .speakers import identify_speakers, write_speaker_map, update_config, get_config_path
 
@@ -89,6 +97,7 @@ class WhisperSync:
         self.mode = None  # None, "dictation", "meeting", "saving", "transcribing", "done", "error"
         self._meeting_transcribing = False  # True while meeting transcription runs in background
         self.tray = None
+        self.state = None  # Initialized after tray creation in run()
         self._lock = threading.Lock()
         self._api_filter = "Windows WASAPI"  # None = show all
         self._dictation_wav_path: Path | None = None
@@ -177,20 +186,15 @@ class WhisperSync:
         if getattr(self, '_flashing', False):
             return
         self._flashing = True
-        def _flash():
-            try:
-                from .icons import yellow_flash_icon
-                original = self.tray.icon
-                for _ in range(2):
-                    self.tray.icon = yellow_flash_icon()
-                    import time; time.sleep(0.15)
-                    self.tray.icon = original
-                    time.sleep(0.15)
-            except Exception:
-                pass  # tray may not be ready
-            finally:
-                self._flashing = False
-        threading.Thread(target=_flash, daemon=True).start()
+        from .icons import IconAnimator
+        animator = IconAnimator(self.tray)
+        animator.flash(count=2, interval_ms=150)
+        # Reset flag after animation completes (~600ms)
+        import time
+        def _reset():
+            time.sleep(0.7)
+            self._flashing = False
+        threading.Thread(target=_reset, daemon=True).start()
 
     # --- Click dispatch ---
 
@@ -202,7 +206,10 @@ class WhisperSync:
 
     def _on_left_click(self):
         # Left-click while dictating = discard (stop recording, throw away audio)
-        if self.mode == "dictation" or self._dictation_overlay:
+        current = self.state.current if self.state else None
+        mode = current.mode if current else self.mode
+        overlay = current.dictation_overlay if current else self._dictation_overlay
+        if mode == "dictation" or overlay:
             self._discard_dictation()
             return
         self._dispatch_action(self.cfg.get("left_click", "meeting"))
@@ -222,26 +229,23 @@ class WhisperSync:
         import time
 
         def _reset():
-            if blink and self.mode == "done":
+            if blink and self.state.current.mode == "done":
                 for _ in range(3):
-                    if self.mode not in ("done", None):
-                        return  # User started something new — abort blink
-                    self.mode = "done"
-                    self._update_icon()
+                    if self.state.current.mode not in ("done", None):
+                        return  # User started something new - abort blink
+                    self.state.emit(IDLE, mode="done")
                     time.sleep(0.4)
-                    if self.mode not in ("done", None):
+                    if self.state.current.mode not in ("done", None):
                         return
-                    self.mode = None
-                    self._update_icon()
+                    self.state.emit(IDLE, mode=None)
                     time.sleep(0.3)
             else:
                 time.sleep(seconds)
             # Only reset to idle if mode is still in a terminal state
-            if self.mode in ("done", "error", None):
-                self.mode = None
-                self._update_icon()
+            if self.state.current.mode in ("done", "error", None):
+                self.state.emit(IDLE, mode=None)
             else:
-                logger.debug(f"_schedule_idle: skipped reset — mode is '{self.mode}' (not terminal)")
+                logger.debug(f"_schedule_idle: skipped reset - mode is '{self.state.current.mode}' (not terminal)")
 
         threading.Thread(target=_reset, daemon=True).start()
 
@@ -262,29 +266,30 @@ class WhisperSync:
 
     def _flash_queued(self):
         """Rapid amber flash to indicate dictation is queued behind a meeting stage."""
-        import time
-        for _ in range(2):
-            self.tray.icon = queued_icon()
-            self.tray.title = "WhisperSync: Queued..."
-            time.sleep(0.15)
-            self.tray.icon = transcribing_icon()
-            self.tray.title = "WhisperSync: Transcribing..."
-            time.sleep(0.15)
+        from .icons import IconAnimator
+        animator = IconAnimator(self.tray)
+        animator.flash_between("queued", "transcribing", count=2, interval_ms=150)
 
     def _can_record(self) -> bool:
         """Can we start a new recording? Allowed if idle or just transcribing in background."""
-        return self.mode is None or self.mode in ("transcribing", "done", "error")
+        mode = self.state.current.mode if self.state else self.mode
+        return mode is None or mode in ("transcribing", "done", "error")
 
     def toggle_dictation(self):
         with self._lock:
+            current = self.state.current if self.state else None
+            mode = current.mode if current else self.mode
+            overlay = current.dictation_overlay if current else self._dictation_overlay
+            meeting_tx = current.meeting_transcribing if current else self._meeting_transcribing
+
             # Handle overlay dictation during meetings
-            if self._dictation_overlay:
+            if overlay:
                 self._stop_overlay_dictation()
                 return
 
-            if self.mode == "dictation":
+            if mode == "dictation":
                 self._stop_dictation()
-            elif self.mode == "meeting" or (self.mode is None and self._meeting_transcribing):
+            elif mode == "meeting" or (mode is None and meeting_tx):
                 # Dictation during meeting recording or meeting transcription
                 if self.cfg.get("always_available_dictation", True):
                     if self._backup.is_loading:
@@ -295,7 +300,7 @@ class WhisperSync:
                 else:
                     logger.info("Dictation unavailable during meeting (always_available_dictation disabled)", extra={"secondary": True})
                     notify("Dictation unavailable", "Enable always-available dictation in settings")
-            elif self.mode == "saving":
+            elif mode == "saving":
                 logger.debug("Dictation ignored - meeting is saving")
             elif self._can_record():
                 self._start_dictation()
@@ -304,11 +309,11 @@ class WhisperSync:
         return get_dictation_log_dir()
 
     def _start_dictation(self):
-        if not self.worker.is_ready() and not (self._meeting_transcribing and BackupTranscriber.is_enabled(self.cfg)):
+        _meeting_tx = self.state.current.meeting_transcribing if self.state else self._meeting_transcribing
+        if not self.worker.is_ready() and not (_meeting_tx and BackupTranscriber.is_enabled(self.cfg)):
             logger.warning("Worker not ready yet - ignoring dictation request")
             return
-        self.mode = "dictation"
-        self._update_icon()
+        self.state.emit(DICTATION_STARTED, mode="dictation")
         mic = self.cfg.get("mic_device")
         if self.cfg.get("use_system_devices", True):
             mic = None
@@ -328,15 +333,13 @@ class WhisperSync:
         self.recorder.stop_streaming()
 
         if "mic" not in audio:
-            self.mode = None
-            self._update_icon()
+            self.state.emit(IDLE, mode=None)
             return
 
-        self.mode = "transcribing"
-        self._update_icon()
+        self.state.emit(TRANSCRIPTION_STARTED, mode="transcribing")
 
         dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
-        use_backup = self._meeting_transcribing and BackupTranscriber.is_enabled(self.cfg)
+        use_backup = self.state.current.meeting_transcribing and BackupTranscriber.is_enabled(self.cfg)
 
         def _process():
             import time as _time
@@ -370,9 +373,9 @@ class WhisperSync:
                         logger.debug(f"transcribe_fast (fallback): {t1 - t0:.2f}s")
                 else:
                     # Normal path or backup disabled
-                    if self._meeting_transcribing:
+                    if self.state.current.meeting_transcribing:
                         self._flash_queued()
-                    timeout = 180 if self._meeting_transcribing else 60
+                    timeout = 180 if self.state.current.meeting_transcribing else 60
                     text = self.worker.transcribe_fast(audio["mic"], model_override=dictation_model, timeout=timeout)
                     t1 = _time.perf_counter()
                     logger.debug(f"transcribe_fast: {t1 - t0:.2f}s")
@@ -406,21 +409,18 @@ class WhisperSync:
                 self.recorder.stop_streaming()  # defensive: ensure writer closed
                 if self._dictation_wav_path:
                     self._safe_unlink(self._dictation_wav_path)
-                self.mode = "done"
-                self._update_icon()
+                self.state.emit(DICTATION_COMPLETED, mode="done")
             except WorkerCrashedError:
                 logger.error("Worker crashed during dictation -- respawning...")
                 if self._dictation_wav_path:
                     logger.info(f"Dictation audio preserved at: {self._dictation_wav_path}")
                 self.worker.restart()
-                self.mode = "error"
-                self._update_icon()
+                self.state.emit(ERROR, mode="error", data={"message": "Worker crashed during dictation", "recoverable": True})
             except Exception as e:
                 logger.error(f"Dictation error: {e}")
                 import traceback
                 logger.debug(traceback.format_exc())
-                self.mode = "error"
-                self._update_icon()
+                self.state.emit(ERROR, mode="error", data={"message": str(e), "recoverable": False})
             finally:
                 self._schedule_idle(2)
 
@@ -437,7 +437,7 @@ class WhisperSync:
         # Note: always_available_dictation config flag already gates the call to
         # this method in toggle_dictation(), so no need to re-check is_enabled() here.
 
-        meeting_state = "recording" if self.mode == "meeting" else "transcribing"
+        meeting_state = "recording" if (self.state.current.mode if self.state else self.mode) == "meeting" else "transcribing"
         backup_model = self.cfg.get("backup_model", "base")
         backup_device = self.cfg.get("backup_device", "cpu")
         logger.info(f"Dictation requested during meeting {meeting_state} (using backup model)", extra={"secondary": True})
@@ -451,18 +451,18 @@ class WhisperSync:
         self._overlay_recorder.start(mic_device=mic)
         self._dictation_overlay = True
         logger.info("Dictation during meeting: recording started", extra={"secondary": True})
-        self._update_icon()
+        self.state.emit(DICTATION_STARTED, dictation_overlay=True)
 
     def _stop_overlay_dictation(self):
         """Stop overlay dictation, transcribe with backup model, paste result."""
         if not self._overlay_recorder:
             self._dictation_overlay = False
-            self._update_icon()
+            self.state.emit(IDLE, dictation_overlay=False)
             return
 
         audio = self._overlay_recorder.stop()
         self._dictation_overlay = False
-        self._update_icon()
+        self.state.emit(DICTATION_COMPLETED, dictation_overlay=False)
 
         if "mic" not in audio:
             logger.debug("Overlay dictation stopped - no audio captured", extra={"secondary": True})
@@ -633,8 +633,7 @@ class WhisperSync:
             # Transcribe in background
             def _transcribe(path=str(dest)):
                 try:
-                    self._meeting_transcribing = True
-                    self._update_icon()
+                    self.state.emit(TRANSCRIPTION_STARTED, meeting_transcribing=True)
                     result = self.worker.transcribe(path, diarize=True)
                     logger.info(f"Recovery transcript saved: {result.get('json_path', path)}")
                     try:
@@ -647,13 +646,11 @@ class WhisperSync:
                     logger.error(f"Recovery transcription failed: {e}")
                     logger.info(f"Audio preserved at: {path}")
                 finally:
-                    self._meeting_transcribing = False
-                    if self.mode is None:
-                        self.mode = "done"
-                        self._update_icon()
+                    if self.state.current.mode is None:
+                        self.state.emit(MEETING_COMPLETED, meeting_transcribing=False, mode="done")
                         self._schedule_idle(3, blink=True)
                     else:
-                        self._update_icon()
+                        self.state.emit(IDLE, meeting_transcribing=False)
             threading.Thread(target=_transcribe, daemon=True).start()
         self._recovered_meeting_paths = []
 
@@ -719,35 +716,35 @@ class WhisperSync:
         """Discard current dictation - stop recording, throw away audio, return to idle."""
         with self._lock:
             # Handle overlay dictation discard
-            if self._dictation_overlay and self._overlay_recorder:
+            _overlay = self.state.current.dictation_overlay if self.state else self._dictation_overlay
+            if _overlay and self._overlay_recorder:
                 self._overlay_recorder.stop()
                 self._overlay_recorder = None
                 self._dictation_overlay = False
                 logger.info("Overlay dictation discarded (left-click)", extra={"secondary": True})
-                self._update_icon()
+                self.state.emit(DICTATION_DISCARDED, dictation_overlay=False)
                 return
 
-            if self.mode != "dictation":
+            if (self.state.current.mode if self.state else self.mode) != "dictation":
                 return
             self.recorder.stop()  # stop recording, discard the audio
             self.recorder.stop_streaming()
             if self._dictation_wav_path and self._dictation_wav_path.exists():
                 self._dictation_wav_path.unlink(missing_ok=True)
             logger.info("Dictation discarded (left-click)")
-            self.mode = None
-            self._update_icon()
+            self.state.emit(DICTATION_DISCARDED, mode=None)
 
     def toggle_meeting(self):
         with self._lock:
-            if self.mode == "meeting":
+            mode = self.state.current.mode if self.state else self.mode
+            if mode == "meeting":
                 self._stop_meeting()
             elif self._can_record():
                 self._start_meeting()
 
     def _start_meeting(self):
-        self.mode = "meeting"
+        self.state.emit(MEETING_STARTED, mode="meeting")
         self._meeting_start_time = datetime.now()
-        self._update_icon()
         mic = self.cfg.get("mic_device")
         speaker = self.cfg.get("speaker_device")
         if self.cfg.get("use_system_devices", True):
@@ -1341,8 +1338,7 @@ class WhisperSync:
         audio = self.recorder.stop()
 
         if "mic" not in audio and "mic_path" not in audio:
-            self.mode = None
-            self._update_icon()
+            self.state.emit(IDLE, mode=None)
             return
 
         # Log meeting duration
@@ -1353,8 +1349,7 @@ class WhisperSync:
             logger.info(f"Meeting stopped: {_mins}m {_secs:02d}s recorded")
 
         # Stay in a processing state so clicks are ignored
-        self.mode = "saving"
-        self._update_icon()
+        self.state.emit(MEETING_STOPPED, mode="saving")
 
         # Run the entire post-recording flow in a thread so we release the lock
         def _post_record():
@@ -1363,8 +1358,7 @@ class WhisperSync:
             if dialog_result is self._ABORT:
                 logger.info("Recording discarded")
                 self.recorder.discard_streaming()
-                self.mode = None
-                self._update_icon()
+                self.state.emit(IDLE, mode=None)
                 return
 
             meeting_name, do_summarize = dialog_result
@@ -1400,9 +1394,7 @@ class WhisperSync:
                 cleanup_temp_files(self._meeting_temp_dir())
 
                 # Release mode so user can dictate while meeting transcribes
-                self.mode = None
-                self._meeting_transcribing = True
-                self._update_icon()
+                self.state.emit(TRANSCRIPTION_STARTED, mode=None, meeting_transcribing=True)
 
                 if not self.worker.is_alive():
                     logger.warning("Worker not alive — restarting...")
@@ -1532,58 +1524,36 @@ class WhisperSync:
                 except Exception as e:
                     logger.debug(f"Meeting toast failed (non-fatal): {e}")
 
-                self._meeting_transcribing = False
-                # Reset mode and flash done (unless user started a new recording)
-                if self.mode in (None, "transcribing"):
-                    self.mode = "done"
-                    self._update_icon()
-                    self._schedule_idle(3, blink=True)
-                else:
-                    self._update_icon()
-            except WorkerCrashedError:
-                logger.error("Worker crashed during meeting — respawning...")
+                self.state.emit(MEETING_COMPLETED, meeting_transcribing=False, mode="done")
+                self._schedule_idle(3, blink=True)
+            except WorkerCrashedError as e:
+                logger.error("Worker crashed during meeting - respawning...")
                 logger.info(f"Audio is preserved at: {wav_path}")
                 self.worker.restart()
-                self._meeting_transcribing = False
-                if self.mode is None:
-                    self.mode = "error"
-                    self._update_icon()
+                self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
+                if self.state.current.mode == "error":
                     self._schedule_idle(3)
-                else:
-                    self._update_icon()
             except PermissionError as e:
-                # Gated model access — show user the acceptance URLs
+                # Gated model access - show user the acceptance URLs
                 logger.error(str(e))
                 self._show_error_popup("Diarization Model Access", str(e))
-                self._meeting_transcribing = False
-                if self.mode is None:
-                    self.mode = "error"
-                    self._update_icon()
+                self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
+                if self.state.current.mode == "error":
                     self._schedule_idle(3)
-                else:
-                    self._update_icon()
             except FileNotFoundError as e:
                 # Missing HF token
                 logger.error(str(e))
                 self._show_error_popup("Hugging Face Token Missing", str(e))
-                self._meeting_transcribing = False
-                if self.mode is None:
-                    self.mode = "error"
-                    self._update_icon()
+                self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
+                if self.state.current.mode == "error":
                     self._schedule_idle(3)
-                else:
-                    self._update_icon()
             except Exception as e:
                 logger.error(f"Meeting transcription error: {e}")
                 import traceback
                 logger.debug(traceback.format_exc())
-                self._meeting_transcribing = False
-                if self.mode is None:
-                    self.mode = "error"
-                    self._update_icon()
+                self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
+                if self.state.current.mode == "error":
                     self._schedule_idle(3)
-                else:
-                    self._update_icon()
 
         threading.Thread(target=_post_record, daemon=True).start()
 
@@ -1917,6 +1887,24 @@ class WhisperSync:
             for name in backup_model_options
         ]
 
+        # --- Notifications submenu ---
+        from .notifications import DEFAULT_TOAST_EVENTS
+        _toast_events = self.cfg.get("toast_events", list(DEFAULT_TOAST_EVENTS))
+        _notification_options = [
+            ("meeting_completed", "Meeting Complete"),
+            ("error", "Errors"),
+            ("pr_status_changed", "PR Status"),
+            ("dictation_completed", "Dictation Complete"),
+        ]
+        notification_items = [
+            pystray.MenuItem(
+                label,
+                self._cb(self._toggle_toast_event, evt),
+                checked=lambda item, e=evt: e in self.cfg.get("toast_events", list(DEFAULT_TOAST_EVENTS)),
+            )
+            for evt, label in _notification_options
+        ]
+
         # --- Incognito mode ---
         incognito_on = self.cfg.get("incognito", False)
         incognito_items = [
@@ -2010,6 +1998,7 @@ class WhisperSync:
                                      radio=True),
                 )),
                 pystray.MenuItem("Session Stats", self._build_session_stats_menu()),
+                pystray.MenuItem("Notifications", pystray.Menu(*notification_items)),
                 pystray.Menu.SEPARATOR,
                 *incognito_items,
                 pystray.Menu.SEPARATOR,
@@ -2019,6 +2008,16 @@ class WhisperSync:
         )
 
     # --- Actions ---
+
+    def _toggle_toast_event(self, event_type: str):
+        from .notifications import DEFAULT_TOAST_EVENTS
+        events = self.cfg.get("toast_events", list(DEFAULT_TOAST_EVENTS))
+        if event_type in events:
+            events.remove(event_type)
+        else:
+            events.append(event_type)
+        self.cfg["toast_events"] = events
+        self._save_and_refresh()
 
     def _toggle_incognito(self):
         self.cfg["incognito"] = not self.cfg.get("incognito", False)
@@ -2557,26 +2556,23 @@ class WhisperSync:
 
     def _download_model(self):
         """Download model in background thread with icon feedback."""
-        if self.mode is not None:
+        if self.state.current.mode is not None:
             return
 
-        self.mode = "transcribing"
-        self.tray.title = "WhisperSync: Downloading model..."
-        self._update_icon()
+        self.state.emit(MODEL_DOWNLOADING, mode="transcribing", data={"model_name": self.cfg["model"]})
 
         def _do_download():
             try:
                 ok = download_model(self.cfg["model"])
                 if ok:
                     logger.info("Model download complete")
-                    self.mode = "done"
+                    self.state.emit(MODEL_READY, mode="done", data={"model_name": self.cfg["model"]})
                 else:
                     logger.error("Model download failed")
-                    self.mode = "error"
+                    self.state.emit(ERROR, mode="error", data={"message": "Model download failed"})
             except Exception as e:
                 logger.error(f"Model download error: {e}")
-                self.mode = "error"
-            self._update_icon()
+                self.state.emit(ERROR, mode="error", data={"message": "Model download failed"})
             self._schedule_idle(3)
             self._refresh_menu()
 
@@ -2690,6 +2686,35 @@ class WhisperSync:
             "WhisperSync: Idle",
             menu=self._build_menu(),
         )
+
+        self.state = StateManager(self.tray, self.cfg)
+
+        # Register icon updater as a global listener on all state events
+        def _on_state_change(event):
+            if self.tray is None:
+                return
+            speaker_ok = getattr(self.recorder, "speaker_loopback_active", True) if hasattr(self, "recorder") else True
+            s = event.new_state
+            key = resolve_icon_key(
+                mode=s.mode,
+                meeting_transcribing=s.meeting_transcribing,
+                dictation_overlay=s.dictation_overlay,
+                speaker_ok=speaker_ok,
+            )
+            spec = ICON_REGISTRY[key]
+            progress = s.progress
+            icon = build_icon(spec, progress=progress)
+            self.tray.icon = icon
+            self.tray.title = f"WhisperSync: {spec.tooltip}"
+            # Keep old vars in sync for any code paths not yet migrated
+            self.mode = s.mode
+            self._meeting_transcribing = s.meeting_transcribing
+            self._dictation_overlay = s.dictation_overlay
+        self.state.on_any(_on_state_change)
+
+        # Register toast notification listener
+        toast_listener = ToastListener(self.cfg)
+        self.state.on_any(toast_listener)
 
         dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
         logger.info("WhisperSync running. Hotkeys:")
