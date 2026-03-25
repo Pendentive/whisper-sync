@@ -395,7 +395,7 @@ class WhisperSync:
                 if self.cfg.get("incognito"):
                     logger.info(f"Dictation: {t2 - t0:.2f}s -- {delivery} ({char_count} chars)")
                 else:
-                    log_dictation_result(text or "", t2 - t0, delivery, char_count)
+                    log_dictation_result(text or "", t2 - t0, delivery, char_count, secondary=used_backup)
                 effective_model = self.cfg.get("backup_model", "base") if used_backup else dictation_model
                 logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={effective_model}{' (backup)' if used_backup else ''}")
                 # Update session stats
@@ -525,7 +525,7 @@ class WhisperSync:
                 if incognito:
                     logger.info(f"Overlay dictation: {duration:.2f}s - {delivery} ({char_count} chars)", extra={"secondary": True})
                 else:
-                    log_dictation_result(text or "", duration, delivery, char_count)
+                    log_dictation_result(text or "", duration, delivery, char_count, secondary=True)
 
             except Exception as e:
                 logger.error(f"Overlay dictation error: {e}", extra={"secondary": True})
@@ -565,7 +565,7 @@ class WhisperSync:
                     if incognito:
                         logger.info(f"Overlay dictation fallback: {duration:.2f}s - {delivery} ({char_count} chars)", extra={"secondary": True})
                     else:
-                        log_dictation_result(text or "", duration, delivery, char_count)
+                        log_dictation_result(text or "", duration, delivery, char_count, secondary=True)
                 except Exception as fallback_err:
                     logger.error(f"Overlay dictation fallback also failed: {fallback_err}", extra={"secondary": True})
 

@@ -85,7 +85,8 @@ class _ColorFormatter(logging.Formatter):
             msg_color = _C_WHITE
 
         # Secondary flag overrides text color (backup/overlay operations)
-        if getattr(record, "secondary", False):
+        # Only override INFO and DEBUG; preserve WARNING (yellow) and ERROR (red)
+        if getattr(record, "secondary", False) and record.levelno <= logging.INFO:
             msg_color = _C_SECONDARY
 
         # Check if this is the verbose [WhisperSync] format
@@ -178,18 +179,23 @@ def set_console_level(tier: str) -> None:
         _ch.setFormatter(_fmt_clean)
 
 
-def log_dictation_result(text: str, duration: float, delivery: str, chars: int) -> None:
+def log_dictation_result(text: str, duration: float, delivery: str, chars: int,
+                         secondary: bool = False) -> None:
     """Log a dictation result at appropriate tiers.
 
     Normal:   [HH:MM] Dictation: 0.67s -- pasted (97 chars)
     Detailed: adds text preview
     Verbose:  adds model info (handled by caller's own debug logs)
+
+    When *secondary* is True the log lines are tagged so the formatter
+    renders them in the secondary (light-purple) color.
     """
-    logger.info(f"Dictation: {duration:.2f}s -- {delivery} ({chars} chars)")
+    extra = {"secondary": True} if secondary else {}
+    logger.info(f"Dictation: {duration:.2f}s -- {delivery} ({chars} chars)", extra=extra)
     if text:
         # Truncate preview to 120 chars for readability
         preview = text[:120] + ("..." if len(text) > 120 else "")
-        logger.log(TRANSCRIPT, f'        "{preview}"')
+        logger.log(TRANSCRIPT, f'        "{preview}"', extra=extra)
 
 
 def log_meeting_result(name: str, duration_secs: float, words: int, speakers: int, folder: str) -> None:
