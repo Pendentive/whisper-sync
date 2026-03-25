@@ -2544,7 +2544,7 @@ class WhisperSync:
             today_str = str(today_val)
             week_str = str(week_val)
             # Fixed widths: label 16 chars, today 8 chars right-aligned, week 8 chars right-aligned
-            return f"{label + ':':<16} {today_str:>8} | {week_str:>8}"
+            return f"{label:<16} {today_str:>8} | {week_str:>8}"
 
         items = [
             pystray.MenuItem(f"Uptime: {hours}h {minutes}m", None, enabled=False),
