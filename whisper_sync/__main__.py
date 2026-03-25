@@ -38,6 +38,7 @@ from .paths import (get_install_root, get_default_output_dir, is_standalone,
 from .worker_manager import TranscriptionWorker, WorkerCrashedError
 from .backup_worker import BackupTranscriber
 from . import dictation_log
+from . import feature_log
 from .streaming_wav import fix_orphan
 from .crash_diagnostics import install_excepthook, check_previous_crash
 from .flatten import flatten as flatten_transcript
@@ -64,6 +65,13 @@ HOTKEY_OPTIONS = [
     "ctrl+alt+m",
     "ctrl+shift+t",
     "ctrl+alt+t",
+]
+
+FEATURE_HOTKEY_OPTIONS = [
+    "ctrl+shift+alt+f",
+    "ctrl+shift+alt+s",
+    "ctrl+shift+alt+r",
+    "ctrl+alt+f",
 ]
 
 PASTE_OPTIONS = ["clipboard", "keystrokes"]
@@ -104,10 +112,12 @@ class WhisperSync:
         self._github_poller = None
         self._github_prs = []
         self._dictation_history = dictation_log.load_recent(10)  # persist across restarts
+        self._feature_suggest_active = False  # routes dictation output to feature log
         # Session stats
         self._stats = {
             "dictations": 0,
             "meetings": 0,
+            "feature_suggestions": 0,
             "total_dictation_chars": 0,
             "total_dictation_time": 0.0,
             "total_meeting_seconds": 0,
@@ -275,6 +285,49 @@ class WhisperSync:
             elif self._can_record():
                 self._start_dictation()
 
+    def toggle_feature_suggest(self):
+        """Toggle feature suggestion recording (same as dictation but saves to feature log)."""
+        with self._lock:
+            current = self.state.current if self.state else None
+            mode = current.mode if current else None
+            overlay = current.dictation_overlay if current else False
+            meeting_tx = current.meeting_transcribing if current else False
+
+            # If already recording a feature suggestion, stop it
+            if overlay and self._feature_suggest_active:
+                self._stop_overlay_dictation()
+                return
+            if mode == "dictation" and self._feature_suggest_active:
+                self._stop_dictation()
+                return
+
+            # Start feature suggestion (reuses dictation pipeline)
+            if mode == "dictation" and not self._feature_suggest_active:
+                # Already recording a normal dictation - ignore
+                logger.debug("Feature suggest ignored - dictation in progress")
+                return
+
+            self._feature_suggest_active = True
+            if mode == "meeting" or (mode is None and meeting_tx):
+                if self.cfg.get("always_available_dictation", True):
+                    if self._backup.is_loading:
+                        self._feature_suggest_active = False
+                        logger.debug("Backup model still loading, triggering yellow flash", extra={"secondary": True})
+                        self._yellow_flash()
+                        return
+                    self._start_overlay_dictation()
+                else:
+                    self._feature_suggest_active = False
+                    logger.info("Feature suggest unavailable during meeting (always_available_dictation disabled)", extra={"secondary": True})
+                    notify("Feature suggest unavailable", "Enable always-available dictation in settings")
+            elif mode == "saving":
+                self._feature_suggest_active = False
+                logger.debug("Feature suggest ignored - meeting is saving")
+            elif self._can_record():
+                self._start_dictation()
+            else:
+                self._feature_suggest_active = False
+
     def _dictation_log_dir(self) -> Path:
         return get_dictation_log_dir()
 
@@ -349,33 +402,50 @@ class WhisperSync:
                     text = self.worker.transcribe_fast(audio["mic"], model_override=dictation_model, timeout=timeout)
                     t1 = _time.perf_counter()
                     logger.debug(f"transcribe_fast: {t1 - t0:.2f}s")
-                if text:
-                    paste(text, self.cfg["paste_method"])
+                is_feature = self._feature_suggest_active
+                self._feature_suggest_active = False
                 t2 = _time.perf_counter()
-                delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
                 char_count = len(text) if text else 0
-                if self.cfg.get("incognito"):
-                    logger.info(f"Dictation: {t2 - t0:.2f}s -- {delivery} ({char_count} chars)")
+
+                if is_feature and text:
+                    # Feature suggestion mode: save to feature log, format via Claude
+                    entry_id = feature_log.append_raw(text, t2 - t0)
+                    logger.info(f"Feature suggestion saved: {char_count} chars in {t2 - t0:.2f}s")
+                    notify("Feature saved", f"Suggestion recorded ({char_count} chars)")
+                    self._stats["feature_suggestions"] += 1
+                    # Format asynchronously via Claude CLI
+                    threading.Thread(
+                        target=self._format_feature_async,
+                        args=(text, entry_id),
+                        daemon=True,
+                    ).start()
                 else:
-                    log_dictation_result(text or "", t2 - t0, delivery, char_count, secondary=used_backup)
-                effective_model = self.cfg.get("backup_model", "base") if used_backup else dictation_model
-                logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={effective_model}{' (backup)' if used_backup else ''}")
-                # Update session stats
-                self._stats["dictations"] += 1
-                self._stats["total_dictation_chars"] += char_count
-                self._stats["total_dictation_time"] += t2 - t0
-                incognito = self.cfg.get("incognito", False)
-                if text and not incognito:
-                    dictation_log.append(text, t2 - t0)
-                    self._dictation_history.append({
-                        "text": text,
-                        "timestamp": datetime.now().strftime("%H:%M"),
-                        "chars": len(text),
-                    })
-                    if len(self._dictation_history) > 10:
-                        self._dictation_history = self._dictation_history[-10:]
-                    self._refresh_menu()
-                # Success -- remove crash-safety WAV (text is in the .md log)
+                    # Normal dictation mode: paste + log
+                    if text:
+                        paste(text, self.cfg["paste_method"])
+                    delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
+                    if self.cfg.get("incognito"):
+                        logger.info(f"Dictation: {t2 - t0:.2f}s -- {delivery} ({char_count} chars)")
+                    else:
+                        log_dictation_result(text or "", t2 - t0, delivery, char_count, secondary=used_backup)
+                    effective_model = self.cfg.get("backup_model", "base") if used_backup else dictation_model
+                    logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={effective_model}{' (backup)' if used_backup else ''}")
+                    # Update session stats
+                    self._stats["dictations"] += 1
+                    self._stats["total_dictation_chars"] += char_count
+                    self._stats["total_dictation_time"] += t2 - t0
+                    incognito = self.cfg.get("incognito", False)
+                    if text and not incognito:
+                        dictation_log.append(text, t2 - t0)
+                        self._dictation_history.append({
+                            "text": text,
+                            "timestamp": datetime.now().strftime("%H:%M"),
+                            "chars": len(text),
+                        })
+                        if len(self._dictation_history) > 10:
+                            self._dictation_history = self._dictation_history[-10:]
+                        self._refresh_menu()
+                # Success -- remove crash-safety WAV (text is in the log)
                 self.recorder.stop_streaming()  # defensive: ensure writer closed
                 if self._dictation_wav_path:
                     self._safe_unlink(self._dictation_wav_path)
@@ -457,33 +527,48 @@ class WhisperSync:
                     f"(backup {backup_device} {backup_model})",
                     extra={"secondary": True},
                 )
-                if text:
-                    paste(text, self.cfg["paste_method"])
+                is_feature = self._feature_suggest_active
+                self._feature_suggest_active = False
 
-                # Update session stats
-                self._stats["dictations"] += 1
-                self._stats["total_dictation_chars"] += char_count
-                self._stats["total_dictation_time"] += duration
-
-                incognito = self.cfg.get("incognito", False)
-                if text and not incognito:
-                    dictation_log.append(text, duration)
-                    self._dictation_history.append({
-                        "text": text,
-                        "timestamp": datetime.now().strftime("%H:%M"),
-                        "chars": len(text),
-                    })
-                    if len(self._dictation_history) > 10:
-                        self._dictation_history = self._dictation_history[-10:]
-                    self._refresh_menu()
-
-                delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
-                if incognito:
-                    logger.info(f"Overlay dictation: {duration:.2f}s - {delivery} ({char_count} chars)", extra={"secondary": True})
+                if is_feature and text:
+                    entry_id = feature_log.append_raw(text, duration)
+                    logger.info(f"Feature suggestion (overlay) saved: {char_count} chars in {duration:.2f}s", extra={"secondary": True})
+                    notify("Feature saved", f"Suggestion recorded ({char_count} chars)")
+                    self._stats["feature_suggestions"] += 1
+                    threading.Thread(
+                        target=self._format_feature_async,
+                        args=(text, entry_id),
+                        daemon=True,
+                    ).start()
                 else:
-                    log_dictation_result(text or "", duration, delivery, char_count, secondary=True)
+                    if text:
+                        paste(text, self.cfg["paste_method"])
+
+                    # Update session stats
+                    self._stats["dictations"] += 1
+                    self._stats["total_dictation_chars"] += char_count
+                    self._stats["total_dictation_time"] += duration
+
+                    incognito = self.cfg.get("incognito", False)
+                    if text and not incognito:
+                        dictation_log.append(text, duration)
+                        self._dictation_history.append({
+                            "text": text,
+                            "timestamp": datetime.now().strftime("%H:%M"),
+                            "chars": len(text),
+                        })
+                        if len(self._dictation_history) > 10:
+                            self._dictation_history = self._dictation_history[-10:]
+                        self._refresh_menu()
+
+                    delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
+                    if incognito:
+                        logger.info(f"Overlay dictation: {duration:.2f}s - {delivery} ({char_count} chars)", extra={"secondary": True})
+                    else:
+                        log_dictation_result(text or "", duration, delivery, char_count, secondary=True)
 
             except Exception as e:
+                self._feature_suggest_active = False
                 logger.error(f"Overlay dictation error: {e}", extra={"secondary": True})
                 import traceback
                 logger.debug(traceback.format_exc())
@@ -1619,6 +1704,40 @@ class WhisperSync:
         except _sp.TimeoutExpired:
             logger.warning("Claude CLI timed out generating minutes (5 min limit)")
 
+    def _format_feature_async(self, raw_text: str, entry_id: str):
+        """Format a feature suggestion via Claude CLI (background thread)."""
+        import subprocess as _sp
+
+        prompt_file = Path(__file__).parent / "feature_prompt.md"
+        if not prompt_file.exists():
+            logger.warning(f"Feature prompt template not found: {prompt_file}")
+            return
+
+        prompt_text = prompt_file.read_text(encoding="utf-8")
+        prompt_text = prompt_text.replace("{TRANSCRIPTION}", raw_text)
+
+        logger.info("Formatting feature suggestion via Claude CLI...")
+        try:
+            result = _sp.run(
+                ["claude", "-p", "--model", "haiku"],
+                input=prompt_text,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                feature_log.update_consolidated(entry_id, result.stdout.strip())
+                logger.info("Feature suggestion formatted successfully")
+                notify("Feature formatted", "Claude formatted your feature suggestion")
+            else:
+                logger.warning(f"Claude CLI returned code {result.returncode}")
+                if result.stderr:
+                    logger.debug(f"stderr: {result.stderr[:500]}")
+        except FileNotFoundError:
+            logger.warning("Claude CLI not found - raw feature saved without formatting")
+        except _sp.TimeoutExpired:
+            logger.warning("Claude CLI timed out formatting feature (60s limit)")
+
     def _meeting_temp_dir(self) -> Path:
         return Path(__file__).parent / "logs" / "data" / "meeting"
 
@@ -1754,6 +1873,15 @@ class WhisperSync:
                 radio=True,
             )
             for hk in HOTKEY_OPTIONS
+        ]
+        feature_hk_items = [
+            pystray.MenuItem(
+                hk,
+                self._cb(self._set_hotkey, "feature_suggest", hk),
+                checked=lambda item, hk=hk: self.cfg["hotkeys"].get("feature_suggest", "ctrl+shift+alt+f") == hk,
+                radio=True,
+            )
+            for hk in FEATURE_HOTKEY_OPTIONS
         ]
         paste_items = [
             pystray.MenuItem(
@@ -1915,6 +2043,8 @@ class WhisperSync:
                                  pystray.Menu(*dictation_hk_items)),
                 pystray.MenuItem(f"Meeting Hotkey\t{self.cfg['hotkeys']['meeting_toggle']}",
                                  pystray.Menu(*meeting_hk_items)),
+                pystray.MenuItem(f"Feature Suggest Hotkey\t{self.cfg['hotkeys'].get('feature_suggest', 'ctrl+shift+alt+f')}",
+                                 pystray.Menu(*feature_hk_items)),
                 pystray.MenuItem(f"Paste Method\t{self.cfg['paste_method']}",
                                  pystray.Menu(*paste_items)),
                 pystray.Menu.SEPARATOR,
@@ -2322,6 +2452,8 @@ class WhisperSync:
             pystray.MenuItem(f"Meetings: {s['meetings']}", None, enabled=False),
             pystray.MenuItem(f"Total meeting time: {s['total_meeting_seconds'] // 60}m", None, enabled=False),
             pystray.MenuItem(f"Total meeting words: {s['total_meeting_words']:,}", None, enabled=False),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(f"Feature suggestions: {s['feature_suggestions']}", None, enabled=False),
         ]
         return pystray.Menu(*items)
 
@@ -2344,7 +2476,7 @@ class WhisperSync:
         self._save_and_refresh()
 
     def _set_hotkey(self, key: str, hotkey: str):
-        old = self.cfg["hotkeys"][key]
+        old = self.cfg["hotkeys"].get(key)
         if old == hotkey:
             return
         self.cfg["hotkeys"][key] = hotkey
@@ -2645,6 +2777,13 @@ class WhisperSync:
             self.toggle_meeting,
             suppress=False,
         )
+        feature_hk = self.cfg["hotkeys"].get("feature_suggest", "ctrl+shift+alt+f")
+        if feature_hk:
+            keyboard.add_hotkey(
+                feature_hk,
+                self.toggle_feature_suggest,
+                suppress=False,
+            )
 
         self.tray = pystray.Icon(
             "whisper-sync",
@@ -2682,6 +2821,7 @@ class WhisperSync:
         logger.info("WhisperSync running. Hotkeys:")
         logger.info(f"  Dictation: {self.cfg['hotkeys']['dictation_toggle']} (model: {dictation_model})")
         logger.info(f"  Meeting:   {self.cfg['hotkeys']['meeting_toggle']} (model: {self.cfg['model']})")
+        logger.info(f"  Feature:   {self.cfg['hotkeys'].get('feature_suggest', 'ctrl+shift+alt+f')}")
         logger.info(f"  Left-click: {self.cfg.get('left_click', 'meeting')}")
         logger.info(f"  Middle-click: {self.cfg.get('middle_click', 'dictation')}")
         logger.info(f"Log file: {get_log_path()}")
