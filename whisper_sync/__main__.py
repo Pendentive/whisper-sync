@@ -101,7 +101,7 @@ class WhisperSync:
         self.recorder = AudioRecorder(sample_rate=self.cfg["sample_rate"])
         self.tray = None
         self.state = None  # Initialized after tray creation in run()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._api_filter = "Windows WASAPI"  # None = show all
         self._dictation_wav_path: Path | None = None
         self._meeting_start_time: datetime | None = None
