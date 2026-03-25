@@ -2180,7 +2180,7 @@ class WhisperSync:
                                      checked=lambda item: self.cfg.get("log_window") == "verbose",
                                      radio=True),
                 )),
-                pystray.MenuItem("Session Stats", self._build_session_stats_menu()),
+                pystray.MenuItem("Weekly Stats", self._build_session_stats_menu()),
                 pystray.MenuItem("Notifications", pystray.Menu(*notification_items)),
                 pystray.Menu.SEPARATOR,
                 *incognito_items,
@@ -2528,7 +2528,7 @@ class WhisperSync:
         logger.info(f"Output folder changed to: {new_path}")
 
     def _build_session_stats_menu(self):
-        """Build session stats submenu items with weekly and lifetime context."""
+        """Build weekly stats submenu with today and wk columns."""
         s = self._stats
         uptime = datetime.now() - s["session_start"]
         hours, remainder = divmod(int(uptime.total_seconds()), 3600)
@@ -2539,18 +2539,26 @@ class WhisperSync:
         lifetime = weekly_stats.get_lifetime()
         weekly_avg = weekly_stats.get_weekly_average("total_dictation_time")
 
+        def _row(label, today_val, week_val):
+            """Format: 'Label: today_val | week_val' with aligned columns."""
+            left = f"{label}: {today_val}"
+            right = str(week_val)
+            # Pad left side to align the vertical bar
+            pad = max(1, 24 - len(left))
+            return f"{left}{' ' * pad}| {right}"
+
         items = [
-            pystray.MenuItem(f"Session uptime: {hours}h {minutes}m", None, enabled=False),
+            pystray.MenuItem(f"Uptime: {hours}h {minutes}m", None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(f"Dictations: {s['dictations']} today | {week.get('dictations', 0)} this week", None, enabled=False),
-            pystray.MenuItem(f"Avg dictation: {avg_dict_time:.2f}s | {weekly_avg:.2f}s weekly", None, enabled=False),
-            pystray.MenuItem(f"Chars dictated: {s['total_dictation_chars']:,} today | {week.get('total_dictation_chars', 0):,} this week", None, enabled=False),
+            pystray.MenuItem(_row("Dictations", s['dictations'], week.get('dictations', 0)), None, enabled=False),
+            pystray.MenuItem(_row("Avg dictation", f"{avg_dict_time:.1f}s", f"{weekly_avg:.1f}s"), None, enabled=False),
+            pystray.MenuItem(_row("Chars", f"{s['total_dictation_chars']:,}", f"{week.get('total_dictation_chars', 0):,}"), None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(f"Meetings: {s['meetings']} today | {week.get('meetings', 0)} this week", None, enabled=False),
-            pystray.MenuItem(f"Meeting time: {s['total_meeting_seconds'] // 60}m today | {week.get('total_meeting_seconds', 0) // 60}m this week", None, enabled=False),
-            pystray.MenuItem(f"Meeting words: {s['total_meeting_words']:,} today | {week.get('total_meeting_words', 0):,} this week", None, enabled=False),
+            pystray.MenuItem(_row("Meetings", s['meetings'], week.get('meetings', 0)), None, enabled=False),
+            pystray.MenuItem(_row("Meeting time", f"{s['total_meeting_seconds'] // 60}m", f"{week.get('total_meeting_seconds', 0) // 60}m"), None, enabled=False),
+            pystray.MenuItem(_row("Meeting words", f"{s['total_meeting_words']:,}", f"{week.get('total_meeting_words', 0):,}"), None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(f"Features: {s['feature_suggestions']} today | {week.get('feature_suggestions', 0)} this week", None, enabled=False),
+            pystray.MenuItem(_row("Features", s['feature_suggestions'], week.get('feature_suggestions', 0)), None, enabled=False),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(f"Lifetime dictations: {lifetime.get('dictations', 0):,}", None, enabled=False),
             pystray.MenuItem(f"Lifetime meetings: {lifetime.get('meetings', 0):,}", None, enabled=False),
