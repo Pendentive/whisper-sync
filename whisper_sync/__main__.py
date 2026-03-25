@@ -2540,15 +2540,11 @@ class WhisperSync:
         weekly_avg = weekly_stats.get_weekly_average("total_dictation_time")
 
         def _row(label, today_val, week_val):
-            """Format: 'Label: today_val | week_val' with aligned columns."""
-            left = f"{label}: {today_val}"
-            right = str(week_val)
-            # Pad left side to align the vertical bar
-            pad = max(1, 24 - len(left))
-            return f"{left}{' ' * pad}| {right}"
+            """Format with tab for Windows menu column alignment."""
+            return f"{label}\t{today_val} - {week_val}"
 
         items = [
-            pystray.MenuItem(f"Uptime: {hours}h {minutes}m", None, enabled=False),
+            pystray.MenuItem(f"Uptime\t{hours}h {minutes}m", None, enabled=False),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(_row("Dictations", s['dictations'], week.get('dictations', 0)), None, enabled=False),
             pystray.MenuItem(_row("Avg dictation", f"{avg_dict_time:.1f}s", f"{weekly_avg:.1f}s"), None, enabled=False),
@@ -2560,8 +2556,8 @@ class WhisperSync:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(_row("Features", s['feature_suggestions'], week.get('feature_suggestions', 0)), None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(f"Lifetime dictations: {lifetime.get('dictations', 0):,}", None, enabled=False),
-            pystray.MenuItem(f"Lifetime meetings: {lifetime.get('meetings', 0):,}", None, enabled=False),
+            pystray.MenuItem(f"Lifetime dictations\t{lifetime.get('dictations', 0):,}", None, enabled=False),
+            pystray.MenuItem(f"Lifetime meetings\t{lifetime.get('meetings', 0):,}", None, enabled=False),
         ]
         return pystray.Menu(*items)
 
@@ -2792,12 +2788,14 @@ class WhisperSync:
         self.worker.stop()
         self._backup.stop()
         keyboard.unhook_all()
+        # Stop the tray BEFORE spawning the new process so the old
+        # icon is removed and pystray's message loop exits cleanly.
+        if self.tray:
+            self.tray.stop()
         subprocess.Popen(
             [sys.executable, "-m", "whisper_sync"],
             cwd=str(Path(__file__).parent.parent),
         )
-        if self.tray:
-            self.tray.stop()
 
     def quit(self):
         weekly_stats.flush()
