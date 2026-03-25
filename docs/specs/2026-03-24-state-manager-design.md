@@ -2,7 +2,7 @@
 
 > **Date**: 2026-03-24
 > **Status**: Design
-> **Repo**: `N:/Github/repos/pendentive/whisper-sync/`
+> **Repo**: `https://github.com/Pendentive/whisper-sync`
 > **Approach**: A (Python-Native Refactor) with B/C evolution paths documented
 
 ## Context

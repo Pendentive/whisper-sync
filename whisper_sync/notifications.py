@@ -157,7 +157,7 @@ def notify_update(tag: str, title: str, body: str, *, progress=None):
         toast.tag = tag
         toast.group = "whispersync"
         if progress is not None and _has_progress_bar:
-            toast.progress_bar = ToastProgressBar("", "", progress=progress)
+            toast.progress_bar = ToastProgressBar(title, body, progress=progress)
         _toaster.show_toast(toast)
     except Exception as exc:
         _logger.debug(f"Toast update failed: {exc}")
@@ -210,7 +210,14 @@ class ToastListener:
         self._config = config
 
     def __call__(self, event) -> None:
-        enabled = set(self._config.get("toast_events", DEFAULT_TOAST_EVENTS))
+        raw_events = self._config.get("toast_events", DEFAULT_TOAST_EVENTS)
+        if not isinstance(raw_events, (list, tuple, set)):
+            _logger.debug(
+                "Invalid toast_events config (%r); falling back to defaults",
+                raw_events,
+            )
+            raw_events = DEFAULT_TOAST_EVENTS
+        enabled = set(raw_events)
         if event.type not in enabled:
             return
 

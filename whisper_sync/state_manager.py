@@ -118,13 +118,21 @@ class StateManager:
     def emit(self, event_type: str, *, data: dict | None = None, **state_changes):
         """Emit a typed event, update state, notify all listeners.
 
-        Thread-safe.  Listeners are called outside the lock.  Listeners
-        MUST NOT call emit() recursively (would deadlock).  If a listener
-        needs to trigger a follow-up state change, schedule it on a
-        background thread.
+        Thread-safe. Listeners are called outside the lock so they can read
+        state.current without blocking. While emit() may be called from
+        within a listener, doing so can create unbounded re-entrancy or event
+        loops if not carefully controlled. If a listener needs to trigger a
+        follow-up state change, prefer scheduling it on a background thread.
         """
         with self._lock:
             old = replace(self._state)
+            # Warn on unknown state fields (catches typos at call sites)
+            unknown_keys = [k for k in state_changes if not hasattr(self._state, k)]
+            if unknown_keys:
+                _logger.warning(
+                    "StateManager.emit received unknown state field(s): %s",
+                    ", ".join(sorted(unknown_keys)),
+                )
             for k, v in state_changes.items():
                 if hasattr(self._state, k):
                     setattr(self._state, k, v)
@@ -133,29 +141,34 @@ class StateManager:
                 timestamp=time.time(),
                 old_state=old,
                 new_state=replace(self._state),
-                data=data or {},
+                data=dict(data) if data is not None else {},
             )
             self._event_log.append(event)
+            # Snapshot listener lists under lock to avoid racey iteration
+            typed_cbs = list(self._typed_listeners.get(event_type, []))
+            global_cbs = list(self._global_listeners)
 
         # Notify outside lock
-        for cb in self._typed_listeners.get(event_type, []):
+        for cb in typed_cbs:
             try:
                 cb(event)
             except Exception:
                 _logger.exception("Typed listener error for %s", event_type)
-        for cb in self._global_listeners:
+        for cb in global_cbs:
             try:
                 cb(event)
             except Exception:
                 _logger.exception("Global listener error for %s", event_type)
 
     def on(self, event_type: str, callback: Callable[[StateEvent], None]):
-        """Subscribe to a specific event type."""
-        self._typed_listeners[event_type].append(callback)
+        """Subscribe to a specific event type. Thread-safe."""
+        with self._lock:
+            self._typed_listeners[event_type].append(callback)
 
     def on_any(self, callback: Callable[[StateEvent], None]):
-        """Subscribe to all events (for API server, dashboard, etc.)."""
-        self._global_listeners.append(callback)
+        """Subscribe to all events (for API server, dashboard, etc.). Thread-safe."""
+        with self._lock:
+            self._global_listeners.append(callback)
 
     # -- Properties --------------------------------------------------------
 

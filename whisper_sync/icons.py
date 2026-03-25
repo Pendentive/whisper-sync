@@ -64,7 +64,7 @@ ICON_REGISTRY: dict[str, IconSpec] = {
 
     # Terminal states
     "done":  IconSpec("#44CC44", "#66FF66", tooltip="Done!"),
-    "error": IconSpec("#CC44CC", "#FF66FF", tooltip="Error"),
+    "error": IconSpec("#CC44CC", "#FF66FF", tooltip="Error - check console"),
 
     # Animation frames
     "flash": IconSpec("#FFCC00", "#FFCC00", tooltip="Loading..."),
@@ -96,7 +96,10 @@ def build_icon(spec: IconSpec, progress: float | None = None,
 
     # Outer ring (full, partial arc, or absent)
     if progress is not None and 0.0 < progress < 1.0:
-        start_angle = -90  # 12 o'clock in PIL coordinates
+        # PIL angles: 0=3 o'clock, increasing counterclockwise in math coords.
+        # On screen (Y-down), increasing angles render clockwise visually.
+        # -90 = 12 o'clock. Adding sweep fills clockwise on screen.
+        start_angle = -90
         sweep = 360 * progress
         draw.arc(
             [margin, margin, outer_r - 1, outer_r - 1],
