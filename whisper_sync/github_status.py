@@ -44,6 +44,7 @@ class PRStatus:
     review_state: str  # pending, clean, suggestions, human-review
     suggestion_count: int = 0
     url: str = ""
+    labels: list = field(default_factory=list)  # label name strings
 
     @property
     def display(self) -> str:
@@ -139,6 +140,7 @@ def poll_prs(repo: str) -> list[PRStatus]:
                 review_state=review_state,
                 suggestion_count=suggestion_count,
                 url=pr.get("url", ""),
+                labels=labels,
             ))
 
         return parsed
@@ -163,13 +165,34 @@ def _count_copilot_suggestions(repo: str, pr_number: int) -> int:
     return 0
 
 
+def poll_recent_merged(repo: str, limit: int = 10) -> list[dict]:
+    """Fetch recently merged PRs for feature label scanning."""
+    try:
+        result = subprocess.run(
+            [_GH, "pr", "list", "--repo", repo,
+             "--state", "merged",
+             "--json", "number,title,url,labels,mergedAt",
+             "--limit", str(limit)],
+            capture_output=True, text=True, timeout=15,
+            encoding="utf-8", errors="replace",
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+        return json.loads(result.stdout)
+    except (json.JSONDecodeError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+        logger.debug(f"GitHub merged PR poll error: {e}")
+        return []
+
+
 class GitHubPoller:
     """Background thread that polls GitHub PR status."""
 
-    def __init__(self, repo: str, interval: int = 300, on_change=None):
+    def __init__(self, repo: str, interval: int = 300, on_change=None,
+                 on_feature_scan=None):
         self.repo = repo
         self.interval = interval
         self.on_change = on_change  # callback(old_state, new_state)
+        self.on_feature_scan = on_feature_scan  # callback(open_prs, merged_prs)
         self.state = GitHubState()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -232,6 +255,14 @@ class GitHubPoller:
                 self.on_change(old_prs, new_prs)
             except Exception as e:
                 logger.debug(f"GitHub status change callback error: {e}")
+
+        # Feature lifecycle scanning
+        if self.on_feature_scan:
+            try:
+                merged = poll_recent_merged(self.repo)
+                self.on_feature_scan(new_prs, merged)
+            except Exception as e:
+                logger.debug(f"Feature lifecycle scan error: {e}")
 
 
 def _state_changed(old: list[PRStatus], new: list[PRStatus]) -> bool:

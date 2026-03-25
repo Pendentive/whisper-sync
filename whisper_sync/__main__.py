@@ -2222,8 +2222,14 @@ class WhisperSync:
             """First poll — update menu regardless of change detection."""
             _on_change(old_prs, new_prs)
 
+        def _on_feature_scan(open_prs, merged_prs):
+            from . import feature_lifecycle
+            feature_lifecycle.scan_open_prs(open_prs)
+            feature_lifecycle.scan_merged_prs(merged_prs)
+
         self._github_poller = GitHubPoller(
             repo=repo, interval=interval, on_change=_on_change,
+            on_feature_scan=_on_feature_scan,
         )
         self._github_poller.start()
         if self._github_poller.state.available:
