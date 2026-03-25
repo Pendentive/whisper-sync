@@ -2185,6 +2185,7 @@ class WhisperSync:
                 pystray.Menu.SEPARATOR,
                 *incognito_items,
                 pystray.Menu.SEPARATOR,
+                pystray.MenuItem("Update", lambda: self._update()),
                 pystray.MenuItem("Restart", lambda: self._restart()),
                 pystray.MenuItem("Quit", lambda: self.quit()),
             )),
@@ -2783,6 +2784,61 @@ class WhisperSync:
             self._refresh_menu()
 
         threading.Thread(target=_do_download, daemon=True).start()
+
+    def _update(self):
+        """Pull latest code from dev and restart if updated."""
+        def _do_update():
+            import subprocess as _sp
+            repo_root = str(Path(__file__).parent.parent)
+
+            notify("Updating WhisperSync...", "Pulling latest from dev")
+
+            # Check for uncommitted changes
+            status = _sp.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo_root, capture_output=True, text=True, timeout=10
+            )
+            if status.stdout.strip():
+                logger.warning(f"Uncommitted changes detected:\n{status.stdout.strip()}")
+
+            # Fetch
+            fetch = _sp.run(
+                ["git", "fetch", "origin", "dev"],
+                cwd=repo_root, capture_output=True, text=True, timeout=30
+            )
+            if fetch.returncode != 0:
+                logger.error(f"git fetch failed: {fetch.stderr}")
+                notify("Update failed", "git fetch failed, check console")
+                return
+
+            # Check if there are updates
+            diff = _sp.run(
+                ["git", "rev-list", "HEAD..origin/dev", "--count"],
+                cwd=repo_root, capture_output=True, text=True, timeout=10
+            )
+            commit_count = int(diff.stdout.strip()) if diff.stdout.strip() else 0
+
+            if commit_count == 0:
+                notify("Already up to date", "No new changes on dev")
+                return
+
+            pull = _sp.run(
+                ["git", "pull", "origin", "dev"],
+                cwd=repo_root, capture_output=True, text=True, timeout=60
+            )
+            if pull.returncode != 0:
+                logger.error(f"git pull failed: {pull.stderr}")
+                notify("Update failed", "git pull failed, check console")
+                return
+
+            logger.info(f"Updated: {commit_count} new commit(s)")
+            notify("Updated!", f"{commit_count} new commit(s). Restarting...")
+
+            import time
+            time.sleep(2)  # Let the notification display
+            self._restart()
+
+        threading.Thread(target=_do_update, daemon=True).start()
 
     def _restart(self):
         import subprocess
