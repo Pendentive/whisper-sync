@@ -5,9 +5,31 @@ Handles AppUserModelID registration automatically.
 """
 
 import logging
+import os
 import threading
 
 _logger = logging.getLogger("whisper_sync.notifications")
+
+
+def _ensure_com():
+    """Initialize COM on the calling thread if on Windows.
+
+    Toast notifications use Windows Runtime COM interfaces that are bound to the
+    thread that created them.  When ``show_toast`` is called from a background
+    thread (e.g. ``_wait_worker`` during dictation recovery), the COM apartment
+    has not been initialized, which triggers a fatal SEH exception
+    (``0x8001010e``) that kills the process.
+
+    Calling ``CoInitializeEx`` is safe to repeat; it returns ``S_FALSE``
+    (wrapped as ``OSError``) when the apartment is already initialized.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.ole32.CoInitializeEx(0, 0)  # COINIT_MULTITHREADED
+    except OSError:
+        pass  # Already initialized on this thread
 
 _AUMID = "Pendentive.WhisperSync"
 _available = False
@@ -97,6 +119,7 @@ def notify(title: str, body: str, *, buttons=None, on_click=None):
 
             toast.on_activated = _body_handler
 
+        _ensure_com()
         _toaster.show_toast(toast)
     except Exception as exc:
         _logger.debug(f"Toast notification failed: {exc}")
@@ -130,6 +153,7 @@ def notify_progress(title: str, caption: str, *, progress=None, progress_overrid
             progress_override=progress_override,
         )
         toast = Toast(progress_bar=progress_bar)
+        _ensure_com()
         _toaster.show_toast(toast)
     except Exception as exc:
         _logger.debug(f"Toast progress notification failed: {exc}")
@@ -158,6 +182,7 @@ def notify_update(tag: str, title: str, body: str, *, progress=None):
         toast.group = "whispersync"
         if progress is not None and _has_progress_bar:
             toast.progress_bar = ToastProgressBar(title, body, progress=progress)
+        _ensure_com()
         _toaster.show_toast(toast)
     except Exception as exc:
         _logger.debug(f"Toast update failed: {exc}")
