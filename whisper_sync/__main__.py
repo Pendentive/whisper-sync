@@ -2185,7 +2185,10 @@ class WhisperSync:
                 pystray.Menu.SEPARATOR,
                 *incognito_items,
                 pystray.Menu.SEPARATOR,
-                pystray.MenuItem("Update", lambda: self._update()),
+                pystray.MenuItem("Update", pystray.Menu(
+                    pystray.MenuItem("Stable\tmain", lambda: self._update("main")),
+                    pystray.MenuItem("Labs\tdev", lambda: self._update("dev")),
+                )),
                 pystray.MenuItem("Restart", lambda: self._restart()),
                 pystray.MenuItem("Quit", lambda: self.quit()),
             )),
@@ -2785,13 +2788,13 @@ class WhisperSync:
 
         threading.Thread(target=_do_download, daemon=True).start()
 
-    def _update(self):
-        """Pull latest code from dev and restart if updated."""
+    def _update(self, branch="dev"):
+        """Pull latest code from a branch and restart if updated."""
         def _do_update():
             import subprocess as _sp
             repo_root = str(Path(__file__).parent.parent)
 
-            notify("Updating WhisperSync...", "Pulling latest from dev")
+            notify("Updating WhisperSync...", f"Pulling latest from {branch}")
 
             # Check for uncommitted changes
             status = _sp.run(
@@ -2803,7 +2806,7 @@ class WhisperSync:
 
             # Fetch
             fetch = _sp.run(
-                ["git", "fetch", "origin", "dev"],
+                ["git", "fetch", "origin", branch],
                 cwd=repo_root, capture_output=True, text=True, timeout=30
             )
             if fetch.returncode != 0:
@@ -2813,17 +2816,32 @@ class WhisperSync:
 
             # Check if there are updates
             diff = _sp.run(
-                ["git", "rev-list", "HEAD..origin/dev", "--count"],
+                ["git", "rev-list", f"HEAD..origin/{branch}", "--count"],
                 cwd=repo_root, capture_output=True, text=True, timeout=10
             )
             commit_count = int(diff.stdout.strip()) if diff.stdout.strip() else 0
 
             if commit_count == 0:
-                notify("Already up to date", "No new changes on dev")
+                notify("Already up to date", f"No new changes on {branch}")
                 return
 
+            # Checkout the target branch if not already on it
+            current = _sp.run(
+                ["git", "branch", "--show-current"],
+                cwd=repo_root, capture_output=True, text=True, timeout=10
+            )
+            if current.stdout.strip() != branch:
+                checkout = _sp.run(
+                    ["git", "checkout", branch],
+                    cwd=repo_root, capture_output=True, text=True, timeout=15
+                )
+                if checkout.returncode != 0:
+                    logger.error(f"git checkout {branch} failed: {checkout.stderr}")
+                    notify("Update failed", f"Could not switch to {branch}")
+                    return
+
             pull = _sp.run(
-                ["git", "pull", "origin", "dev"],
+                ["git", "pull", "origin", branch],
                 cwd=repo_root, capture_output=True, text=True, timeout=60
             )
             if pull.returncode != 0:
@@ -2831,8 +2849,8 @@ class WhisperSync:
                 notify("Update failed", "git pull failed, check console")
                 return
 
-            logger.info(f"Updated: {commit_count} new commit(s)")
-            notify("Updated!", f"{commit_count} new commit(s). Restarting...")
+            logger.info(f"Updated from {branch}: {commit_count} new commit(s)")
+            notify("Updated!", f"{commit_count} commit(s) from {branch}. Restarting...")
 
             import time
             time.sleep(2)  # Let the notification display
