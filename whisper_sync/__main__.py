@@ -2778,6 +2778,7 @@ class WhisperSync:
 
     def _restart(self):
         import subprocess
+        weekly_stats.flush()
         if self.recorder.is_recording:
             self.recorder.stop()
         self.worker.stop()
@@ -2791,6 +2792,7 @@ class WhisperSync:
             self.tray.stop()
 
     def quit(self):
+        weekly_stats.flush()
         if self.recorder.is_recording:
             self.recorder.stop()
         self.worker.stop()
@@ -2964,9 +2966,25 @@ class WhisperSync:
         # Start GitHub PR status polling if configured
         self._start_github_poller()
 
+        # Periodic flush for persistent weekly stats
+        self._stats_flush_stop = threading.Event()
+        def _stats_flush_loop():
+            while not self._stats_flush_stop.wait(weekly_stats._flush_interval):
+                try:
+                    weekly_stats.flush()
+                except Exception:
+                    pass
+        threading.Thread(target=_stats_flush_loop, daemon=True).start()
+
         try:
             self.tray.run()
         finally:
+            # Flush persistent stats before shutdown
+            try:
+                self._stats_flush_stop.set()
+                weekly_stats.flush()
+            except Exception:
+                pass
             # Always release keyboard hooks to prevent stuck modifier keys
             keyboard.unhook_all()
             self.worker.stop()
