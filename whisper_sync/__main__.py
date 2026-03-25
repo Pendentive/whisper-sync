@@ -349,7 +349,8 @@ class WhisperSync:
             log_dir = self._dictation_log_dir()
             log_dir.mkdir(parents=True, exist_ok=True)
             ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            self._dictation_wav_path = log_dir / f"{ts}.wav"
+            prefix = "feature_" if self._feature_suggest_active else ""
+            self._dictation_wav_path = log_dir / f"{prefix}{ts}.wav"
             self.recorder.start_streaming(self._dictation_wav_path)
 
     def _stop_dictation(self):
@@ -670,6 +671,66 @@ class WhisperSync:
             Path(wav_path).unlink(missing_ok=True)
         except Exception as e:
             logger.error(f"Failed to recover dictation: {e}")
+            logger.info(f"Audio preserved at: {wav_path}")
+
+    def _recover_feature(self, wav_path: str):
+        """Recover a crashed feature suggestion with interactive notification.
+
+        Unlike dictation recovery (clipboard only), feature recovery routes
+        the transcription to the feature log and applies Claude formatting.
+        Shows a toast with Recover / Cancel options.
+        """
+        logger.info(f"Recovering crashed feature suggestion from: {wav_path}")
+        try:
+            import numpy as np
+            import wave
+            with wave.open(wav_path, "r") as wf:
+                frames = wf.readframes(wf.getnframes())
+                audio_np = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32767.0
+
+            dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
+            text = self.worker.transcribe_fast(audio_np, model_override=dictation_model)
+            if not text:
+                logger.info("Crashed feature suggestion produced no text, cleaning up")
+                Path(wav_path).unlink(missing_ok=True)
+                return
+
+            logger.info(f"Recovered feature text ({len(text)} chars): {text[:80]}...")
+
+            # Show interactive notification with Recover / Cancel options
+            def _do_recover():
+                entry_id = feature_log.append_raw(text, 0)
+                logger.info(f"Feature suggestion recovered to feature log: {entry_id}")
+                # Format via Claude CLI in background
+                threading.Thread(
+                    target=self._format_feature_async,
+                    args=(text, entry_id),
+                    daemon=True,
+                ).start()
+                notify("Feature recovered", f"{len(text)} chars saved to feature log")
+
+            def _do_cancel():
+                logger.info("Feature recovery cancelled by user")
+
+            try:
+                preview = f'"{text[:120]}..."' if len(text) > 120 else f'"{text}"'
+                notify(
+                    "Recover feature suggestion?",
+                    preview,
+                    buttons=[
+                        {"label": "Recover", "action": _do_recover},
+                        {"label": "Cancel", "action": _do_cancel},
+                    ],
+                )
+            except Exception:
+                # If notification fails, auto-recover silently
+                logger.debug("Feature recovery notification failed, auto-recovering", exc_info=True)
+                _do_recover()
+
+            # Clean up WAV after showing notification (actions handle the rest)
+            Path(wav_path).unlink(missing_ok=True)
+        except Exception as e:
+            logger.error(f"Failed to recover feature suggestion: {e}")
             logger.info(f"Audio preserved at: {wav_path}")
 
     def _recover_meetings(self):
@@ -2864,9 +2925,12 @@ class WhisperSync:
         def _wait_worker():
             if self.worker.wait_ready(timeout=120):
                 logger.info(f"Dictation model '{dictation_model}' ready (worker pid={self.worker._process.pid})")
-                # Recover any crashed dictations found at startup
+                # Recover any crashed dictations/features found at startup
                 for wav_path in self._recovered_dictation_paths:
-                    self._recover_dictation(wav_path)
+                    if Path(wav_path).name.startswith("feature_"):
+                        self._recover_feature(wav_path)
+                    else:
+                        self._recover_dictation(wav_path)
                 self._recovered_dictation_paths = []
                 # Recover any crashed meetings — show dialog for naming
                 if self._recovered_meeting_paths:
