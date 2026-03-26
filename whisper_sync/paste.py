@@ -10,7 +10,7 @@ from .logger import logger
 
 # Delay (seconds) before restoring previous clipboard contents.
 # Must be long enough for the paste keystroke to land.
-_RESTORE_DELAY: float = 0.5
+_RESTORE_DELAY: float = 0.8
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -22,15 +22,17 @@ _has_win32clipboard = False
 if _IS_WINDOWS:
     try:
         import win32clipboard
+        import win32con
         _has_win32clipboard = True
     except ImportError:
         logger.debug("pywin32 not installed, clipboard preservation limited to text only")
 
 
-def _save_clipboard_win32() -> list[tuple[int, bytes]] | None:
-    """Save all clipboard formats as (format_id, raw_bytes) pairs.
+def _save_clipboard_win32() -> list[tuple[int, bytes | str | list]] | None:
+    """Save all clipboard formats, preserving type info for proper restore.
 
-    Uses win32clipboard to preserve images, files, and all other formats.
+    Returns a list of (format_id, data) tuples where data type matches
+    what win32clipboard.SetClipboardData expects for that format.
     """
     try:
         win32clipboard.OpenClipboard()
@@ -45,24 +47,22 @@ def _save_clipboard_win32() -> list[tuple[int, bytes]] | None:
                 break
             try:
                 data = win32clipboard.GetClipboardData(fmt)
-                # GetClipboardData returns different types depending on format.
-                # Convert to bytes for uniform storage.
-                if isinstance(data, str):
-                    data = data.encode("utf-8")
-                elif not isinstance(data, bytes):
-                    # Some formats return ints or other types; skip them
-                    continue
                 formats.append((fmt, data))
             except Exception:
-                # Some formats can't be read (e.g., synthesized formats); skip
+                # Some synthesized formats can't be read directly; skip
                 continue
         return formats if formats else None
     finally:
         win32clipboard.CloseClipboard()
 
 
-def _restore_clipboard_win32(formats: list[tuple[int, bytes]]) -> None:
-    """Restore previously saved clipboard formats via win32clipboard."""
+def _restore_clipboard_win32(formats: list[tuple[int, bytes | str | list]]) -> None:
+    """Restore previously saved clipboard formats.
+
+    Data is passed back to SetClipboardData in the same type it was
+    retrieved, so images, files, text, and other formats round-trip
+    correctly.
+    """
     try:
         win32clipboard.OpenClipboard()
     except Exception:
@@ -71,15 +71,35 @@ def _restore_clipboard_win32(formats: list[tuple[int, bytes]]) -> None:
         win32clipboard.EmptyClipboard()
         for fmt, data in formats:
             try:
-                # CF_UNICODETEXT (13) was stored as utf-8 bytes; decode back
-                if fmt == 13:  # CF_UNICODETEXT
-                    win32clipboard.SetClipboardData(fmt, data.decode("utf-8"))
-                else:
-                    win32clipboard.SetClipboardData(fmt, data)
+                win32clipboard.SetClipboardData(fmt, data)
             except Exception:
                 continue
     finally:
         win32clipboard.CloseClipboard()
+
+
+def _has_focused_input() -> bool:
+    """Check if there's a focused window that can accept paste.
+
+    Returns False if the desktop or taskbar is focused.
+    """
+    if not _IS_WINDOWS:
+        return True  # Assume yes on non-Windows
+    try:
+        import ctypes
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        # Desktop window and taskbar shouldn't receive paste
+        class_name = ctypes.create_unicode_buffer(256)
+        ctypes.windll.user32.GetClassNameW(hwnd, class_name, 256)
+        name = class_name.value
+        # Shell_TrayWnd = taskbar, Progman/WorkerW = desktop
+        if name in ("Shell_TrayWnd", "Progman", "WorkerW"):
+            return False
+        return True
+    except Exception:
+        return True  # Fail open
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +107,7 @@ def _restore_clipboard_win32(formats: list[tuple[int, bytes]]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _save_clipboard() -> list[tuple[int, bytes]] | str | None:
+def _save_clipboard() -> list[tuple[int, bytes | str | list]] | str | None:
     """Save current clipboard contents.
 
     On Windows with pywin32 this preserves ALL formats (images, files,
@@ -102,7 +122,7 @@ def _save_clipboard() -> list[tuple[int, bytes]] | str | None:
         return None
 
 
-def _schedule_clipboard_restore(previous: list[tuple[int, bytes]] | str | None) -> None:
+def _schedule_clipboard_restore(previous: list | str | None) -> None:
     """Restore *previous* clipboard contents after a short delay.
 
     Runs in a daemon thread so it never blocks the caller.
@@ -127,22 +147,31 @@ def _schedule_clipboard_restore(previous: list[tuple[int, bytes]] | str | None) 
 def paste_clipboard(text: str, *, restore: bool = True) -> None:
     """Copy text to clipboard and attempt to paste into focused window.
 
-    ALWAYS puts text in clipboard first, then tries Ctrl+V.
-    Text is guaranteed to be in clipboard regardless of outcome.
-
-    When *restore* is True the previous clipboard contents are put back
-    after the paste keystroke has had time to land.
+    Step 1: Save previous clipboard (if restore=True)
+    Step 2: Write dictation text to clipboard (ALWAYS)
+    Step 3: If a window is focused, send Ctrl+V and schedule restore
+    Step 4: If no window is focused, leave dictation text on clipboard
+            (no restore, so user can manually Ctrl+V later)
     """
     previous = _save_clipboard() if restore else None
 
     pyperclip.copy(text)
     logger.info(f"Text in clipboard ({len(text)} chars)")
+
+    # If no focused input window, skip Ctrl+V but still schedule restore.
+    # The dictation text is on the clipboard for manual paste. After the
+    # restore delay, the previous clipboard contents come back so the user
+    # has access to both (dictation first, then original).
+    if not _has_focused_input():
+        logger.debug("No focused input window, text left in clipboard for manual paste")
+        _schedule_clipboard_restore(previous)
+        return
+
     try:
         import keyboard
         time.sleep(0.1)
         keyboard.send("ctrl+v")
     except Exception as e:
-        # Release any stuck modifier keys from the failed send
         try:
             import keyboard as _kb
             _kb.release("ctrl")
@@ -158,6 +187,12 @@ def paste_clipboard(text: str, *, restore: bool = True) -> None:
 def paste_keystrokes(text: str, *, restore: bool = True) -> None:
     """Type text via simulated keystrokes. Falls back to clipboard if it fails."""
     previous = _save_clipboard() if restore else None
+
+    if not _has_focused_input():
+        pyperclip.copy(text)
+        logger.debug("No focused input window, text copied to clipboard")
+        _schedule_clipboard_restore(previous)
+        return
 
     try:
         import keyboard
