@@ -94,19 +94,22 @@ CLICK_ACTIONS = {
 
 
 def _get_cpu_name() -> str:
-    """Get CPU model name via WMI on Windows, platform.processor() fallback."""
+    """Get CPU model name via PowerShell CIM on Windows, platform.processor() fallback."""
     import platform
     if platform.system() == "Windows":
         try:
             import subprocess
             result = subprocess.run(
-                ["wmic", "cpu", "get", "name"],
+                ["powershell.exe", "-NoProfile", "-Command",
+                 "(Get-CimInstance Win32_Processor).Name"],
                 capture_output=True, text=True, timeout=5
             )
-            if result.returncode == 0:
-                lines = [l.strip() for l in result.stdout.strip().split("\n") if l.strip() and l.strip() != "Name"]
-                if lines:
-                    return lines[0]
+            if result.returncode == 0 and result.stdout.strip():
+                name = result.stdout.strip()
+                # Strip trailing "Processor" if present
+                if name.endswith(" Processor"):
+                    name = name[:-len(" Processor")]
+                return name
         except Exception:
             pass
     name = platform.processor()
