@@ -14,6 +14,8 @@ on:
   workflow_run:
     workflows: ["PR Review"]
     types: [completed]
+  # Manual trigger from CLI: gh workflow run auto-merge.yml
+  workflow_dispatch:
 
 permissions:
   contents: write
