@@ -8,9 +8,13 @@ import pyperclip
 
 from .logger import logger
 
-# Delay (seconds) before restoring previous clipboard contents.
-# Must be long enough for the paste keystroke to land.
-_RESTORE_DELAY: float = 0.8
+# Delay (seconds) after detecting Ctrl+V before restoring clipboard.
+# Gives the receiving app time to finish reading clipboard data.
+_POST_PASTE_DELAY: float = 0.8
+
+# Timeout (seconds) for waiting for manual Ctrl+V when no window is focused.
+# After this, we give up waiting and restore clipboard anyway.
+_MANUAL_PASTE_TIMEOUT: float = 30.0
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -122,26 +126,62 @@ def _save_clipboard() -> list[tuple[int, bytes | str | list]] | str | None:
         return None
 
 
-def _schedule_clipboard_restore(previous: list | str | None) -> None:
-    """Restore *previous* clipboard contents after a short delay.
+def _restore_clipboard(previous: list | str | None) -> None:
+    """Restore *previous* clipboard contents immediately."""
+    if previous is None:
+        return
+    try:
+        if isinstance(previous, list) and _has_win32clipboard:
+            _restore_clipboard_win32(previous)
+        elif isinstance(previous, str):
+            pyperclip.copy(previous)
+        logger.debug("Clipboard restored to previous contents")
+    except Exception:
+        logger.debug("Clipboard restore failed", exc_info=True)
 
-    Runs in a daemon thread so it never blocks the caller.
+
+def _wait_for_paste_then_restore(previous: list | str | None) -> None:
+    """Wait for Ctrl+V, then restore previous clipboard after a delay.
+
+    Listens for the next Ctrl+V keystroke (either our auto-paste or the
+    user's manual paste). Once detected, waits _POST_PASTE_DELAY seconds
+    for the receiving app to finish reading, then restores the cached
+    clipboard contents.
+
+    Runs in a daemon thread. Times out after _MANUAL_PASTE_TIMEOUT.
     """
     if previous is None:
         return
 
-    def _restore():
-        time.sleep(_RESTORE_DELAY)
+    def _wait_and_restore():
         try:
-            if isinstance(previous, list) and _has_win32clipboard:
-                _restore_clipboard_win32(previous)
-            elif isinstance(previous, str):
-                pyperclip.copy(previous)
-            logger.debug("Clipboard restored to previous contents")
+            import keyboard
+            # Wait for the next Ctrl+V (blocks until pressed or timeout)
+            keyboard.wait("ctrl+v", suppress=False, trigger_on_release=False)
         except Exception:
-            logger.debug("Clipboard restore failed", exc_info=True)
+            # Timeout or error; restore anyway after a shorter delay
+            logger.debug("Paste wait interrupted, restoring clipboard")
+            time.sleep(1.0)
+            _restore_clipboard(previous)
+            return
 
-    threading.Thread(target=_restore, daemon=True).start()
+        # Ctrl+V detected; give the receiving app time to read clipboard
+        time.sleep(_POST_PASTE_DELAY)
+        _restore_clipboard(previous)
+
+    t = threading.Thread(target=_wait_and_restore, daemon=True)
+    t.start()
+
+    # Safety: if the thread is still alive after the timeout, the user
+    # never pasted. Restore clipboard in a fallback thread so it's not
+    # stuck forever.
+    def _timeout_fallback():
+        t.join(timeout=_MANUAL_PASTE_TIMEOUT)
+        if t.is_alive():
+            logger.debug("Paste wait timed out, restoring clipboard")
+            _restore_clipboard(previous)
+
+    threading.Thread(target=_timeout_fallback, daemon=True).start()
 
 
 def paste_clipboard(text: str, *, restore: bool = True) -> None:
@@ -149,39 +189,35 @@ def paste_clipboard(text: str, *, restore: bool = True) -> None:
 
     Step 1: Save previous clipboard (if restore=True)
     Step 2: Write dictation text to clipboard (ALWAYS)
-    Step 3: If a window is focused, send Ctrl+V and schedule restore
-    Step 4: If no window is focused, leave dictation text on clipboard
-            (no restore, so user can manually Ctrl+V later)
+    Step 3: If focused window, send Ctrl+V (auto-paste)
+    Step 4: Wait for Ctrl+V detection, then restore previous clipboard
+
+    The restore fires after the paste is consumed, not on a blind timer.
     """
     previous = _save_clipboard() if restore else None
 
     pyperclip.copy(text)
     logger.info(f"Text in clipboard ({len(text)} chars)")
 
-    # If no focused input window, skip Ctrl+V but still schedule restore.
-    # The dictation text is on the clipboard for manual paste. After the
-    # restore delay, the previous clipboard contents come back so the user
-    # has access to both (dictation first, then original).
-    if not _has_focused_input():
-        logger.debug("No focused input window, text left in clipboard for manual paste")
-        _schedule_clipboard_restore(previous)
-        return
-
-    try:
-        import keyboard
-        time.sleep(0.1)
-        keyboard.send("ctrl+v")
-    except Exception as e:
+    if _has_focused_input():
         try:
-            import keyboard as _kb
-            _kb.release("ctrl")
-        except Exception:
-            pass
-        logger.warning(f"Auto-paste failed (text still in clipboard): {e}")
-        # Don't restore - user needs clipboard contents to paste manually
-        return
+            import keyboard
+            time.sleep(0.1)
+            keyboard.send("ctrl+v")
+        except Exception as e:
+            try:
+                import keyboard as _kb
+                _kb.release("ctrl")
+            except Exception:
+                pass
+            logger.warning(f"Auto-paste failed (text still in clipboard): {e}")
+            # Don't restore; user needs clipboard contents to paste manually
+            return
+    else:
+        logger.debug("No focused input window, text left in clipboard for manual paste")
 
-    _schedule_clipboard_restore(previous)
+    # Wait for paste (auto or manual) then restore
+    _wait_for_paste_then_restore(previous)
 
 
 def paste_keystrokes(text: str, *, restore: bool = True) -> None:
@@ -191,17 +227,18 @@ def paste_keystrokes(text: str, *, restore: bool = True) -> None:
     if not _has_focused_input():
         pyperclip.copy(text)
         logger.debug("No focused input window, text copied to clipboard")
-        _schedule_clipboard_restore(previous)
+        _wait_for_paste_then_restore(previous)
         return
 
     try:
         import keyboard
         keyboard.write(text, delay=0.01)
-        _schedule_clipboard_restore(previous)
+        # Keystrokes don't use clipboard, so restore immediately
+        _restore_clipboard(previous)
     except Exception:
         pyperclip.copy(text)
         logger.warning("Keystroke paste failed, text copied to clipboard")
-        # Don't restore - user needs clipboard contents to paste manually
+        # Don't restore; user needs clipboard contents to paste manually
 
 
 def paste(text: str, method: str = "clipboard", *, restore: bool = True) -> None:
