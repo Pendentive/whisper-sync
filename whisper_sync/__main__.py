@@ -2873,31 +2873,58 @@ class WhisperSync:
         threading.Thread(target=_do_update, daemon=True).start()
 
     def _restart(self):
-        import subprocess
-        weekly_stats.flush()
-        if self.recorder.is_recording:
-            self.recorder.stop()
-        self.worker.stop()
-        self._backup.stop()
-        keyboard.unhook_all()
-        # Stop the tray BEFORE spawning the new process so the old
-        # icon is removed and pystray's message loop exits cleanly.
-        if self.tray:
-            self.tray.stop()
-        subprocess.Popen(
-            [sys.executable, "-m", "whisper_sync"],
-            cwd=str(Path(__file__).parent.parent),
-        )
+        """Restart WhisperSync by spawning a new process and exiting.
+
+        Must be deferred to a background thread because pystray menu
+        callbacks run inside the Win32 message pump. Calling tray.stop()
+        from within a callback posts WM_QUIT but can't process it until
+        the callback returns, leaving the old tray icon alive while the
+        new process is already running.
+
+        The fix: spawn a short-lived thread that sleeps briefly (letting
+        the menu callback return and the message pump resume), then
+        performs the actual cleanup and respawn.
+        """
+        def _do_restart():
+            import subprocess
+            import time
+            # Brief sleep lets the pystray menu callback return so the
+            # message pump can process WM_QUIT when we call tray.stop().
+            time.sleep(0.3)
+
+            weekly_stats.flush()
+            if self.recorder.is_recording:
+                self.recorder.stop()
+            self.worker.stop()
+            self._backup.stop()
+            keyboard.unhook_all()
+
+            # Spawn new process BEFORE stopping tray so it starts loading
+            # models while we clean up. The old tray icon is removed by
+            # tray.stop() which now runs outside the callback context.
+            subprocess.Popen(
+                [sys.executable, "-m", "whisper_sync"],
+                cwd=str(Path(__file__).parent.parent),
+            )
+            if self.tray:
+                self.tray.stop()
+
+        threading.Thread(target=_do_restart, daemon=True).start()
 
     def quit(self):
-        weekly_stats.flush()
-        if self.recorder.is_recording:
-            self.recorder.stop()
-        self.worker.stop()
-        self._backup.stop()
-        keyboard.unhook_all()
-        if self.tray:
-            self.tray.stop()
+        """Quit WhisperSync. Deferred like _restart for the same reason."""
+        def _do_quit():
+            import time
+            time.sleep(0.3)
+            weekly_stats.flush()
+            if self.recorder.is_recording:
+                self.recorder.stop()
+            self.worker.stop()
+            self._backup.stop()
+            keyboard.unhook_all()
+            if self.tray:
+                self.tray.stop()
+        threading.Thread(target=_do_quit, daemon=True).start()
 
     @staticmethod
     def _prompt_large_download(model_name: str, size: str) -> bool:
