@@ -29,12 +29,13 @@ def _log_dir() -> Path:
     return get_dictation_log_dir()
 
 
-def append(text: str, duration: float) -> None:
+def append(text: str, duration: float, model: str = "") -> None:
     """Append a dictation entry to today's JSON log file.
 
     Args:
         text: The transcribed text (exactly as pasted).
         duration: Total pipeline time in seconds (stop -> paste).
+        model: Whisper model name used for transcription.
     """
     if not text or not text.strip():
         return
@@ -48,6 +49,7 @@ def append(text: str, duration: float) -> None:
         "timestamp": now.isoformat(timespec="seconds"),
         "duration": round(duration, 2),
         "chars": len(text),
+        "model": model,
         "text": text,
     }
 
