@@ -2087,14 +2087,13 @@ class WhisperSync:
         ]
 
         # --- Whisper mode ---
-        incognito_on = self.cfg.get("incognito", False)
         incognito_items = [
             pystray.MenuItem(
                 "Whisper Mode",
                 lambda: self._toggle_incognito(),
                 checked=lambda item: self.cfg.get("incognito", False),
             ),
-            pystray.MenuItem("  RAM only dictation, no disk, no logs", None, enabled=False),
+            pystray.MenuItem("  RAM only, no dictation saves", None, enabled=False),
         ]
 
         # Left-click fires the default menu item
@@ -2210,7 +2209,7 @@ class WhisperSync:
             if self.cfg["incognito"]:
                 notify(
                     "Whisper Mode Active",
-                    "RAM only. No disk, no logs, no recovery.",
+                    "RAM only. No dictation saves, no recovery.",
                 )
             else:
                 notify(
@@ -2934,7 +2933,7 @@ class WhisperSync:
         logger.info(f"  Middle-click: {self.cfg.get('middle_click', 'dictation')}")
         logger.info(f"Log file: {get_log_path()}")
         if self.cfg.get("incognito"):
-            logger.info("Whisper mode active - dictation data not stored on disk")
+            logger.info("Whisper mode active - dictation audio not saved to disk")
         if BackupTranscriber.is_enabled(self.cfg):
             backup_model = self.cfg.get("backup_model", "base")
             backup_device = self.cfg.get("backup_device", "cpu")
