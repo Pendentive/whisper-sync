@@ -476,7 +476,7 @@ class WhisperSync:
                     weekly_stats.record_dictation(char_count, t2 - t0)
                     incognito = self.cfg.get("incognito", False)
                     if text and not incognito:
-                        dictation_log.append(text, t2 - t0)
+                        dictation_log.append(text, t2 - t0, model=effective_model)
                         self._dictation_history.append({
                             "text": text,
                             "timestamp": datetime.now().strftime("%H:%M"),
@@ -602,7 +602,7 @@ class WhisperSync:
 
                     incognito = self.cfg.get("incognito", False)
                     if text and not incognito:
-                        dictation_log.append(text, duration)
+                        dictation_log.append(text, duration, model=backup_model)
                         self._dictation_history.append({
                             "text": text,
                             "timestamp": datetime.now().strftime("%H:%M"),
@@ -643,7 +643,7 @@ class WhisperSync:
 
                     incognito = self.cfg.get("incognito", False)
                     if text and not incognito:
-                        dictation_log.append(text, duration)
+                        dictation_log.append(text, duration, model=dictation_model)
                         self._dictation_history.append({
                             "text": text,
                             "timestamp": datetime.now().strftime("%H:%M"),
@@ -682,7 +682,7 @@ class WhisperSync:
             text = self.worker.transcribe_fast(audio_np, model_override=dictation_model)
             if text:
                 pyperclip.copy(text)
-                dictation_log.append(text, 0)
+                dictation_log.append(text, 0, model=dictation_model)
                 logger.info(f"Crash-recovered dictation copied to clipboard: {text[:80]}...")
                 # #38: Toast with recovered text info and Copy button
                 try:
