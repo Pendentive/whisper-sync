@@ -2185,6 +2185,10 @@ class WhisperSync:
                 pystray.Menu.SEPARATOR,
                 *incognito_items,
                 pystray.Menu.SEPARATOR,
+                *([] if is_standalone() else [pystray.MenuItem("Update", pystray.Menu(
+                    pystray.MenuItem("Stable\tmain", self._cb(self._update, "main")),
+                    pystray.MenuItem("Labs\tdev", self._cb(self._update, "dev")),
+                ))]),
                 pystray.MenuItem("Restart", lambda: self._restart()),
                 pystray.MenuItem("Quit", lambda: self.quit()),
             )),
@@ -2783,6 +2787,96 @@ class WhisperSync:
             self._refresh_menu()
 
         threading.Thread(target=_do_download, daemon=True).start()
+
+    _updating = False  # Guard against concurrent update clicks
+
+    def _update(self, branch="dev"):
+        """Pull latest code from a branch and restart if updated."""
+        if self._updating:
+            logger.debug("Update already in progress, ignoring")
+            return
+        self._updating = True
+
+        def _do_update():
+            import subprocess as _sp
+            repo_root = str(get_install_root())
+
+            try:
+                notify("Updating WhisperSync...", f"Pulling latest from {branch}")
+
+                # Check for uncommitted changes
+                status = _sp.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=repo_root, capture_output=True, text=True, timeout=10
+                )
+                if status.stdout.strip():
+                    logger.warning(f"Uncommitted changes detected:\n{status.stdout.strip()}")
+
+                # Fetch
+                fetch = _sp.run(
+                    ["git", "fetch", "origin", branch],
+                    cwd=repo_root, capture_output=True, text=True, timeout=30
+                )
+                if fetch.returncode != 0:
+                    logger.error(f"git fetch failed: {fetch.stderr}")
+                    notify("Update failed", "git fetch failed, check console")
+                    return
+
+                # Check if there are updates
+                diff = _sp.run(
+                    ["git", "rev-list", f"HEAD..origin/{branch}", "--count"],
+                    cwd=repo_root, capture_output=True, text=True, timeout=10
+                )
+                count_str = (diff.stdout or "").strip()
+                commit_count = int(count_str) if count_str.isdigit() else 0
+
+                if commit_count == 0:
+                    notify("Already up to date", f"No new changes on {branch}")
+                    return
+
+                # Checkout the target branch if not already on it
+                current = _sp.run(
+                    ["git", "branch", "--show-current"],
+                    cwd=repo_root, capture_output=True, text=True, timeout=10
+                )
+                if current.stdout.strip() != branch:
+                    checkout = _sp.run(
+                        ["git", "checkout", branch],
+                        cwd=repo_root, capture_output=True, text=True, timeout=15
+                    )
+                    if checkout.returncode != 0:
+                        logger.error(f"git checkout {branch} failed: {checkout.stderr}")
+                        notify("Update failed", f"Could not switch to {branch}")
+                        return
+
+                pull = _sp.run(
+                    ["git", "pull", "origin", branch],
+                    cwd=repo_root, capture_output=True, text=True, timeout=60
+                )
+                if pull.returncode != 0:
+                    logger.error(f"git pull failed: {pull.stderr}")
+                    notify("Update failed", "git pull failed, check console")
+                    return
+
+                logger.info(f"Updated from {branch}: {commit_count} new commit(s)")
+                notify("Updated!", f"{commit_count} commit(s) from {branch}. Restarting...")
+
+                import time
+                time.sleep(2)  # Let the notification display
+                self._restart()
+            except FileNotFoundError:
+                logger.error("git not found on PATH")
+                notify("Update failed", "git not found, check installation")
+            except _sp.TimeoutExpired:
+                logger.error("git command timed out during update")
+                notify("Update failed", "git timed out, check network")
+            except Exception as e:
+                logger.error(f"Update failed: {e}")
+                notify("Update failed", "Unexpected error, check console")
+            finally:
+                self._updating = False
+
+        threading.Thread(target=_do_update, daemon=True).start()
 
     def _restart(self):
         import subprocess
