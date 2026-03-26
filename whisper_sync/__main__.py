@@ -134,6 +134,7 @@ class WhisperSync:
         self.tray = None
         self.state = None  # Initialized after tray creation in run()
         self._lock = threading.RLock()
+        self._tray_lock = threading.Lock()  # Serialize all tray icon/title updates (pystray not thread-safe)
         self._api_filter = "Windows WASAPI"  # None = show all
         self._dictation_wav_path: Path | None = None
         self._meeting_start_time: datetime | None = None
@@ -198,12 +199,22 @@ class WhisperSync:
                             shutil.copy2(f, dest)
                 logger.info(f"Migrated dictation logs -> {new_dict_dir}")
 
+    def _update_tray(self, icon=None, title=None):
+        """Thread-safe tray icon/title update. Serializes all pystray mutations."""
+        with self._tray_lock:
+            if self.tray is None:
+                return
+            if icon is not None:
+                self.tray.icon = icon
+            if title is not None:
+                self.tray.title = title
+
     def _yellow_flash(self):
         """Universal loading/queuing signal: two quick yellow flashes (150ms on/off/on)."""
         if getattr(self, '_flashing', False):
             return
         self._flashing = True
-        animator = IconAnimator(self.tray)
+        animator = IconAnimator(self.tray, lock=self._tray_lock)
         animator.flash(count=2, interval_ms=150)
         # Reset flag after animation completes (~600ms)
         import time
@@ -282,7 +293,7 @@ class WhisperSync:
 
     def _flash_queued(self):
         """Rapid amber flash to indicate dictation is queued behind a meeting stage."""
-        animator = IconAnimator(self.tray)
+        animator = IconAnimator(self.tray, lock=self._tray_lock)
         animator.flash_between("queued", "transcribing", count=2, interval_ms=150)
 
     def _can_record(self) -> bool:
@@ -3250,8 +3261,7 @@ class WhisperSync:
             spec = ICON_REGISTRY[key]
             progress = s.progress
             icon = build_icon(spec, progress=progress)
-            self.tray.icon = icon
-            self.tray.title = f"WhisperSync: {spec.tooltip}"
+            self._update_tray(icon=icon, title=f"WhisperSync: {spec.tooltip}")
         self.state.on_any(_on_state_change)
 
         # Register toast notification listener

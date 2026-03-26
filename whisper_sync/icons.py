@@ -187,9 +187,24 @@ def resolve_icon_key(mode: str | None = None,
 class IconAnimator:
     """Frame-by-frame icon animations in background threads."""
 
-    def __init__(self, tray):
+    def __init__(self, tray, lock=None):
         self._tray = tray
+        self._lock = lock  # Optional threading.Lock for thread-safe tray updates
         self._cancel = threading.Event()
+
+    def _set_tray(self, icon=None, title=None):
+        """Set tray icon/title, using the lock if one was provided."""
+        if self._lock is not None:
+            with self._lock:
+                if icon is not None:
+                    self._tray.icon = icon
+                if title is not None:
+                    self._tray.title = title
+        else:
+            if icon is not None:
+                self._tray.icon = icon
+            if title is not None:
+                self._tray.title = title
 
     def flash(self, count: int = 2, interval_ms: int = 150):
         """Yellow double-flash (universal loading/queuing signal)."""
@@ -203,9 +218,9 @@ class IconAnimator:
             for _ in range(count):
                 if self._cancel.is_set():
                     break
-                self._tray.icon = flash_img
+                self._set_tray(icon=flash_img)
                 time.sleep(interval_ms / 1000)
-                self._tray.icon = original
+                self._set_tray(icon=original)
                 time.sleep(interval_ms / 1000)
 
         threading.Thread(target=_run, daemon=True).start()
@@ -223,11 +238,9 @@ class IconAnimator:
             for _ in range(count):
                 if self._cancel.is_set():
                     break
-                self._tray.icon = img_a
-                self._tray.title = f"WhisperSync: {ICON_REGISTRY[key_a].tooltip}"
+                self._set_tray(icon=img_a, title=f"WhisperSync: {ICON_REGISTRY[key_a].tooltip}")
                 time.sleep(interval_ms / 1000)
-                self._tray.icon = img_b
-                self._tray.title = f"WhisperSync: {ICON_REGISTRY[key_b].tooltip}"
+                self._set_tray(icon=img_b, title=f"WhisperSync: {ICON_REGISTRY[key_b].tooltip}")
                 time.sleep(interval_ms / 1000)
 
         threading.Thread(target=_run, daemon=True).start()
