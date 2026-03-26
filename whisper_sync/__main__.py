@@ -2872,42 +2872,46 @@ class WhisperSync:
 
         threading.Thread(target=_do_update, daemon=True).start()
 
-    def _restart(self):
-        """Restart WhisperSync by spawning a new process and exiting.
+    # Empirically chosen delay (seconds) to let pystray menu callbacks
+    # return before we call tray.stop(). Without this, WM_QUIT is posted
+    # but can't be processed while the callback is still on the stack.
+    _CALLBACK_DEFER_SECS = 0.3
 
-        Must be deferred to a background thread because pystray menu
-        callbacks run inside the Win32 message pump. Calling tray.stop()
-        from within a callback posts WM_QUIT but can't process it until
-        the callback returns, leaving the old tray icon alive while the
-        new process is already running.
-
-        The fix: spawn a short-lived thread that sleeps briefly (letting
-        the menu callback return and the message pump resume), then
-        performs the actual cleanup and respawn.
-        """
-        def _do_restart():
-            import subprocess
-            import time
-            # Brief sleep lets the pystray menu callback return so the
-            # message pump can process WM_QUIT when we call tray.stop().
-            time.sleep(0.3)
-
+    def _cleanup(self):
+        """Shared shutdown sequence for restart and quit."""
+        try:
             weekly_stats.flush()
+        except Exception:
+            logger.debug("Stats flush failed during shutdown", exc_info=True)
+        try:
             if self.recorder.is_recording:
                 self.recorder.stop()
             self.worker.stop()
             self._backup.stop()
             keyboard.unhook_all()
+        except Exception:
+            logger.debug("Cleanup error during shutdown", exc_info=True)
 
-            # Spawn new process BEFORE stopping tray so it starts loading
-            # models while we clean up. The old tray icon is removed by
-            # tray.stop() which now runs outside the callback context.
-            subprocess.Popen(
-                [sys.executable, "-m", "whisper_sync"],
-                cwd=str(Path(__file__).parent.parent),
-            )
-            if self.tray:
-                self.tray.stop()
+    def _restart(self):
+        """Restart WhisperSync by cleaning up, stopping tray, then spawning.
+
+        Deferred to a background thread because pystray menu callbacks
+        run inside the Win32 message pump. tray.stop() posts WM_QUIT
+        but can't process it until the callback returns.
+        """
+        def _do_restart():
+            import subprocess
+            import time
+            time.sleep(self._CALLBACK_DEFER_SECS)
+            self._cleanup()
+            try:
+                if self.tray:
+                    self.tray.stop()
+            finally:
+                subprocess.Popen(
+                    [sys.executable, "-m", "whisper_sync"],
+                    cwd=str(Path(__file__).parent.parent),
+                )
 
         threading.Thread(target=_do_restart, daemon=True).start()
 
@@ -2915,13 +2919,8 @@ class WhisperSync:
         """Quit WhisperSync. Deferred like _restart for the same reason."""
         def _do_quit():
             import time
-            time.sleep(0.3)
-            weekly_stats.flush()
-            if self.recorder.is_recording:
-                self.recorder.stop()
-            self.worker.stop()
-            self._backup.stop()
-            keyboard.unhook_all()
+            time.sleep(self._CALLBACK_DEFER_SECS)
+            self._cleanup()
             if self.tray:
                 self.tray.stop()
         threading.Thread(target=_do_quit, daemon=True).start()
