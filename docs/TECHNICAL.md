@@ -17,7 +17,7 @@ Everything below is for developers modifying this app or for an AI assistant (li
 | `worker_manager.py` | **Subprocess lifecycle.** Spawns/kills/restarts worker process. IPC via multiprocessing.Queue. Crash detection + respawn. | `TranscriptionWorker` class --`start()`, `wait_ready()`, `transcribe_fast()`, `transcribe()`, `reload_model()`, `restart()`, `is_alive()` |
 | `streaming_wav.py` | **Crash-safe WAV writer.** Writes audio incrementally during recording. Can recover orphaned files after crash. | `StreamingWavWriter` class --`write()`, `close()`, `_write_header()`; `fix_orphan(path)` -- validates + rewrites header; `cleanup_temp_files(dir)` |
 | `config.py` | **Config manager.** Loads `config.defaults.json`, deep-merges with user `config.json` overrides. | `load()` returns merged dict; `save(overrides)` writes config.json |
-| `paths.py` | **Path resolver.** Standalone vs repo mode detection, model cache dir, output dir. | `is_standalone()` -- checks `.standalone` marker; `get_install_root()`, `get_model_cache()`, `get_default_output_dir()` |
+| `paths.py` | **Path resolver.** Repo mode path resolution, model cache dir, output dir. | `get_install_root()`, `get_model_cache()`, `get_default_output_dir()` |
 | `model_status.py` | **Model management.** Download, cache validation, bootstrap (auto-download tiny+base, prompt for larger). | `get_model_status(name)` returns bool; `download_model(name)` downloads to HF cache; `bootstrap_models(config)` -- first-run setup |
 | `icons.py` | **Tray icon generator.** Creates colored 64x64 PNG circles with labels. No external assets needed. | `_circle_icon(color, label)` returns PIL Image |
 | `paste.py` | **Text output.** Routes transcribed text to clipboard+Ctrl+V or simulated keystrokes. | `paste(text, method)`, `paste_clipboard(text)`, `paste_keystrokes(text)` |
@@ -36,7 +36,6 @@ Everything below is for developers modifying this app or for an AI assistant (li
 | `config.defaults.json` | `whisper_sync/` | Default configuration. Merged under user overrides. |
 | `config.json` | `<output_dir>/.whispersync/` (primary), `whisper_sync/` (legacy fallback) | User overrides. Created on first settings change. |
 | `whisper-capture.ico` | `whisper_sync/` | Application icon (64x64). Used in Windows shortcuts. |
-| `.standalone` | `whisper_sync/` | Marker file. If present, standalone mode. If absent, repo mode. Created by installer. |
 | `requirements.txt` | Top level | Pip dependencies. |
 | `install.ps1` | Top level | CLI installer. |
 | `start.ps1` | Top level | Launcher script. |
@@ -347,7 +346,7 @@ To also clear models: `Remove-Item -Recurse -Force ".\whisper_sync\models\*"`
 2. **Streaming WAV**: Audio written to disk incrementally; crash recovery can salvage partial recordings
 3. **PyTorch override**: whisperX pulls CPU-only torch; installer forces CUDA torch
 4. **Config merge**: Defaults + user overrides, deep merged; user config.json only contains changed keys
-5. **Standalone marker**: `.standalone` file determines path resolution mode
+5. **Path resolution**: All paths resolve relative to the repo root (two levels up from `whisper_sync/`)
 
 ### Important Constants
 

@@ -986,11 +986,6 @@ class InstallerApp:
             n = advance("Downloading models")
             self._log_step(n, "Downloading models...")
 
-            # Standalone marker
-            marker = self.pkg_dir / ".standalone"
-            if not marker.exists():
-                marker.write_text("")
-
             fd, bootstrap_path = tempfile.mkstemp(
                 suffix=".py", prefix="ws-bootstrap-",
             )

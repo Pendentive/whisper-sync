@@ -30,7 +30,7 @@ from .icons import (idle_icon, build_icon, resolve_icon_key, ICON_REGISTRY,
 from .logger import logger, get_log_path, set_console_level, log_dictation_result, log_meeting_result, log_transcript_preview
 from .model_status import get_model_status, download_model, bootstrap_models
 from .paste import paste
-from .paths import (get_install_root, get_default_output_dir, is_standalone,
+from .paths import (get_install_root, get_default_output_dir,
                      get_data_dir, get_dictation_log_dir,
                      get_legacy_config_path, get_legacy_speaker_config_path,
                      get_legacy_dictation_log_dir, get_config_path as get_data_config_path,
@@ -1878,12 +1878,8 @@ class WhisperSync:
     def _output_dir(self) -> Path:
         p = Path(self.cfg["output_dir"])
         if not p.is_absolute():
-            if is_standalone():
-                # Standalone: relative paths resolve under ~/Documents/WhisperSync/
-                p = get_default_output_dir().parent / p
-            else:
-                # Repo mode: relative paths resolve from repo root
-                p = get_install_root() / p
+            # Relative paths resolve from repo root
+            p = get_install_root() / p
         return p
 
     def _generate_minutes(self, meeting_dir: Path, readable_file: Path, minutes_file: Path):
@@ -2352,10 +2348,10 @@ class WhisperSync:
                 pystray.Menu.SEPARATOR,
                 *incognito_items,
                 pystray.Menu.SEPARATOR,
-                *([] if is_standalone() else [pystray.MenuItem("Update", pystray.Menu(
+                pystray.MenuItem("Update", pystray.Menu(
                     pystray.MenuItem("Stable\tmain", self._cb(self._update, "main")),
                     pystray.MenuItem("Labs\tdev", self._cb(self._update, "dev")),
-                ))]),
+                )),
                 pystray.MenuItem("Restart", lambda: self._restart()),
                 pystray.MenuItem("Quit", lambda: self.quit()),
             )),

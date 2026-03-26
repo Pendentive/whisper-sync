@@ -9,7 +9,7 @@ import numpy as np
 
 from . import config
 from .logger import logger
-from .paths import get_model_cache, is_standalone
+from .paths import get_model_cache
 
 # Local model cache — keeps models offline
 _MODEL_CACHE = get_model_cache()
@@ -205,7 +205,7 @@ def _load_diarize_pipeline():
         from whisperx.diarize import DiarizationPipeline
         hf_token_path = Path.home() / ".huggingface" / "token"
         if not hf_token_path.exists():
-            hint = "See README.md for setup instructions." if is_standalone() else "Run: pm-get-secret hugging-face_read"
+            hint = "Run: pm-get-secret hugging-face_read"
             raise FileNotFoundError(
                 f"HF token not found at {hf_token_path}. {hint}"
             )
