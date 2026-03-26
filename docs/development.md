@@ -38,7 +38,7 @@ powershell -ExecutionPolicy Bypass -File start.ps1
 powershell -ExecutionPolicy Bypass -File start.ps1 -Watchdog
 ```
 
-When running without the `.standalone` marker file, WhisperSync operates in **repo mode**: transcription output goes to `<repo-root>/meetings/local-transcriptions/` instead of `~/Documents/WhisperSync/transcriptions/`.
+WhisperSync operates in **repo mode**: transcription output goes to `<repo-root>/meetings/local-transcriptions/`. All paths resolve relative to the repo root.
 
 ## Configuration
 

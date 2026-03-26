@@ -24,7 +24,7 @@ Local speech-to-text for Windows. GPU-accelerated transcription with speaker dia
 | `capture.py` | Mic + WASAPI loopback recording via sounddevice/PyAudioWPatch |
 | `channel_merge.py` | Per-channel diarization with confidence fusion for stereo recordings |
 | `config.py` | Config load/save. Merges defaults with user overrides. Only `_VALID_KEYS` persisted. Includes `toast_events` for notification config. |
-| `paths.py` | Data directory resolution. Standalone vs repo mode. All `.whispersync/` accessors |
+| `paths.py` | Data directory resolution. Repo mode path accessors. All `.whispersync/` accessors |
 | `logger.py` | Tiered logging (off/normal/detailed/verbose). File handler always DEBUG |
 | `icons.py` | Declarative icon registry (ICON_REGISTRY + IconSpec). build_icon() with progress-ring arc. IconAnimator for flash animations. Backward-compat wrappers for migration. |
 | `notifications.py` | Windows toast notifications with button callbacks. ToastListener (state event subscriber), TOAST_REGISTRY (configurable templates), notify_update() for in-place toasts via Tag/Group. |
@@ -70,7 +70,7 @@ output_dir/
       minutes.md
 ```
 
-`paths.py` modes: **Standalone** (`.standalone` marker) outputs to `~/Documents/WhisperSync/transcriptions`. **Repo mode** outputs to `<repo>/meetings/local-transcriptions`.
+`paths.py` resolves all paths relative to the repo root. Output defaults to `<repo>/meetings/local-transcriptions`.
 
 ## Conventions
 

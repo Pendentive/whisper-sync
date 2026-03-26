@@ -1,25 +1,16 @@
-"""Central path resolution -- standalone vs repo mode detection."""
+"""Central path resolution for repo mode."""
 
 import json
 from pathlib import Path
 
 _PKG_DIR = Path(__file__).parent
-_STANDALONE = (_PKG_DIR / ".standalone").exists()
-
-
-def is_standalone() -> bool:
-    """True when running from a distributed zip (not inside the git repo)."""
-    return _STANDALONE
 
 
 def get_install_root() -> Path:
     """Root directory for resolving relative paths.
 
-    Repo mode:  two levels up (scripts/whisper_sync/ -> repo root).
-    Standalone: the package directory itself.
+    Two levels up from whisper_sync/ package to repo root.
     """
-    if _STANDALONE:
-        return _PKG_DIR
     return _PKG_DIR.parent.parent
 
 
@@ -36,11 +27,8 @@ def get_model_cache() -> Path:
 def get_default_output_dir() -> Path:
     """Sensible default when output_dir is relative.
 
-    Repo mode:  <repo_root>/meetings/local-transcriptions
-    Standalone: ~/Documents/WhisperSync/transcriptions
+    Returns <repo_root>/meetings/local-transcriptions.
     """
-    if _STANDALONE:
-        return Path.home() / "Documents" / "WhisperSync" / "transcriptions"
     return get_install_root() / "meetings" / "local-transcriptions"
 
 
@@ -66,8 +54,6 @@ def _resolve_output_dir() -> Path:
         p = Path(raw)
         if p.is_absolute():
             return p
-        if _STANDALONE:
-            return Path.home() / "Documents" / "WhisperSync" / p
         return get_install_root() / p
 
     # Phase 1: Check if we already know the output_dir from legacy config
