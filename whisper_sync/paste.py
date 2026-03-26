@@ -15,67 +15,41 @@ _RESTORE_DELAY: float = 0.8
 _IS_WINDOWS = platform.system() == "Windows"
 
 # ---------------------------------------------------------------------------
-# Win32 clipboard helpers (pywin32)
+# Win32 clipboard via dedicated thread (ctypes, no pywin32)
 # ---------------------------------------------------------------------------
 
-_has_win32clipboard = False
-if _IS_WINDOWS:
-    try:
-        import win32clipboard
-        import win32con
-        _has_win32clipboard = True
-    except ImportError:
-        logger.debug("pywin32 not installed, clipboard preservation limited to text only")
+_clipboard_thread = None
+_clipboard_thread_lock = threading.Lock()
 
 
-def _save_clipboard_win32() -> list[tuple[int, bytes | str | list]] | None:
-    """Save all clipboard formats, preserving type info for proper restore.
-
-    Returns a list of (format_id, data) tuples where data type matches
-    what win32clipboard.SetClipboardData expects for that format.
-    """
-    try:
-        win32clipboard.OpenClipboard()
-    except Exception:
+def _get_clipboard_thread():
+    """Lazy-init the clipboard thread. Returns the thread or None on failure."""
+    global _clipboard_thread
+    if not _IS_WINDOWS:
         return None
-    try:
-        formats = []
-        fmt = 0
-        while True:
-            fmt = win32clipboard.EnumClipboardFormats(fmt)
-            if fmt == 0:
-                break
-            try:
-                data = win32clipboard.GetClipboardData(fmt)
-                formats.append((fmt, data))
-            except Exception:
-                # Some synthesized formats can't be read directly; skip
-                continue
-        return formats if formats else None
-    finally:
-        win32clipboard.CloseClipboard()
-
-
-def _restore_clipboard_win32(formats: list[tuple[int, bytes | str | list]]) -> None:
-    """Restore previously saved clipboard formats.
-
-    Data is passed back to SetClipboardData in the same type it was
-    retrieved, so images, files, text, and other formats round-trip
-    correctly.
-    """
-    try:
-        win32clipboard.OpenClipboard()
-    except Exception:
-        return
-    try:
-        win32clipboard.EmptyClipboard()
-        for fmt, data in formats:
-            try:
-                win32clipboard.SetClipboardData(fmt, data)
-            except Exception:
-                continue
-    finally:
-        win32clipboard.CloseClipboard()
+    with _clipboard_thread_lock:
+        if _clipboard_thread is not None:
+            return _clipboard_thread
+        try:
+            from .clipboard_thread import ClipboardThread
+            ct = ClipboardThread()
+            if ct.start():
+                _clipboard_thread = ct
+                logger.debug("ClipboardThread started successfully")
+                return ct
+            else:
+                logger.warning(
+                    "ClipboardThread failed to start, "
+                    "clipboard preservation limited to text only"
+                )
+                return None
+        except Exception:
+            logger.debug(
+                "ClipboardThread import/start failed, "
+                "clipboard preservation limited to text only",
+                exc_info=True,
+            )
+            return None
 
 
 def _has_focused_input() -> bool:
@@ -107,22 +81,24 @@ def _has_focused_input() -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _save_clipboard() -> list[tuple[int, bytes | str | list]] | str | None:
+def _save_clipboard() -> dict[int, bytes] | str | None:
     """Save current clipboard contents.
 
-    On Windows with pywin32 this preserves ALL formats (images, files,
-    text, etc.). Otherwise falls back to pyperclip (text only).
+    On Windows this preserves ALL formats (images, files, text, etc.)
+    via a dedicated clipboard thread. Otherwise falls back to pyperclip
+    (text only).
     """
     try:
-        if _has_win32clipboard:
-            return _save_clipboard_win32()
+        ct = _get_clipboard_thread()
+        if ct is not None:
+            return ct.save()
         return pyperclip.paste()
     except Exception:
         logger.debug("Failed to save clipboard contents", exc_info=True)
         return None
 
 
-def _schedule_clipboard_restore(previous: list | str | None) -> None:
+def _schedule_clipboard_restore(previous: dict | str | None) -> None:
     """Restore *previous* clipboard contents after a short delay.
 
     Runs in a daemon thread so it never blocks the caller.
@@ -133,8 +109,12 @@ def _schedule_clipboard_restore(previous: list | str | None) -> None:
     def _restore():
         time.sleep(_RESTORE_DELAY)
         try:
-            if isinstance(previous, list) and _has_win32clipboard:
-                _restore_clipboard_win32(previous)
+            if isinstance(previous, dict):
+                ct = _get_clipboard_thread()
+                if ct is not None:
+                    ct.restore(previous)
+                else:
+                    logger.debug("ClipboardThread unavailable for restore")
             elif isinstance(previous, str):
                 pyperclip.copy(previous)
             logger.debug("Clipboard restored to previous contents")
