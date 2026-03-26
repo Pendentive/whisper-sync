@@ -3,6 +3,7 @@
 import faulthandler
 import logging
 import os
+import queue
 import sys
 import threading
 import warnings
@@ -146,8 +147,8 @@ class WhisperSync:
         self._github_prs = []
         self._dictation_history = dictation_log.load_recent(10)  # persist across restarts
         self._feature_suggest_active = False  # routes dictation output to feature log
-        self._meeting_queue = []  # List of queued meeting dicts (wav_path, meeting_name, do_summarize, metadata)
-        self._meeting_queue_lock = threading.Lock()
+        self._post_queue = queue.Queue()  # Post-processing queue for completed meetings
+        self._post_worker_thread = None  # Started in run()
         self._cpu_name = _get_cpu_name()
         # Session stats
         self._stats = {
@@ -834,7 +835,6 @@ class WhisperSync:
                         self._schedule_idle(3, blink=True)
                     else:
                         self.state.emit(IDLE, meeting_transcribing=False)
-                    self._process_meeting_queue()
             threading.Thread(target=_transcribe, daemon=True).start()
         self._recovered_meeting_paths = []
 
@@ -1124,138 +1124,48 @@ class WhisperSync:
         meaningful = [w for w in words if w not in stopwords and len(w) > 2][:4]
         return ["-".join(meaningful)] if meaningful else [current_name]
 
+    def _do_rename(self, meeting_dir: Path, date_time_str: str, new_name: str):
+        """Perform the folder rename for a meeting directory."""
+        import shutil
+        new_folder_name = f"{date_time_str}_{new_name}"
+        new_meeting_dir = meeting_dir.parent / new_folder_name
+        if not new_meeting_dir.exists():
+            shutil.move(str(meeting_dir), str(new_meeting_dir))
+            logger.info(f"Renamed: {meeting_dir.name} -> {new_folder_name}")
+            try:
+                rebuild_root_index(self._output_dir())
+            except Exception:
+                pass
+        else:
+            logger.warning(f"Rename skipped - folder already exists: {new_folder_name}")
+
     def _ask_rename_suggestion(self, current_name: str, summary: str,
                                meeting_dir=None, date_time_str: str | None = None):
-        """Show a non-blocking popup suggesting a better meeting name.
+        """Offer a meeting rename via toast notification (no tkinter).
 
-        When meeting_dir and date_time_str are provided, the rename is
-        performed inside the dialog thread so the caller is never blocked.
-        Returns immediately (None). The dialog handles the rename on accept.
-
-        When meeting_dir is None, falls back to blocking mode and returns the
-        chosen name string (or None to skip).
+        Uses a toast with an Accept button for the top suggestion.
+        Dismissing or ignoring the toast keeps the original name.
         """
         suggestions = self._generate_name_suggestions(summary, current_name)
+        suggested = suggestions[0] if suggestions else current_name
 
-        result = [None]
-        event = threading.Event() if meeting_dir is None else None
+        if not meeting_dir or not date_time_str:
+            return None
 
-        def _show():
-            import tkinter as tk
+        if suggested == current_name:
+            logger.info("Suggested name matches current name, rename skipped")
+            return None
 
-            root = tk.Tk()
-            root.title("WhisperSync")
-            self._style_window(root)
+        def _accept_rename():
+            self._do_rename(Path(meeting_dir), date_time_str, suggested)
 
-            bg = "#1e1e2e"
-            fg = "#cdd6f4"
-            fg_dim = "#6c7086"
-            fg_muted = "#a6adc8"
-            accent = "#89b4fa"
-            entry_bg = "#313244"
-            card_bg = "#181825"
-            chip_bg = "#313244"
-            chip_hover = "#45475a"
-
-            root.geometry("480x310")
-
-            # --- Header ---
-            header = tk.Frame(root, bg=bg)
-            header.pack(fill="x", padx=24, pady=(16, 0))
-            tk.Label(header, text="\u2728", font=("Segoe UI", 14), bg=bg).pack(side=tk.LEFT)
-            tk.Label(header, text="  Rename Meeting", font=("Segoe UI", 12, "bold"),
-                     bg=bg, fg=fg).pack(side=tk.LEFT)
-
-            # --- Summary card ---
-            summary_card = tk.Frame(root, bg=card_bg)
-            summary_card.pack(fill="x", padx=24, pady=(12, 0))
-            summary_card.configure(highlightbackground="#313244", highlightthickness=1)
-            summary_text = summary[:140] + ("..." if len(summary) > 140 else "")
-            tk.Label(summary_card, text=summary_text, wraplength=420,
-                     font=("Segoe UI", 8), bg=card_bg, fg=fg_dim,
-                     justify="left", anchor="w").pack(padx=12, pady=8, anchor="w")
-
-            # --- Current name ---
-            tk.Label(root, text=f"Current:  {current_name}",
-                     font=("Segoe UI", 8), bg=bg, fg=fg_dim).pack(anchor="w", padx=26, pady=(10, 0))
-
-            # --- Suggestions as radio-style chips ---
-            tk.Label(root, text="Pick a name or type your own:",
-                     font=("Segoe UI", 9), bg=bg, fg=fg_muted).pack(anchor="w", padx=26, pady=(8, 4))
-
-            entry = tk.Entry(root, width=50, font=("Segoe UI", 10),
-                             bg=entry_bg, fg=fg, insertbackground=fg,
-                             relief="flat", highlightthickness=1, highlightcolor=accent)
-            entry.pack(padx=24, ipady=5)
-            entry.insert(0, suggestions[0])
-            entry.select_range(0, tk.END)
-            entry.focus_force()
-
-            chip_frame = tk.Frame(root, bg=bg)
-            chip_frame.pack(padx=24, pady=(6, 0), anchor="w")
-
-            for sug in suggestions:
-                def _use(s=sug):
-                    entry.delete(0, tk.END)
-                    entry.insert(0, s)
-                    entry.select_range(0, tk.END)
-
-                chip = tk.Label(chip_frame, text=f" {sug} ", font=("Segoe UI", 8),
-                                bg=chip_bg, fg=accent, padx=10, pady=3, cursor="hand2")
-                chip.pack(side=tk.LEFT, padx=(0, 8), pady=2)
-                chip.bind("<Enter>", lambda e, c=chip: c.configure(bg=chip_hover))
-                chip.bind("<Leave>", lambda e, c=chip: c.configure(bg=chip_bg))
-                chip.bind("<Button-1>", lambda e, s=sug: _use(s))
-
-            # --- Buttons ---
-            btn_frame = tk.Frame(root, bg=bg)
-            btn_frame.pack(pady=(16, 14))
-
-            def _accept(ev=None):
-                name = entry.get().strip()
-                if name:
-                    result[0] = self._sanitize_name(name)
-                root.destroy()
-
-            def _skip():
-                result[0] = None
-                root.destroy()
-
-            entry.bind("<Return>", _accept)
-            entry.bind("<Escape>", lambda e: _skip())
-
-            self._flat_button(btn_frame, "Keep Original", _skip, fg=fg_muted).pack(side=tk.LEFT, padx=8)
-            self._flat_button(btn_frame, "Rename", _accept,
-                              bg=accent, fg="#1e1e2e", hover_bg="#74c7ec", bold=True).pack(side=tk.LEFT, padx=8)
-
-            self._center_window(root)
-            root.protocol("WM_DELETE_WINDOW", _skip)
-            root.mainloop()
-
-            # Perform rename in this thread (non-blocking for caller)
-            if meeting_dir is not None and date_time_str is not None:
-                new_name = result[0]
-                if new_name and new_name != current_name:
-                    import shutil
-                    new_folder_name = f"{date_time_str}_{new_name}"
-                    new_meeting_dir = meeting_dir.parent / new_folder_name
-                    if not new_meeting_dir.exists():
-                        shutil.move(str(meeting_dir), str(new_meeting_dir))
-                        logger.info(f"Renamed: {meeting_dir.name} -> {new_folder_name}")
-                    else:
-                        logger.warning(f"Rename skipped - folder already exists: {new_folder_name}")
-
-            if event is not None:
-                event.set()
-
-        t = threading.Thread(target=_show, daemon=True)
-        t.start()
-
-        # Only block when in legacy (no meeting_dir) mode
-        if event is not None:
-            event.wait(timeout=120)
-            return result[0]
-
+        notify(
+            "Rename meeting?",
+            f"Suggested: {suggested}",
+            buttons=[
+                {"label": "Accept", "action": _accept_rename},
+            ],
+        )
         return None
 
     def _show_llm_unavailable(self):
@@ -1558,8 +1468,8 @@ class WhisperSync:
         # Stay in a processing state so clicks are ignored
         self.state.emit(MEETING_STOPPED, mode="saving")
 
-        # Run the entire post-recording flow in a thread so we release the lock
-        def _post_record():
+        # Save WAV and enqueue for post-processing (never block recording thread)
+        def _save_and_enqueue():
             dialog_result = self._ask_meeting_name()
 
             if dialog_result is self._ABORT:
@@ -1600,267 +1510,150 @@ class WhisperSync:
                 from .streaming_wav import cleanup_temp_files
                 cleanup_temp_files(self._meeting_temp_dir())
 
-                # Check if a meeting is already transcribing; if so, queue this one
-                if self.state.current.meeting_transcribing:
-                    queued_item = {
-                        "wav_path": str(wav_path),
-                        "meeting_name": meeting_name,
-                        "do_summarize": do_summarize,
-                        "week_dir": week_dir,
-                        "folder_name": folder_name,
-                        "date_time_str": date_time_str,
-                        "meeting_dir": str(meeting_dir),
-                    }
-                    with self._meeting_queue_lock:
-                        self._meeting_queue.append(queued_item)
-                    logger.info(f"Meeting queued for transcription: {meeting_name or 'meeting'} ({len(self._meeting_queue)} in queue)")
+                # Enqueue for post-processing (transcription, speaker ID, etc.)
+                job = {
+                    "wav_path": str(wav_path),
+                    "meeting_name": meeting_name,
+                    "do_summarize": do_summarize,
+                    "week_dir": week_dir,
+                    "folder_name": folder_name,
+                    "date_time_str": date_time_str,
+                    "meeting_dir": str(meeting_dir),
+                }
+                self._post_queue.put(job)
+                qsize = self._post_queue.qsize()
+                logger.info(f"Meeting queued for processing: {meeting_name or 'meeting'} ({qsize} in queue)")
+
+                if qsize > 1:
                     notify("Meeting queued", f"'{meeting_name or 'meeting'}' will transcribe when the current meeting finishes")
-                    # Release mode so user can start another meeting or dictate
-                    if self.state.current.mode == "saving":
-                        self.state.emit(IDLE, mode=None, meeting_transcribing=True)
-                    return
 
-                # Release mode so user can dictate while meeting transcribes
-                self.state.emit(TRANSCRIPTION_STARTED, mode=None, meeting_transcribing=True)
+                # Release mode so user can start another meeting or dictate
+                if self.state.current.mode == "saving":
+                    self.state.emit(IDLE, mode=None, meeting_transcribing=True)
 
-                if not self.worker.is_alive():
-                    logger.warning("Worker not alive — restarting...")
-                    self.worker.restart()
-                    if not self.worker.wait_ready(timeout=120):
-                        raise RuntimeError("Worker failed to restart")
-                result = self.worker.transcribe(str(wav_path), diarize=True)
-                logger.debug(f"Transcript saved: {result.get('json_path', wav_path)}")
-
-                # Structured meeting result logging
-                _meet_words = result.get("word_count", 0)
-                _meet_speakers = result.get("num_speakers", 0)
-                _meet_duration = result.get("duration", 0)
-                _meet_folder = f"{week_dir}/{folder_name}/"
-                log_meeting_result(meeting_name or "meeting", _meet_duration, _meet_words, _meet_speakers, _meet_folder)
-                # Update session stats
-                self._stats["meetings"] += 1
-                self._stats["total_meeting_seconds"] += int(_meet_duration)
-                self._stats["total_meeting_words"] += _meet_words
-                weekly_stats.record_meeting(int(_meet_duration), _meet_words)
-
-                # Log speaker previews at TRANSCRIPT level (detailed tier)
-                _meet_segments = result.get("speaker_segments")
-                if _meet_segments:
-                    log_transcript_preview("", speakers=_meet_segments)
-
-                # --- Speaker identification (runs for BOTH Save and Save & Summarize) ---
-                # #37 (deferred): Toast-based speaker ID was explored but the tkinter
-                # dialog provides autocomplete, confidence colors, and multi-speaker
-                # editing that ToastInputTextBox cannot replicate. Keeping tkinter flow.
-                llm_ok = self._is_claude_cli_available()
-                if llm_ok:
-                    try:
-                        cfg_path = get_config_path()
-                        json_path = result.get('json_path', str(meeting_dir / "transcript.json"))
-                        id_result = identify_speakers(json_path, cfg_path, folder_name)
-                        if id_result and id_result.get("speaker_map"):
-                            confirmed_map = self._ask_speaker_confirmation(id_result)
-                            if confirmed_map:
-                                write_speaker_map(json_path, confirmed_map)
-                                update_config(cfg_path, confirmed_map, id_result.get("config_updates"))
-                                logger.info(f"Speakers confirmed: {confirmed_map}")
-                            else:
-                                logger.info("Speaker identification skipped by user")
-                        else:
-                            logger.info("No speakers identified from transcript")
-                    except Exception as e:
-                        logger.warning(f"Speaker identification failed (non-fatal): {e}")
-                else:
-                    logger.info("Claude CLI not available — speaker identification skipped")
-
-                # --- Flatten transcript (now with resolved speaker names if identified) ---
-                try:
-                    json_path = result.get('json_path')
-                    if json_path:
-                        readable_path = flatten_transcript(json_path)
-                        if readable_path:
-                            logger.info(f"Flattened transcript: {readable_path}")
-                except Exception as e:
-                    logger.warning(f"Auto-flatten failed (non-fatal): {e}")
-
-                # --- Auto-generate minutes + rename (only if Save & Summarize) ---
-                if do_summarize:
-                    if not llm_ok:
-                        # Show LLM warning only when user chose Summarize but CLI is missing
-                        suppress = self.cfg.get("suppress_llm_warning", False)
-                        if not suppress:
-                            dont_show = self._show_llm_unavailable()
-                            if dont_show:
-                                self.cfg["suppress_llm_warning"] = True
-                                config.save(self.cfg)
-                        logger.warning("Claude CLI not available — skipping summarize")
-                    else:
-                        # Step 1: Generate minutes if they don't already exist
-                        try:
-                            readable_file = meeting_dir / "transcript-readable.txt"
-                            minutes_file = meeting_dir / "minutes.md"
-                            if readable_file.exists() and not minutes_file.exists():
-                                self._generate_minutes(meeting_dir, readable_file, minutes_file)
-                        except Exception as e:
-                            logger.warning(f"Auto-minutes failed (non-fatal): {e}")
-
-                        # Step 2: Always offer rename if we have minutes with a summary
-                        try:
-                            minutes_file = meeting_dir / "minutes.md"
-                            if minutes_file.exists():
-                                summary = None
-                                for line in minutes_file.read_text(encoding="utf-8").splitlines():
-                                    if line.startswith("> Summary:"):
-                                        summary = line[len("> Summary:"):].strip()
-                                        break
-                                if summary:
-                                    # Non-blocking: dialog + rename run in their own thread
-                                    self._ask_rename_suggestion(
-                                        meeting_name or "meeting", summary,
-                                        meeting_dir=meeting_dir, date_time_str=date_time_str)
-                                else:
-                                    logger.info("No > Summary: line found in minutes - rename skipped")
-                            else:
-                                logger.info("No minutes.md found - rename skipped")
-                        except Exception as e:
-                            logger.warning(f"Rename suggestion failed (non-fatal): {e}")
-                # Rebuild week + root INDEX.md
-                try:
-                    rebuild_root_index(self._output_dir())
-                except Exception as e:
-                    logger.warning(f"Index rebuild failed (non-fatal): {e}")
-
-                # #36: Toast with meeting stats and Open Folder button
-                try:
-                    _toast_body = f"{_meet_words} words, {_meet_speakers} speakers"
-                    _folder_path = str(meeting_dir)
-                    def _open_meeting_folder(p=_folder_path):
-                        import subprocess as _sp
-                        _sp.Popen(["explorer", p])
-                    notify(
-                        "Meeting transcribed",
-                        _toast_body,
-                        buttons=[{"label": "Open Folder", "action": _open_meeting_folder}],
-                    )
-                except Exception as e:
-                    logger.debug(f"Meeting toast failed (non-fatal): {e}")
-
-                self.state.emit(MEETING_COMPLETED, meeting_transcribing=False, mode="done")
-                self._schedule_idle(3, blink=True)
-                self._process_meeting_queue()
-            except WorkerCrashedError as e:
-                logger.error("Worker crashed during meeting - respawning...")
-                logger.info(f"Audio is preserved at: {wav_path}")
-                self.worker.restart()
-                self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
-                if self.state.current.mode == "error":
-                    self._schedule_idle(3)
-                self._process_meeting_queue()
-            except PermissionError as e:
-                # Gated model access - show user the acceptance URLs
-                logger.error(str(e))
-                self._show_error_popup("Diarization Model Access", str(e))
-                self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
-                if self.state.current.mode == "error":
-                    self._schedule_idle(3)
-                self._process_meeting_queue()
-            except FileNotFoundError as e:
-                # Missing HF token
-                logger.error(str(e))
-                self._show_error_popup("Hugging Face Token Missing", str(e))
-                self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
-                if self.state.current.mode == "error":
-                    self._schedule_idle(3)
-                self._process_meeting_queue()
             except Exception as e:
-                logger.error(f"Meeting transcription error: {e}")
+                logger.error(f"Failed to save meeting WAV: {e}")
                 import traceback
                 logger.debug(traceback.format_exc())
-                self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
-                if self.state.current.mode == "error":
-                    self._schedule_idle(3)
-                self._process_meeting_queue()
+                self.state.emit(ERROR, meeting_transcribing=False, mode="error", data={"message": str(e), "recoverable": False})
+                self._schedule_idle(3)
 
-        threading.Thread(target=_post_record, daemon=True).start()
+        threading.Thread(target=_save_and_enqueue, daemon=True).start()
 
-    def _process_meeting_queue(self):
-        """Process the next queued meeting transcription, if any.
+    def _post_process_worker(self):
+        """Single worker thread that processes completed meetings sequentially.
 
-        Called after a meeting transcription completes (success or error).
-        Runs the queued transcription in a new thread to avoid blocking.
+        Runs as a daemon thread started in run(). Ensures only one meeting
+        is transcribed at a time (GPU is shared) and prevents concurrent
+        thread collisions on shared state (tray icon, tkinter, COM objects).
         """
-        with self._meeting_queue_lock:
-            if not self._meeting_queue:
-                return
-            item = self._meeting_queue.pop(0)
-
-        meeting_name = item["meeting_name"]
-        wav_path = Path(item["wav_path"])
-        do_summarize = item["do_summarize"]
-        week_dir = item["week_dir"]
-        folder_name = item["folder_name"]
-        date_time_str = item["date_time_str"]
-        meeting_dir = Path(item["meeting_dir"])
-
-        remaining = len(self._meeting_queue)
-        logger.info(f"Processing queued meeting: {meeting_name or 'meeting'} ({remaining} remaining)")
-        notify("Transcribing queued meeting", meeting_name or "meeting")
-
-        def _transcribe_queued():
+        while True:
+            job = self._post_queue.get()
+            if job is None:
+                logger.info("Post-processing worker shutting down")
+                break  # Shutdown signal
             try:
-                self.state.emit(TRANSCRIPTION_STARTED, mode=None, meeting_transcribing=True)
+                self._process_meeting_job(job)
+            except Exception as e:
+                logger.error(f"Post-processing failed: {e}", exc_info=True)
+            finally:
+                self._post_queue.task_done()
 
-                if not self.worker.is_alive():
-                    logger.warning("Worker not alive - restarting...")
-                    self.worker.restart()
-                    if not self.worker.wait_ready(timeout=120):
-                        raise RuntimeError("Worker failed to restart")
-                result = self.worker.transcribe(str(wav_path), diarize=True)
-                logger.debug(f"Queued transcript saved: {result.get('json_path', wav_path)}")
+        logger.info("Post-processing queue empty")
 
-                # Structured meeting result logging
-                _meet_words = result.get("word_count", 0)
-                _meet_speakers = result.get("num_speakers", 0)
-                _meet_duration = result.get("duration", 0)
-                _meet_folder = f"{week_dir}/{folder_name}/"
-                log_meeting_result(meeting_name or "meeting", _meet_duration, _meet_words, _meet_speakers, _meet_folder)
-                self._stats["meetings"] += 1
-                self._stats["total_meeting_seconds"] += int(_meet_duration)
-                self._stats["total_meeting_words"] += _meet_words
-                weekly_stats.record_meeting(int(_meet_duration), _meet_words)
+    def _process_meeting_job(self, job: dict):
+        """Process a single meeting job: transcription, speaker ID, flatten, minutes, rename.
 
-                _meet_segments = result.get("speaker_segments")
-                if _meet_segments:
-                    log_transcript_preview("", speakers=_meet_segments)
+        Called exclusively by _post_process_worker. This is the ONLY code path
+        that touches: transcription worker, speaker identification, flatten,
+        minutes generation, and rename suggestions.
+        """
+        meeting_name = job["meeting_name"]
+        wav_path = Path(job["wav_path"])
+        do_summarize = job["do_summarize"]
+        week_dir = job["week_dir"]
+        folder_name = job["folder_name"]
+        date_time_str = job["date_time_str"]
+        meeting_dir = Path(job["meeting_dir"])
 
-                # Speaker identification
-                llm_ok = self._is_claude_cli_available()
-                if llm_ok:
-                    try:
-                        cfg_path = get_config_path()
-                        json_path = result.get('json_path', str(meeting_dir / "transcript.json"))
-                        id_result = identify_speakers(json_path, cfg_path, folder_name)
-                        if id_result and id_result.get("speaker_map"):
-                            confirmed_map = self._ask_speaker_confirmation(id_result)
-                            if confirmed_map:
-                                write_speaker_map(json_path, confirmed_map)
-                                update_config(cfg_path, confirmed_map, id_result.get("config_updates"))
-                                logger.info(f"Speakers confirmed: {confirmed_map}")
-                    except Exception as e:
-                        logger.warning(f"Speaker identification failed (non-fatal): {e}")
+        logger.info(f"Processing meeting: {meeting_name or 'meeting'}")
 
-                # Flatten transcript
+        try:
+            self.state.emit(TRANSCRIPTION_STARTED, mode=None, meeting_transcribing=True)
+
+            if not self.worker.is_alive():
+                logger.warning("Worker not alive, restarting...")
+                self.worker.restart()
+                if not self.worker.wait_ready(timeout=120):
+                    raise RuntimeError("Worker failed to restart")
+            result = self.worker.transcribe(str(wav_path), diarize=True)
+            logger.debug(f"Transcript saved: {result.get('json_path', wav_path)}")
+
+            # Structured meeting result logging
+            _meet_words = result.get("word_count", 0)
+            _meet_speakers = result.get("num_speakers", 0)
+            _meet_duration = result.get("duration", 0)
+            _meet_folder = f"{week_dir}/{folder_name}/"
+            log_meeting_result(meeting_name or "meeting", _meet_duration, _meet_words, _meet_speakers, _meet_folder)
+            # Update session stats
+            self._stats["meetings"] += 1
+            self._stats["total_meeting_seconds"] += int(_meet_duration)
+            self._stats["total_meeting_words"] += _meet_words
+            weekly_stats.record_meeting(int(_meet_duration), _meet_words)
+
+            # Log speaker previews at TRANSCRIPT level (detailed tier)
+            _meet_segments = result.get("speaker_segments")
+            if _meet_segments:
+                log_transcript_preview("", speakers=_meet_segments)
+
+            # --- Speaker identification (runs for BOTH Save and Save & Summarize) ---
+            # #37 (deferred): Toast-based speaker ID was explored but the tkinter
+            # dialog provides autocomplete, confidence colors, and multi-speaker
+            # editing that ToastInputTextBox cannot replicate. Keeping tkinter flow.
+            llm_ok = self._is_claude_cli_available()
+            if llm_ok:
                 try:
-                    json_path = result.get('json_path')
-                    if json_path:
-                        readable_path = flatten_transcript(json_path)
-                        if readable_path:
-                            logger.info(f"Flattened transcript: {readable_path}")
+                    cfg_path = get_config_path()
+                    json_path = result.get('json_path', str(meeting_dir / "transcript.json"))
+                    id_result = identify_speakers(json_path, cfg_path, folder_name)
+                    if id_result and id_result.get("speaker_map"):
+                        confirmed_map = self._ask_speaker_confirmation(id_result)
+                        if confirmed_map:
+                            write_speaker_map(json_path, confirmed_map)
+                            update_config(cfg_path, confirmed_map, id_result.get("config_updates"))
+                            logger.info(f"Speakers confirmed: {confirmed_map}")
+                        else:
+                            logger.info("Speaker identification skipped by user")
+                    else:
+                        logger.info("No speakers identified from transcript")
                 except Exception as e:
-                    logger.warning(f"Auto-flatten failed (non-fatal): {e}")
+                    logger.warning(f"Speaker identification failed (non-fatal): {e}")
+            else:
+                logger.info("Claude CLI not available, speaker identification skipped")
 
-                # Auto-generate minutes if requested
-                if do_summarize and llm_ok:
+            # --- Flatten transcript (now with resolved speaker names if identified) ---
+            try:
+                json_path = result.get('json_path')
+                if json_path:
+                    readable_path = flatten_transcript(json_path)
+                    if readable_path:
+                        logger.info(f"Flattened transcript: {readable_path}")
+            except Exception as e:
+                logger.warning(f"Auto-flatten failed (non-fatal): {e}")
+
+            # --- Auto-generate minutes + rename (only if Save & Summarize) ---
+            if do_summarize:
+                if not llm_ok:
+                    # Show LLM warning only when user chose Summarize but CLI is missing
+                    suppress = self.cfg.get("suppress_llm_warning", False)
+                    if not suppress:
+                        dont_show = self._show_llm_unavailable()
+                        if dont_show:
+                            self.cfg["suppress_llm_warning"] = True
+                            config.save(self.cfg)
+                    logger.warning("Claude CLI not available, skipping summarize")
+                else:
+                    # Step 1: Generate minutes if they don't already exist
                     try:
                         readable_file = meeting_dir / "transcript-readable.txt"
                         minutes_file = meeting_dir / "minutes.md"
@@ -1869,6 +1662,7 @@ class WhisperSync:
                     except Exception as e:
                         logger.warning(f"Auto-minutes failed (non-fatal): {e}")
 
+                    # Step 2: Offer rename via toast if we have minutes with a summary
                     try:
                         minutes_file = meeting_dir / "minutes.md"
                         if minutes_file.exists():
@@ -1878,47 +1672,68 @@ class WhisperSync:
                                     summary = line[len("> Summary:"):].strip()
                                     break
                             if summary:
-                                # Non-blocking: dialog + rename run in their own thread
                                 self._ask_rename_suggestion(
                                     meeting_name or "meeting", summary,
                                     meeting_dir=meeting_dir, date_time_str=date_time_str)
+                            else:
+                                logger.info("No > Summary: line found in minutes - rename skipped")
+                        else:
+                            logger.info("No minutes.md found - rename skipped")
                     except Exception as e:
                         logger.warning(f"Rename suggestion failed (non-fatal): {e}")
 
-                # Rebuild index
-                try:
-                    rebuild_root_index(self._output_dir())
-                except Exception as e:
-                    logger.warning(f"Index rebuild failed (non-fatal): {e}")
-
-                # Toast notification
-                try:
-                    _toast_body = f"{_meet_words} words, {_meet_speakers} speakers"
-                    _folder_path = str(meeting_dir)
-                    def _open_folder(p=_folder_path):
-                        import subprocess as _sp
-                        _sp.Popen(["explorer", p])
-                    notify(
-                        "Queued meeting transcribed",
-                        _toast_body,
-                        buttons=[{"label": "Open Folder", "action": _open_folder}],
-                    )
-                except Exception as e:
-                    logger.debug(f"Meeting toast failed (non-fatal): {e}")
-
-                self.state.emit(MEETING_COMPLETED, meeting_transcribing=False, mode="done")
-                self._schedule_idle(3, blink=True)
-                self._process_meeting_queue()
+            # Rebuild week + root INDEX.md
+            try:
+                rebuild_root_index(self._output_dir())
             except Exception as e:
-                logger.error(f"Queued meeting transcription error: {e}")
-                import traceback
-                logger.debug(traceback.format_exc())
-                self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
-                if self.state.current.mode == "error":
-                    self._schedule_idle(3)
-                self._process_meeting_queue()
+                logger.warning(f"Index rebuild failed (non-fatal): {e}")
 
-        threading.Thread(target=_transcribe_queued, daemon=True).start()
+            # Toast with meeting stats and Open Folder button
+            try:
+                _toast_body = f"{_meet_words} words, {_meet_speakers} speakers"
+                _folder_path = str(meeting_dir)
+                def _open_meeting_folder(p=_folder_path):
+                    import subprocess as _sp
+                    _sp.Popen(["explorer", p])
+                notify(
+                    "Meeting transcribed",
+                    _toast_body,
+                    buttons=[{"label": "Open Folder", "action": _open_meeting_folder}],
+                )
+            except Exception as e:
+                logger.debug(f"Meeting toast failed (non-fatal): {e}")
+
+            self.state.emit(MEETING_COMPLETED, meeting_transcribing=False, mode="done")
+            self._schedule_idle(3, blink=True)
+
+        except WorkerCrashedError as e:
+            logger.error("Worker crashed during meeting - respawning...")
+            logger.info(f"Audio is preserved at: {wav_path}")
+            self.worker.restart()
+            self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
+            if self.state.current.mode == "error":
+                self._schedule_idle(3)
+        except PermissionError as e:
+            # Gated model access - show user the acceptance URLs
+            logger.error(str(e))
+            self._show_error_popup("Diarization Model Access", str(e))
+            self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
+            if self.state.current.mode == "error":
+                self._schedule_idle(3)
+        except FileNotFoundError as e:
+            # Missing HF token
+            logger.error(str(e))
+            self._show_error_popup("Hugging Face Token Missing", str(e))
+            self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
+            if self.state.current.mode == "error":
+                self._schedule_idle(3)
+        except Exception as e:
+            logger.error(f"Meeting transcription error: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
+            if self.state.current.mode == "error":
+                self._schedule_idle(3)
 
     @staticmethod
     def _truncate_path(p: Path, max_len: int = 40) -> str:
@@ -3105,6 +2920,11 @@ class WhisperSync:
             weekly_stats.flush()
         except Exception:
             logger.debug("Stats flush failed during shutdown", exc_info=True)
+        # Signal post-processing worker to shut down
+        try:
+            self._post_queue.put(None)
+        except Exception:
+            logger.debug("Post-queue shutdown signal failed", exc_info=True)
         try:
             if self.recorder.is_recording:
                 self.recorder.stop()
@@ -3245,6 +3065,12 @@ class WhisperSync:
         )
 
         self.state = StateManager(self.tray, self.cfg)
+
+        # Start the post-processing worker (single thread, sequential meeting processing)
+        self._post_worker_thread = threading.Thread(
+            target=self._post_process_worker, daemon=True, name="post-process-worker")
+        self._post_worker_thread.start()
+        logger.info("Post-processing worker started")
 
         # Register icon updater as a global listener on all state events
         def _on_state_change(event):
