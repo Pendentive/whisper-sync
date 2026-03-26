@@ -93,6 +93,25 @@ CLICK_ACTIONS = {
 }
 
 
+def _get_cpu_name() -> str:
+    """Get CPU model name via WMI on Windows, platform.processor() fallback."""
+    import platform
+    if platform.system() == "Windows":
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["wmic", "cpu", "get", "name"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                lines = [l.strip() for l in result.stdout.strip().split("\n") if l.strip() and l.strip() != "Name"]
+                if lines:
+                    return lines[0]
+        except Exception:
+            pass
+    name = platform.processor()
+    return name if name else "Unknown CPU"
+
 
 class WhisperSync:
     def __init__(self):
@@ -116,6 +135,7 @@ class WhisperSync:
         self._feature_suggest_active = False  # routes dictation output to feature log
         self._meeting_queue = []  # List of queued meeting dicts (wav_path, meeting_name, do_summarize, metadata)
         self._meeting_queue_lock = threading.Lock()
+        self._cpu_name = _get_cpu_name()
         # Session stats
         self._stats = {
             "dictations": 0,
@@ -2908,6 +2928,7 @@ class WhisperSync:
         else:
             gpu_label = "GPU: None (CPU mode)"
         items.append(pystray.MenuItem(gpu_label, None, enabled=False))
+        items.append(pystray.MenuItem(f"CPU: {self._cpu_name}", None, enabled=False))
 
         # Download if missing
         needs_download = (
@@ -3216,6 +3237,7 @@ class WhisperSync:
         logger.info(f"  Left-click: {self.cfg.get('left_click', 'meeting')}")
         logger.info(f"  Middle-click: {self.cfg.get('middle_click', 'dictation')}")
         logger.info(f"Log file: {get_log_path()}")
+        logger.info(f"CPU: {self._cpu_name}")
         if self.cfg.get("incognito"):
             logger.info("Whisper mode active - dictation data not stored on disk")
         if BackupTranscriber.is_enabled(self.cfg):
