@@ -62,6 +62,7 @@ from .state_manager import (
     ERROR, MODEL_LOADING, MODEL_READY, MODEL_DOWNLOADING,
     PR_STATUS_CHANGED, SPEAKER_HEALTH_CHANGED, QUEUED, IDLE,
 )
+from .meeting_job import MeetingJob
 from .rebuild_index import rebuild_root_index
 from .speakers import identify_speakers, write_speaker_map, update_config, get_config_path
 
@@ -1511,18 +1512,19 @@ class WhisperSync:
                 cleanup_temp_files(self._meeting_temp_dir())
 
                 # Enqueue for post-processing (transcription, speaker ID, etc.)
-                job = {
-                    "wav_path": str(wav_path),
-                    "meeting_name": meeting_name,
-                    "do_summarize": do_summarize,
-                    "week_dir": week_dir,
-                    "folder_name": folder_name,
-                    "date_time_str": date_time_str,
-                    "meeting_dir": str(meeting_dir),
-                }
+                job = MeetingJob(
+                    app=self,
+                    wav_path=wav_path,
+                    meeting_dir=meeting_dir,
+                    name=meeting_name,
+                    summarize=do_summarize,
+                    date_time_str=date_time_str,
+                    week_dir=week_dir,
+                    folder_name=folder_name,
+                )
                 self._post_queue.put(job)
                 qsize = self._post_queue.qsize()
-                logger.info(f"Meeting queued for processing: {meeting_name or 'meeting'} ({qsize} in queue)")
+                logger.info(f"Meeting queued: {meeting_name or 'meeting'} ({qsize} in queue)")
 
                 if qsize > 1:
                     notify("Meeting queued", f"'{meeting_name or 'meeting'}' will transcribe when the current meeting finishes")
@@ -1541,11 +1543,14 @@ class WhisperSync:
         threading.Thread(target=_save_and_enqueue, daemon=True).start()
 
     def _post_process_worker(self):
-        """Single worker thread that processes completed meetings sequentially.
+        """Process meeting job steps sequentially.
 
-        Runs as a daemon thread started in run(). Ensures only one meeting
-        is transcribed at a time (GPU is shared) and prevents concurrent
-        thread collisions on shared state (tray icon, tkinter, COM objects).
+        Runs as a daemon thread started in run(). Each meeting is a
+        MeetingJob with discrete steps. The worker pulls a job and
+        executes steps one at a time. If a step fails, the job is
+        abandoned but the worker continues to the next job.
+
+        Recording start/stop is NEVER touched here.
         """
         while True:
             job = self._post_queue.get()
@@ -1553,187 +1558,70 @@ class WhisperSync:
                 logger.info("Post-processing worker shutting down")
                 break  # Shutdown signal
             try:
-                self._process_meeting_job(job)
+                self._run_meeting_job(job)
             except Exception as e:
-                logger.error(f"Post-processing failed: {e}", exc_info=True)
+                logger.error(f"Post-processing failed for {job.name}: {e}", exc_info=True)
             finally:
                 self._post_queue.task_done()
 
-        logger.info("Post-processing queue empty")
+    def _run_meeting_job(self, job: MeetingJob):
+        """Execute all steps of a MeetingJob with error recovery.
 
-    def _process_meeting_job(self, job: dict):
-        """Process a single meeting job: transcription, speaker ID, flatten, minutes, rename.
-
-        Called exclusively by _post_process_worker. This is the ONLY code path
-        that touches: transcription worker, speaker identification, flatten,
-        minutes generation, and rename suggestions.
+        Each step is independent. If a step fails with a fatal error
+        (WorkerCrashedError, PermissionError, FileNotFoundError), the
+        job is abandoned and state is set to error. Non-fatal errors
+        are handled within each step method.
         """
-        meeting_name = job["meeting_name"]
-        wav_path = Path(job["wav_path"])
-        do_summarize = job["do_summarize"]
-        week_dir = job["week_dir"]
-        folder_name = job["folder_name"]
-        date_time_str = job["date_time_str"]
-        meeting_dir = Path(job["meeting_dir"])
+        from .worker_manager import WorkerCrashedError
 
-        logger.info(f"Processing meeting: {meeting_name or 'meeting'}")
+        logger.info(f"Processing meeting: {job.name or 'meeting'}")
 
         try:
-            self.state.emit(TRANSCRIPTION_STARTED, mode=None, meeting_transcribing=True)
-
-            if not self.worker.is_alive():
-                logger.warning("Worker not alive, restarting...")
-                self.worker.restart()
-                if not self.worker.wait_ready(timeout=120):
-                    raise RuntimeError("Worker failed to restart")
-            result = self.worker.transcribe(str(wav_path), diarize=True)
-            logger.debug(f"Transcript saved: {result.get('json_path', wav_path)}")
-
-            # Structured meeting result logging
-            _meet_words = result.get("word_count", 0)
-            _meet_speakers = result.get("num_speakers", 0)
-            _meet_duration = result.get("duration", 0)
-            _meet_folder = f"{week_dir}/{folder_name}/"
-            log_meeting_result(meeting_name or "meeting", _meet_duration, _meet_words, _meet_speakers, _meet_folder)
-            # Update session stats
-            self._stats["meetings"] += 1
-            self._stats["total_meeting_seconds"] += int(_meet_duration)
-            self._stats["total_meeting_words"] += _meet_words
-            weekly_stats.record_meeting(int(_meet_duration), _meet_words)
-
-            # Log speaker previews at TRANSCRIPT level (detailed tier)
-            _meet_segments = result.get("speaker_segments")
-            if _meet_segments:
-                log_transcript_preview("", speakers=_meet_segments)
-
-            # --- Speaker identification (runs for BOTH Save and Save & Summarize) ---
-            # #37 (deferred): Toast-based speaker ID was explored but the tkinter
-            # dialog provides autocomplete, confidence colors, and multi-speaker
-            # editing that ToastInputTextBox cannot replicate. Keeping tkinter flow.
-            llm_ok = self._is_claude_cli_available()
-            if llm_ok:
-                try:
-                    cfg_path = get_config_path()
-                    json_path = result.get('json_path', str(meeting_dir / "transcript.json"))
-                    id_result = identify_speakers(json_path, cfg_path, folder_name)
-                    if id_result and id_result.get("speaker_map"):
-                        confirmed_map = self._ask_speaker_confirmation(id_result)
-                        if confirmed_map:
-                            write_speaker_map(json_path, confirmed_map)
-                            update_config(cfg_path, confirmed_map, id_result.get("config_updates"))
-                            logger.info(f"Speakers confirmed: {confirmed_map}")
-                        else:
-                            logger.info("Speaker identification skipped by user")
-                    else:
-                        logger.info("No speakers identified from transcript")
-                except Exception as e:
-                    logger.warning(f"Speaker identification failed (non-fatal): {e}")
-            else:
-                logger.info("Claude CLI not available, speaker identification skipped")
-
-            # --- Flatten transcript (now with resolved speaker names if identified) ---
-            try:
-                json_path = result.get('json_path')
-                if json_path:
-                    readable_path = flatten_transcript(json_path)
-                    if readable_path:
-                        logger.info(f"Flattened transcript: {readable_path}")
-            except Exception as e:
-                logger.warning(f"Auto-flatten failed (non-fatal): {e}")
-
-            # --- Auto-generate minutes + rename (only if Save & Summarize) ---
-            if do_summarize:
-                if not llm_ok:
-                    # Show LLM warning only when user chose Summarize but CLI is missing
-                    suppress = self.cfg.get("suppress_llm_warning", False)
-                    if not suppress:
-                        dont_show = self._show_llm_unavailable()
-                        if dont_show:
-                            self.cfg["suppress_llm_warning"] = True
-                            config.save(self.cfg)
-                    logger.warning("Claude CLI not available, skipping summarize")
-                else:
-                    # Step 1: Generate minutes if they don't already exist
-                    try:
-                        readable_file = meeting_dir / "transcript-readable.txt"
-                        minutes_file = meeting_dir / "minutes.md"
-                        if readable_file.exists() and not minutes_file.exists():
-                            self._generate_minutes(meeting_dir, readable_file, minutes_file)
-                    except Exception as e:
-                        logger.warning(f"Auto-minutes failed (non-fatal): {e}")
-
-                    # Step 2: Offer rename via toast if we have minutes with a summary
-                    try:
-                        minutes_file = meeting_dir / "minutes.md"
-                        if minutes_file.exists():
-                            summary = None
-                            for line in minutes_file.read_text(encoding="utf-8").splitlines():
-                                if line.startswith("> Summary:"):
-                                    summary = line[len("> Summary:"):].strip()
-                                    break
-                            if summary:
-                                self._ask_rename_suggestion(
-                                    meeting_name or "meeting", summary,
-                                    meeting_dir=meeting_dir, date_time_str=date_time_str)
-                            else:
-                                logger.info("No > Summary: line found in minutes - rename skipped")
-                        else:
-                            logger.info("No minutes.md found - rename skipped")
-                    except Exception as e:
-                        logger.warning(f"Rename suggestion failed (non-fatal): {e}")
-
-            # Rebuild week + root INDEX.md
-            try:
-                rebuild_root_index(self._output_dir())
-            except Exception as e:
-                logger.warning(f"Index rebuild failed (non-fatal): {e}")
-
-            # Toast with meeting stats and Open Folder button
-            try:
-                _toast_body = f"{_meet_words} words, {_meet_speakers} speakers"
-                _folder_path = str(meeting_dir)
-                def _open_meeting_folder(p=_folder_path):
-                    import subprocess as _sp
-                    _sp.Popen(["explorer", p])
-                notify(
-                    "Meeting transcribed",
-                    _toast_body,
-                    buttons=[{"label": "Open Folder", "action": _open_meeting_folder}],
+            while not job.is_complete:
+                step_num = job._current_step + 1
+                step_name = job.current_step_name
+                logger.debug(
+                    f"Step {step_num}/{job.total_steps}: {step_name} "
+                    f"for {job.name or 'meeting'}"
                 )
-            except Exception as e:
-                logger.debug(f"Meeting toast failed (non-fatal): {e}")
+                job.execute_next_step()
 
-            self.state.emit(MEETING_COMPLETED, meeting_transcribing=False, mode="done")
-            self._schedule_idle(3, blink=True)
+            logger.info(f"Meeting done: {job.name or 'meeting'}")
 
         except WorkerCrashedError as e:
-            logger.error("Worker crashed during meeting - respawning...")
-            logger.info(f"Audio is preserved at: {wav_path}")
+            logger.error("Worker crashed during meeting, respawning...")
+            logger.info(f"Audio is preserved at: {job.wav_path}")
             self.worker.restart()
-            self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
-            if self.state.current.mode == "error":
-                self._schedule_idle(3)
+            self._emit_error_safe(str(e))
         except PermissionError as e:
-            # Gated model access - show user the acceptance URLs
             logger.error(str(e))
             self._show_error_popup("Diarization Model Access", str(e))
-            self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
-            if self.state.current.mode == "error":
-                self._schedule_idle(3)
+            self._emit_error_safe(str(e))
         except FileNotFoundError as e:
-            # Missing HF token
             logger.error(str(e))
             self._show_error_popup("Hugging Face Token Missing", str(e))
-            self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
-            if self.state.current.mode == "error":
-                self._schedule_idle(3)
+            self._emit_error_safe(str(e))
         except Exception as e:
             logger.error(f"Meeting transcription error: {e}")
             import traceback
             logger.debug(traceback.format_exc())
-            self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
-            if self.state.current.mode == "error":
-                self._schedule_idle(3)
+            self._emit_error_safe(str(e))
+
+    def _emit_error_safe(self, message: str):
+        """Emit an error state, preserving mode if a recording is active."""
+        current_mode = self.state.current.mode
+        # If recording is active, keep the current mode
+        safe_mode = current_mode if self.recorder.is_recording else "error"
+        if safe_mode is None:
+            safe_mode = "error"
+        self.state.emit(
+            ERROR,
+            meeting_transcribing=False,
+            mode=safe_mode,
+            data={"message": message, "recoverable": False},
+        )
+        if safe_mode == "error":
+            self._schedule_idle(3)
 
     @staticmethod
     def _truncate_path(p: Path, max_len: int = 40) -> str:
