@@ -2,11 +2,20 @@
 
 import faulthandler
 import logging
+import os
 import sys
 import threading
 import warnings
 
-# Suppress known harmless warnings before any imports trigger them
+# Set PYTHONWARNINGS env var so spawned subprocesses (multiprocessing "spawn"
+# context) also suppress these warnings. The warnings module filters only
+# apply to the current process; subprocesses start fresh Python interpreters.
+os.environ["PYTHONWARNINGS"] = (
+    "ignore::UserWarning:pyannote.audio.core.io,"
+    "ignore::UserWarning:pyannote.audio.utils.reproducibility"
+)
+
+# Suppress known harmless warnings in the main process too
 warnings.filterwarnings("ignore", message="torchcodec is not installed correctly",
                         category=UserWarning, module=r"pyannote\.audio\.core\.io")
 warnings.filterwarnings("ignore", message="TensorFloat-32.*has been disabled",
@@ -3093,14 +3102,18 @@ class WhisperSync:
             import time
             time.sleep(self._CALLBACK_DEFER_SECS)
             self._cleanup()
-            try:
-                if self.tray:
-                    self.tray.stop()
-            finally:
-                subprocess.Popen(
-                    [sys.executable, "-m", "whisper_sync"],
-                    cwd=str(Path(__file__).parent.parent),
-                )
+            # Spawn new process first so it starts loading immediately
+            subprocess.Popen(
+                [sys.executable, "-m", "whisper_sync"],
+                cwd=str(Path(__file__).parent.parent),
+            )
+            # Stop tray icon, then force-exit. os._exit() is needed because
+            # daemon threads (worker subprocesses, keyboard listener, etc.)
+            # can keep the process alive after tray.stop() returns.
+            if self.tray:
+                self.tray.stop()
+            time.sleep(0.2)
+            os._exit(0)
 
         threading.Thread(target=_do_restart, daemon=True).start()
 
