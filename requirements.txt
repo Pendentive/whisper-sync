@@ -8,4 +8,5 @@ pystray
 Pillow
 keyboard
 pyperclip
+pywin32
 windows-toasts

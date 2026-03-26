@@ -1,7 +1,6 @@
 """Paste transcription results into the focused field."""
 
 import platform
-import sys
 import threading
 import time
 
@@ -13,79 +12,74 @@ from .logger import logger
 # Must be long enough for the paste keystroke to land.
 _RESTORE_DELAY: float = 0.5
 
-# ---------------------------------------------------------------------------
-# Win32 clipboard helpers (ctypes, no pywin32 dependency)
-# ---------------------------------------------------------------------------
-
 _IS_WINDOWS = platform.system() == "Windows"
 
+# ---------------------------------------------------------------------------
+# Win32 clipboard helpers (pywin32)
+# ---------------------------------------------------------------------------
 
-def _save_clipboard_all_win32() -> list[tuple[int, bytes]] | None:
+_has_win32clipboard = False
+if _IS_WINDOWS:
+    try:
+        import win32clipboard
+        _has_win32clipboard = True
+    except ImportError:
+        logger.debug("pywin32 not installed, clipboard preservation limited to text only")
+
+
+def _save_clipboard_win32() -> list[tuple[int, bytes]] | None:
     """Save all clipboard formats as (format_id, raw_bytes) pairs.
 
-    Uses the Win32 clipboard API via ctypes so images, files, and
-    other non-text formats are preserved.
+    Uses win32clipboard to preserve images, files, and all other formats.
     """
-    import ctypes
-
-    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
-    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-
-    if not user32.OpenClipboard(0):
+    try:
+        win32clipboard.OpenClipboard()
+    except Exception:
         return None
     try:
-        formats: list[tuple[int, bytes]] = []
+        formats = []
         fmt = 0
         while True:
-            fmt = user32.EnumClipboardFormats(fmt)
+            fmt = win32clipboard.EnumClipboardFormats(fmt)
             if fmt == 0:
                 break
-            handle = user32.GetClipboardData(fmt)
-            if not handle:
-                continue
-            size = kernel32.GlobalSize(handle)
-            if size == 0:
-                continue
-            ptr = kernel32.GlobalLock(handle)
-            if not ptr:
-                continue
             try:
-                data = ctypes.string_at(ptr, size)
+                data = win32clipboard.GetClipboardData(fmt)
+                # GetClipboardData returns different types depending on format.
+                # Convert to bytes for uniform storage.
+                if isinstance(data, str):
+                    data = data.encode("utf-8")
+                elif not isinstance(data, bytes):
+                    # Some formats return ints or other types; skip them
+                    continue
                 formats.append((fmt, data))
-            finally:
-                kernel32.GlobalUnlock(handle)
+            except Exception:
+                # Some formats can't be read (e.g., synthesized formats); skip
+                continue
         return formats if formats else None
     finally:
-        user32.CloseClipboard()
+        win32clipboard.CloseClipboard()
 
 
-def _restore_clipboard_all_win32(formats: list[tuple[int, bytes]]) -> None:
-    """Restore previously saved clipboard formats via the Win32 API."""
-    import ctypes
-
-    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
-    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-
-    if not user32.OpenClipboard(0):
+def _restore_clipboard_win32(formats: list[tuple[int, bytes]]) -> None:
+    """Restore previously saved clipboard formats via win32clipboard."""
+    try:
+        win32clipboard.OpenClipboard()
+    except Exception:
         return
     try:
-        user32.EmptyClipboard()
-        GMEM_MOVEABLE = 0x0002
+        win32clipboard.EmptyClipboard()
         for fmt, data in formats:
-            handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
-            if not handle:
-                continue
-            ptr = kernel32.GlobalLock(handle)
-            if not ptr:
-                kernel32.GlobalFree(handle)
-                continue
             try:
-                ctypes.memmove(ptr, data, len(data))
-            finally:
-                kernel32.GlobalUnlock(handle)
-            user32.SetClipboardData(fmt, handle)
+                # CF_UNICODETEXT (13) was stored as utf-8 bytes; decode back
+                if fmt == 13:  # CF_UNICODETEXT
+                    win32clipboard.SetClipboardData(fmt, data.decode("utf-8"))
+                else:
+                    win32clipboard.SetClipboardData(fmt, data)
+            except Exception:
+                continue
     finally:
-        user32.CloseClipboard()
+        win32clipboard.CloseClipboard()
 
 
 # ---------------------------------------------------------------------------
@@ -96,13 +90,12 @@ def _restore_clipboard_all_win32(formats: list[tuple[int, bytes]]) -> None:
 def _save_clipboard() -> list[tuple[int, bytes]] | str | None:
     """Save current clipboard contents.
 
-    On Windows this preserves ALL formats (images, files, text, etc.)
-    via the Win32 clipboard API.  On other platforms it falls back to
-    pyperclip which only handles plain text.
+    On Windows with pywin32 this preserves ALL formats (images, files,
+    text, etc.). Otherwise falls back to pyperclip (text only).
     """
     try:
-        if _IS_WINDOWS:
-            return _save_clipboard_all_win32()
+        if _has_win32clipboard:
+            return _save_clipboard_win32()
         return pyperclip.paste()
     except Exception:
         logger.debug("Failed to save clipboard contents", exc_info=True)
@@ -120,9 +113,9 @@ def _schedule_clipboard_restore(previous: list[tuple[int, bytes]] | str | None) 
     def _restore():
         time.sleep(_RESTORE_DELAY)
         try:
-            if isinstance(previous, list):
-                _restore_clipboard_all_win32(previous)
-            else:
+            if isinstance(previous, list) and _has_win32clipboard:
+                _restore_clipboard_win32(previous)
+            elif isinstance(previous, str):
                 pyperclip.copy(previous)
             logger.debug("Clipboard restored to previous contents")
         except Exception:
