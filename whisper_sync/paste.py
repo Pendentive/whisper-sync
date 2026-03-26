@@ -1,5 +1,7 @@
 """Paste transcription results into the focused field."""
 
+import platform
+import sys
 import threading
 import time
 
@@ -11,16 +13,103 @@ from .logger import logger
 # Must be long enough for the paste keystroke to land.
 _RESTORE_DELAY: float = 0.5
 
+# ---------------------------------------------------------------------------
+# Win32 clipboard helpers (ctypes, no pywin32 dependency)
+# ---------------------------------------------------------------------------
 
-def _save_clipboard() -> str | None:
-    """Read the current clipboard contents, returning None on failure."""
+_IS_WINDOWS = platform.system() == "Windows"
+
+
+def _save_clipboard_all_win32() -> list[tuple[int, bytes]] | None:
+    """Save all clipboard formats as (format_id, raw_bytes) pairs.
+
+    Uses the Win32 clipboard API via ctypes so images, files, and
+    other non-text formats are preserved.
+    """
+    import ctypes
+
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+
+    if not user32.OpenClipboard(0):
+        return None
     try:
+        formats: list[tuple[int, bytes]] = []
+        fmt = 0
+        while True:
+            fmt = user32.EnumClipboardFormats(fmt)
+            if fmt == 0:
+                break
+            handle = user32.GetClipboardData(fmt)
+            if not handle:
+                continue
+            size = kernel32.GlobalSize(handle)
+            if size == 0:
+                continue
+            ptr = kernel32.GlobalLock(handle)
+            if not ptr:
+                continue
+            try:
+                data = ctypes.string_at(ptr, size)
+                formats.append((fmt, data))
+            finally:
+                kernel32.GlobalUnlock(handle)
+        return formats if formats else None
+    finally:
+        user32.CloseClipboard()
+
+
+def _restore_clipboard_all_win32(formats: list[tuple[int, bytes]]) -> None:
+    """Restore previously saved clipboard formats via the Win32 API."""
+    import ctypes
+
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+
+    if not user32.OpenClipboard(0):
+        return
+    try:
+        user32.EmptyClipboard()
+        GMEM_MOVEABLE = 0x0002
+        for fmt, data in formats:
+            handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+            if not handle:
+                continue
+            ptr = kernel32.GlobalLock(handle)
+            if not ptr:
+                kernel32.GlobalFree(handle)
+                continue
+            try:
+                ctypes.memmove(ptr, data, len(data))
+            finally:
+                kernel32.GlobalUnlock(handle)
+            user32.SetClipboardData(fmt, handle)
+    finally:
+        user32.CloseClipboard()
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform save / restore wrappers
+# ---------------------------------------------------------------------------
+
+
+def _save_clipboard() -> list[tuple[int, bytes]] | str | None:
+    """Save current clipboard contents.
+
+    On Windows this preserves ALL formats (images, files, text, etc.)
+    via the Win32 clipboard API.  On other platforms it falls back to
+    pyperclip which only handles plain text.
+    """
+    try:
+        if _IS_WINDOWS:
+            return _save_clipboard_all_win32()
         return pyperclip.paste()
     except Exception:
+        logger.debug("Failed to save clipboard contents", exc_info=True)
         return None
 
 
-def _schedule_clipboard_restore(previous: str | None) -> None:
+def _schedule_clipboard_restore(previous: list[tuple[int, bytes]] | str | None) -> None:
     """Restore *previous* clipboard contents after a short delay.
 
     Runs in a daemon thread so it never blocks the caller.
@@ -31,10 +120,13 @@ def _schedule_clipboard_restore(previous: str | None) -> None:
     def _restore():
         time.sleep(_RESTORE_DELAY)
         try:
-            pyperclip.copy(previous)
+            if isinstance(previous, list):
+                _restore_clipboard_all_win32(previous)
+            else:
+                pyperclip.copy(previous)
             logger.debug("Clipboard restored to previous contents")
         except Exception:
-            pass
+            logger.debug("Clipboard restore failed", exc_info=True)
 
     threading.Thread(target=_restore, daemon=True).start()
 
@@ -84,11 +176,16 @@ def paste_keystrokes(text: str, *, restore: bool = True) -> None:
         # Don't restore - user needs clipboard contents to paste manually
 
 
-def paste(text: str, method: str = "clipboard") -> None:
-    # Save clipboard before any writes so we can restore afterwards
+def paste(text: str, method: str = "clipboard", *, restore: bool = True) -> None:
+    """Paste *text* using the given method.
+
+    When *restore* is False (e.g. whisper/incognito mode) the clipboard
+    is NOT restored after pasting, effectively clearing the user's
+    previous clipboard contents.
+    """
     if method == "clipboard":
-        paste_clipboard(text)
+        paste_clipboard(text, restore=restore)
     elif method == "keystrokes":
-        paste_keystrokes(text)
+        paste_keystrokes(text, restore=restore)
     else:
         raise ValueError(f"Unknown paste method: {method}")

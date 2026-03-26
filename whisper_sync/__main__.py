@@ -438,7 +438,7 @@ class WhisperSync:
                 else:
                     # Normal dictation mode: paste + log
                     if text:
-                        paste(text, self.cfg["paste_method"])
+                        paste(text, self.cfg["paste_method"], restore=not self.cfg.get("incognito", False))
                     delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
                     if self.cfg.get("incognito"):
                         logger.info(f"Dictation: {t2 - t0:.2f}s -- {delivery} ({char_count} chars)")
@@ -569,7 +569,7 @@ class WhisperSync:
                         ).start()
                 else:
                     if text:
-                        paste(text, self.cfg["paste_method"])
+                        paste(text, self.cfg["paste_method"], restore=not self.cfg.get("incognito", False))
 
                     # Update session stats
                     self._stats["dictations"] += 1
@@ -606,7 +606,7 @@ class WhisperSync:
                     timeout = 180
                     text = self.worker.transcribe_fast(overlay_audio, model_override=dictation_model, timeout=timeout)
                     if text:
-                        paste(text, self.cfg["paste_method"])
+                        paste(text, self.cfg["paste_method"], restore=not self.cfg.get("incognito", False))
                     t1 = _time.perf_counter()
                     duration = t1 - t0
                     char_count = len(text or "")
