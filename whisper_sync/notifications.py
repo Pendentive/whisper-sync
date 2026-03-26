@@ -1,40 +1,25 @@
 """Windows toast notifications for WhisperSync.
 
 Thin wrapper around `windows-toasts` with graceful fallback.
-Handles AppUserModelID registration automatically.
+All toast display is routed through a dedicated background thread that
+owns the COM apartment and the toaster instance, preventing SEH crashes
+(0x8001010e) when notify() is called from arbitrary threads.
 """
 
 import logging
-import os
+import queue
 import threading
 
 _logger = logging.getLogger("whisper_sync.notifications")
-
-
-def _ensure_com():
-    """Initialize COM on the calling thread if on Windows.
-
-    Toast notifications use Windows Runtime COM interfaces that are bound to the
-    thread that created them.  When ``show_toast`` is called from a background
-    thread (e.g. ``_wait_worker`` during dictation recovery), the COM apartment
-    has not been initialized, which triggers a fatal SEH exception
-    (``0x8001010e``) that kills the process.
-
-    Calling ``CoInitializeEx`` is safe to repeat; it returns ``S_FALSE``
-    (wrapped as ``OSError``) when the apartment is already initialized.
-    """
-    if os.name != "nt":
-        return
-    try:
-        import ctypes
-        ctypes.windll.ole32.CoInitializeEx(0, 0)  # COINIT_MULTITHREADED
-    except OSError:
-        pass  # Already initialized on this thread
 
 _AUMID = "Pendentive.WhisperSync"
 _available = False
 _has_progress_bar = False
 _has_input_text_box = False
+
+# Toast display queue and dedicated thread
+_toast_queue: queue.Queue | None = None
+_toast_thread: threading.Thread | None = None
 
 try:
     from windows_toasts import (
@@ -43,16 +28,14 @@ try:
         ToastActivatedEventArgs,
         ToastButton,
     )
-
-    _toaster = InteractableWindowsToaster(_AUMID)
     _available = True
 except ImportError:
     _logger.warning(
-        "windows-toasts not installed -- toast notifications disabled. "
+        "windows-toasts not installed - toast notifications disabled. "
         "Install with: pip install windows-toasts"
     )
 except Exception as exc:
-    _logger.warning(f"Toast notification init failed -- falling back to log: {exc}")
+    _logger.warning(f"Toast notification init failed - falling back to log: {exc}")
 
 # Optional imports for progress bar and text input support
 if _available:
@@ -69,8 +52,59 @@ if _available:
         pass
 
 
+def _toast_worker():
+    """Dedicated thread that creates the toaster and processes all toast requests.
+
+    The InteractableWindowsToaster must be created and used from the same
+    thread. By owning both creation and display, we avoid COM apartment
+    threading violations that cause fatal SEH exceptions (0x8001010e).
+    """
+    import os
+    if os.name == "nt":
+        try:
+            import ctypes
+            ctypes.windll.ole32.CoInitializeEx(0, 2)  # COINIT_APARTMENTTHREADED
+        except OSError:
+            pass
+
+    toaster = InteractableWindowsToaster(_AUMID)
+
+    while True:
+        item = _toast_queue.get()
+        if item is None:
+            break  # Shutdown signal
+        try:
+            toaster.show_toast(item)
+        except Exception as exc:
+            _logger.debug(f"Toast display failed: {exc}")
+
+
+def _ensure_toast_thread():
+    """Start the toast worker thread if not already running."""
+    global _toast_thread
+    if _toast_thread is not None and _toast_thread.is_alive():
+        return
+    _toast_thread = threading.Thread(target=_toast_worker, daemon=True, name="toast-worker")
+    _toast_thread.start()
+
+
+def _show_toast(toast):
+    """Queue a toast for display on the dedicated thread."""
+    if _toast_queue is None:
+        return
+    _ensure_toast_thread()
+    _toast_queue.put(toast)
+
+
+# Initialize the queue (thread starts lazily on first toast)
+if _available:
+    _toast_queue = queue.Queue()
+
+
 def notify(title: str, body: str, *, buttons=None, on_click=None):
     """Show a Windows toast notification.
+
+    Thread-safe. Can be called from any thread.
 
     Args:
         title: Notification title (bold text).
@@ -92,9 +126,6 @@ def notify(title: str, body: str, *, buttons=None, on_click=None):
                 action = btn.get("action")
                 toast_btn = ToastButton(label)
                 if action:
-                    # Capture action in closure for the callback.
-                    # Run in a daemon thread so blocking callbacks (e.g. subprocess
-                    # calls like PR merge) don't block the notification system.
                     def _make_handler(fn):
                         def _handler(event: ToastActivatedEventArgs):
                             def _run():
@@ -119,8 +150,7 @@ def notify(title: str, body: str, *, buttons=None, on_click=None):
 
             toast.on_activated = _body_handler
 
-        _ensure_com()
-        _toaster.show_toast(toast)
+        _show_toast(toast)
     except Exception as exc:
         _logger.debug(f"Toast notification failed: {exc}")
         _logger.info(f"[toast] {title}: {body}")
@@ -153,8 +183,7 @@ def notify_progress(title: str, caption: str, *, progress=None, progress_overrid
             progress_override=progress_override,
         )
         toast = Toast(progress_bar=progress_bar)
-        _ensure_com()
-        _toaster.show_toast(toast)
+        _show_toast(toast)
     except Exception as exc:
         _logger.debug(f"Toast progress notification failed: {exc}")
         _logger.info(f"[toast] {title}: {caption}")
@@ -182,8 +211,7 @@ def notify_update(tag: str, title: str, body: str, *, progress=None):
         toast.group = "whispersync"
         if progress is not None and _has_progress_bar:
             toast.progress_bar = ToastProgressBar(title, body, progress=progress)
-        _ensure_com()
-        _toaster.show_toast(toast)
+        _show_toast(toast)
     except Exception as exc:
         _logger.debug(f"Toast update failed: {exc}")
         _logger.info(f"[toast] {title}: {body}")
@@ -207,7 +235,7 @@ TOAST_REGISTRY: dict[str, dict] = {
     },
     "dictation_completed": {
         "title": "Dictation complete",
-        "body": "{words} words",
+        "body": "",
     },
     "error": {
         "title": "WhisperSync Error",
