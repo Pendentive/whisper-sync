@@ -2872,32 +2872,58 @@ class WhisperSync:
 
         threading.Thread(target=_do_update, daemon=True).start()
 
+    # Empirically chosen delay (seconds) to let pystray menu callbacks
+    # return before we call tray.stop(). Without this, WM_QUIT is posted
+    # but can't be processed while the callback is still on the stack.
+    _CALLBACK_DEFER_SECS = 0.3
+
+    def _cleanup(self):
+        """Shared shutdown sequence for restart and quit."""
+        try:
+            weekly_stats.flush()
+        except Exception:
+            logger.debug("Stats flush failed during shutdown", exc_info=True)
+        try:
+            if self.recorder.is_recording:
+                self.recorder.stop()
+            self.worker.stop()
+            self._backup.stop()
+            keyboard.unhook_all()
+        except Exception:
+            logger.debug("Cleanup error during shutdown", exc_info=True)
+
     def _restart(self):
-        import subprocess
-        weekly_stats.flush()
-        if self.recorder.is_recording:
-            self.recorder.stop()
-        self.worker.stop()
-        self._backup.stop()
-        keyboard.unhook_all()
-        # Stop the tray BEFORE spawning the new process so the old
-        # icon is removed and pystray's message loop exits cleanly.
-        if self.tray:
-            self.tray.stop()
-        subprocess.Popen(
-            [sys.executable, "-m", "whisper_sync"],
-            cwd=str(Path(__file__).parent.parent),
-        )
+        """Restart WhisperSync by cleaning up, stopping tray, then spawning.
+
+        Deferred to a background thread because pystray menu callbacks
+        run inside the Win32 message pump. tray.stop() posts WM_QUIT
+        but can't process it until the callback returns.
+        """
+        def _do_restart():
+            import subprocess
+            import time
+            time.sleep(self._CALLBACK_DEFER_SECS)
+            self._cleanup()
+            try:
+                if self.tray:
+                    self.tray.stop()
+            finally:
+                subprocess.Popen(
+                    [sys.executable, "-m", "whisper_sync"],
+                    cwd=str(Path(__file__).parent.parent),
+                )
+
+        threading.Thread(target=_do_restart, daemon=True).start()
 
     def quit(self):
-        weekly_stats.flush()
-        if self.recorder.is_recording:
-            self.recorder.stop()
-        self.worker.stop()
-        self._backup.stop()
-        keyboard.unhook_all()
-        if self.tray:
-            self.tray.stop()
+        """Quit WhisperSync. Deferred like _restart for the same reason."""
+        def _do_quit():
+            import time
+            time.sleep(self._CALLBACK_DEFER_SECS)
+            self._cleanup()
+            if self.tray:
+                self.tray.stop()
+        threading.Thread(target=_do_quit, daemon=True).start()
 
     @staticmethod
     def _prompt_large_download(model_name: str, size: str) -> bool:
