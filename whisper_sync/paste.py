@@ -158,10 +158,13 @@ def paste_clipboard(text: str, *, restore: bool = True) -> None:
     pyperclip.copy(text)
     logger.info(f"Text in clipboard ({len(text)} chars)")
 
-    # Only attempt auto-paste if there's a focused input window
+    # If no focused input window, skip Ctrl+V but still schedule restore.
+    # The dictation text is on the clipboard for manual paste. After the
+    # restore delay, the previous clipboard contents come back so the user
+    # has access to both (dictation first, then original).
     if not _has_focused_input():
-        logger.debug("No focused input window, text left in clipboard")
-        # Don't restore - user needs the dictation text for manual paste
+        logger.debug("No focused input window, text left in clipboard for manual paste")
+        _schedule_clipboard_restore(previous)
         return
 
     try:
@@ -188,6 +191,7 @@ def paste_keystrokes(text: str, *, restore: bool = True) -> None:
     if not _has_focused_input():
         pyperclip.copy(text)
         logger.debug("No focused input window, text copied to clipboard")
+        _schedule_clipboard_restore(previous)
         return
 
     try:
