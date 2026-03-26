@@ -50,11 +50,19 @@ ICON_REGISTRY: dict[str, IconSpec] = {
     "recording.meeting":              IconSpec("#CC3333", "#FF4444", tooltip="Recording meeting..."),
     "recording.meeting.speaker_fail": IconSpec("#FFAA00", "#FF4444", tooltip="Recording (speaker issue)"),
 
+    # Recording meeting while background transcription runs
+    "recording.meeting.bg_transcribing":              IconSpec("#CC8800", "#FF4444", tooltip="Recording (bg transcribing)..."),
+    "recording.meeting.bg_transcribing.speaker_fail": IconSpec("#FFAA00", "#FF4444", tooltip="Recording (bg transcribing, speaker issue)..."),
+
     # Dictation states
     "dictation":                              IconSpec("#CCCCCC", "#4488FF", tooltip="Dictating..."),
     "dictation.overlay.meeting":              IconSpec("#CC3333", "#FF4444", "#4488FF", tooltip="Dictating (meeting)..."),
     "dictation.overlay.meeting.speaker_fail": IconSpec("#FFAA00", "#FF4444", "#4488FF", tooltip="Dictating (meeting, speaker issue)..."),
     "dictation.overlay.transcribing":         IconSpec("#CC8800", "#FFAA00", "#4488FF", tooltip="Dictating (transcribing)..."),
+
+    # Dictation during recording while background transcription runs
+    "dictation.overlay.meeting.bg_transcribing":              IconSpec("#CC8800", "#FF4444", "#4488FF", tooltip="Dictating (meeting + bg transcribing)..."),
+    "dictation.overlay.meeting.bg_transcribing.speaker_fail": IconSpec("#FFAA00", "#FF4444", "#4488FF", tooltip="Dictating (meeting + bg transcribing, speaker issue)..."),
 
     # Pipeline states
     "saving":        IconSpec("#CC8800", "#FFAA00", tooltip="Saving audio..."),
@@ -151,6 +159,9 @@ def resolve_icon_key(mode: str | None = None,
     """
     if dictation_overlay:
         if mode == "meeting":
+            if meeting_transcribing:
+                return ("dictation.overlay.meeting.bg_transcribing.speaker_fail"
+                        if not speaker_ok else "dictation.overlay.meeting.bg_transcribing")
             return ("dictation.overlay.meeting.speaker_fail"
                     if not speaker_ok else "dictation.overlay.meeting")
         if meeting_transcribing:
@@ -158,6 +169,9 @@ def resolve_icon_key(mode: str | None = None,
         return "dictation"
 
     if mode == "meeting":
+        if meeting_transcribing:
+            return ("recording.meeting.bg_transcribing.speaker_fail"
+                    if not speaker_ok else "recording.meeting.bg_transcribing")
         return "recording.meeting" if speaker_ok else "recording.meeting.speaker_fail"
     if mode:
         return mode  # "dictation", "saving", "transcribing", "done", "error"

@@ -1104,15 +1104,21 @@ class WhisperSync:
         meaningful = [w for w in words if w not in stopwords and len(w) > 2][:4]
         return ["-".join(meaningful)] if meaningful else [current_name]
 
-    def _ask_rename_suggestion(self, current_name: str, summary: str):
-        """Show a popup suggesting a better meeting name based on minutes summary.
+    def _ask_rename_suggestion(self, current_name: str, summary: str,
+                               meeting_dir=None, date_time_str: str | None = None):
+        """Show a non-blocking popup suggesting a better meeting name.
 
-        Returns the chosen name string, or None to skip rename.
+        When meeting_dir and date_time_str are provided, the rename is
+        performed inside the dialog thread so the caller is never blocked.
+        Returns immediately (None). The dialog handles the rename on accept.
+
+        When meeting_dir is None, falls back to blocking mode and returns the
+        chosen name string (or None to skip).
         """
         suggestions = self._generate_name_suggestions(summary, current_name)
 
         result = [None]
-        event = threading.Event()
+        event = threading.Event() if meeting_dir is None else None
 
         def _show():
             import tkinter as tk
@@ -1143,7 +1149,6 @@ class WhisperSync:
             # --- Summary card ---
             summary_card = tk.Frame(root, bg=card_bg)
             summary_card.pack(fill="x", padx=24, pady=(12, 0))
-            # Rounded corners not possible in tk, but border color helps
             summary_card.configure(highlightbackground="#313244", highlightthickness=1)
             summary_text = summary[:140] + ("..." if len(summary) > 140 else "")
             tk.Label(summary_card, text=summary_text, wraplength=420,
@@ -1206,13 +1211,32 @@ class WhisperSync:
             self._center_window(root)
             root.protocol("WM_DELETE_WINDOW", _skip)
             root.mainloop()
-            event.set()
+
+            # Perform rename in this thread (non-blocking for caller)
+            if meeting_dir is not None and date_time_str is not None:
+                new_name = result[0]
+                if new_name and new_name != current_name:
+                    import shutil
+                    new_folder_name = f"{date_time_str}_{new_name}"
+                    new_meeting_dir = meeting_dir.parent / new_folder_name
+                    if not new_meeting_dir.exists():
+                        shutil.move(str(meeting_dir), str(new_meeting_dir))
+                        logger.info(f"Renamed: {meeting_dir.name} -> {new_folder_name}")
+                    else:
+                        logger.warning(f"Rename skipped - folder already exists: {new_folder_name}")
+
+            if event is not None:
+                event.set()
 
         t = threading.Thread(target=_show, daemon=True)
         t.start()
-        event.wait(timeout=120)
 
-        return result[0]
+        # Only block when in legacy (no meeting_dir) mode
+        if event is not None:
+            event.wait(timeout=120)
+            return result[0]
+
+        return None
 
     def _show_llm_unavailable(self):
         """Show a dialog when Claude CLI is not available. Returns True if user checked 'don't show again'."""
@@ -1670,21 +1694,14 @@ class WhisperSync:
                                         summary = line[len("> Summary:"):].strip()
                                         break
                                 if summary:
-                                    new_name = self._ask_rename_suggestion(meeting_name or "meeting", summary)
-                                    if new_name and new_name != meeting_name:
-                                        new_folder_name = f"{date_time_str}_{new_name}"
-                                        new_meeting_dir = meeting_dir.parent / new_folder_name
-                                        if not new_meeting_dir.exists():
-                                            import shutil
-                                            shutil.move(str(meeting_dir), str(new_meeting_dir))
-                                            logger.info(f"Renamed: {folder_name} -> {new_folder_name}")
-                                            meeting_dir = new_meeting_dir
-                                        else:
-                                            logger.warning(f"Rename skipped — folder already exists: {new_folder_name}")
+                                    # Non-blocking: dialog + rename run in their own thread
+                                    self._ask_rename_suggestion(
+                                        meeting_name or "meeting", summary,
+                                        meeting_dir=meeting_dir, date_time_str=date_time_str)
                                 else:
-                                    logger.info("No > Summary: line found in minutes — rename skipped")
+                                    logger.info("No > Summary: line found in minutes - rename skipped")
                             else:
-                                logger.info("No minutes.md found — rename skipped")
+                                logger.info("No minutes.md found - rename skipped")
                         except Exception as e:
                             logger.warning(f"Rename suggestion failed (non-fatal): {e}")
                 # Rebuild week + root INDEX.md
@@ -1841,14 +1858,10 @@ class WhisperSync:
                                     summary = line[len("> Summary:"):].strip()
                                     break
                             if summary:
-                                new_name = self._ask_rename_suggestion(meeting_name or "meeting", summary)
-                                if new_name and new_name != meeting_name:
-                                    new_folder_name = f"{date_time_str}_{new_name}"
-                                    new_meeting_dir = meeting_dir.parent / new_folder_name
-                                    if not new_meeting_dir.exists():
-                                        import shutil
-                                        shutil.move(str(meeting_dir), str(new_meeting_dir))
-                                        logger.info(f"Renamed: {folder_name} -> {new_folder_name}")
+                                # Non-blocking: dialog + rename run in their own thread
+                                self._ask_rename_suggestion(
+                                    meeting_name or "meeting", summary,
+                                    meeting_dir=meeting_dir, date_time_str=date_time_str)
                     except Exception as e:
                         logger.warning(f"Rename suggestion failed (non-fatal): {e}")
 
