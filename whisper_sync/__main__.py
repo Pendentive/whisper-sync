@@ -114,6 +114,8 @@ class WhisperSync:
         self._github_prs = []
         self._dictation_history = dictation_log.load_recent(10)  # persist across restarts
         self._feature_suggest_active = False  # routes dictation output to feature log
+        self._meeting_queue = []  # List of queued meeting dicts (wav_path, meeting_name, do_summarize, metadata)
+        self._meeting_queue_lock = threading.Lock()
         # Session stats
         self._stats = {
             "dictations": 0,
@@ -789,6 +791,7 @@ class WhisperSync:
                         self._schedule_idle(3, blink=True)
                     else:
                         self.state.emit(IDLE, meeting_transcribing=False)
+                    self._process_meeting_queue()
             threading.Thread(target=_transcribe, daemon=True).start()
         self._recovered_meeting_paths = []
 
@@ -1530,6 +1533,26 @@ class WhisperSync:
                 from .streaming_wav import cleanup_temp_files
                 cleanup_temp_files(self._meeting_temp_dir())
 
+                # Check if a meeting is already transcribing; if so, queue this one
+                if self.state.current.meeting_transcribing:
+                    queued_item = {
+                        "wav_path": str(wav_path),
+                        "meeting_name": meeting_name,
+                        "do_summarize": do_summarize,
+                        "week_dir": week_dir,
+                        "folder_name": folder_name,
+                        "date_time_str": date_time_str,
+                        "meeting_dir": str(meeting_dir),
+                    }
+                    with self._meeting_queue_lock:
+                        self._meeting_queue.append(queued_item)
+                    logger.info(f"Meeting queued for transcription: {meeting_name or 'meeting'} ({len(self._meeting_queue)} in queue)")
+                    notify("Meeting queued", f"'{meeting_name or 'meeting'}' will transcribe when the current meeting finishes")
+                    # Release mode so user can start another meeting or dictate
+                    if self.state.current.mode == "saving":
+                        self.state.emit(IDLE, mode=None, meeting_transcribing=True)
+                    return
+
                 # Release mode so user can dictate while meeting transcribes
                 self.state.emit(TRANSCRIPTION_STARTED, mode=None, meeting_transcribing=True)
 
@@ -1664,6 +1687,7 @@ class WhisperSync:
 
                 self.state.emit(MEETING_COMPLETED, meeting_transcribing=False, mode="done")
                 self._schedule_idle(3, blink=True)
+                self._process_meeting_queue()
             except WorkerCrashedError as e:
                 logger.error("Worker crashed during meeting - respawning...")
                 logger.info(f"Audio is preserved at: {wav_path}")
@@ -1671,6 +1695,7 @@ class WhisperSync:
                 self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
                 if self.state.current.mode == "error":
                     self._schedule_idle(3)
+                self._process_meeting_queue()
             except PermissionError as e:
                 # Gated model access - show user the acceptance URLs
                 logger.error(str(e))
@@ -1678,6 +1703,7 @@ class WhisperSync:
                 self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
                 if self.state.current.mode == "error":
                     self._schedule_idle(3)
+                self._process_meeting_queue()
             except FileNotFoundError as e:
                 # Missing HF token
                 logger.error(str(e))
@@ -1685,6 +1711,7 @@ class WhisperSync:
                 self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
                 if self.state.current.mode == "error":
                     self._schedule_idle(3)
+                self._process_meeting_queue()
             except Exception as e:
                 logger.error(f"Meeting transcription error: {e}")
                 import traceback
@@ -1692,8 +1719,150 @@ class WhisperSync:
                 self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
                 if self.state.current.mode == "error":
                     self._schedule_idle(3)
+                self._process_meeting_queue()
 
         threading.Thread(target=_post_record, daemon=True).start()
+
+    def _process_meeting_queue(self):
+        """Process the next queued meeting transcription, if any.
+
+        Called after a meeting transcription completes (success or error).
+        Runs the queued transcription in a new thread to avoid blocking.
+        """
+        with self._meeting_queue_lock:
+            if not self._meeting_queue:
+                return
+            item = self._meeting_queue.pop(0)
+
+        meeting_name = item["meeting_name"]
+        wav_path = Path(item["wav_path"])
+        do_summarize = item["do_summarize"]
+        week_dir = item["week_dir"]
+        folder_name = item["folder_name"]
+        date_time_str = item["date_time_str"]
+        meeting_dir = Path(item["meeting_dir"])
+
+        remaining = len(self._meeting_queue)
+        logger.info(f"Processing queued meeting: {meeting_name or 'meeting'} ({remaining} remaining)")
+        notify("Transcribing queued meeting", meeting_name or "meeting")
+
+        def _transcribe_queued():
+            try:
+                self.state.emit(TRANSCRIPTION_STARTED, mode=None, meeting_transcribing=True)
+
+                if not self.worker.is_alive():
+                    logger.warning("Worker not alive - restarting...")
+                    self.worker.restart()
+                    if not self.worker.wait_ready(timeout=120):
+                        raise RuntimeError("Worker failed to restart")
+                result = self.worker.transcribe(str(wav_path), diarize=True)
+                logger.debug(f"Queued transcript saved: {result.get('json_path', wav_path)}")
+
+                # Structured meeting result logging
+                _meet_words = result.get("word_count", 0)
+                _meet_speakers = result.get("num_speakers", 0)
+                _meet_duration = result.get("duration", 0)
+                _meet_folder = f"{week_dir}/{folder_name}/"
+                log_meeting_result(meeting_name or "meeting", _meet_duration, _meet_words, _meet_speakers, _meet_folder)
+                self._stats["meetings"] += 1
+                self._stats["total_meeting_seconds"] += int(_meet_duration)
+                self._stats["total_meeting_words"] += _meet_words
+                weekly_stats.record_meeting(int(_meet_duration), _meet_words)
+
+                _meet_segments = result.get("speaker_segments")
+                if _meet_segments:
+                    log_transcript_preview("", speakers=_meet_segments)
+
+                # Speaker identification
+                llm_ok = self._is_claude_cli_available()
+                if llm_ok:
+                    try:
+                        cfg_path = get_config_path()
+                        json_path = result.get('json_path', str(meeting_dir / "transcript.json"))
+                        id_result = identify_speakers(json_path, cfg_path, folder_name)
+                        if id_result and id_result.get("speaker_map"):
+                            confirmed_map = self._ask_speaker_confirmation(id_result)
+                            if confirmed_map:
+                                write_speaker_map(json_path, confirmed_map)
+                                update_config(cfg_path, confirmed_map, id_result.get("config_updates"))
+                                logger.info(f"Speakers confirmed: {confirmed_map}")
+                    except Exception as e:
+                        logger.warning(f"Speaker identification failed (non-fatal): {e}")
+
+                # Flatten transcript
+                try:
+                    json_path = result.get('json_path')
+                    if json_path:
+                        readable_path = flatten_transcript(json_path)
+                        if readable_path:
+                            logger.info(f"Flattened transcript: {readable_path}")
+                except Exception as e:
+                    logger.warning(f"Auto-flatten failed (non-fatal): {e}")
+
+                # Auto-generate minutes if requested
+                if do_summarize and llm_ok:
+                    try:
+                        readable_file = meeting_dir / "transcript-readable.txt"
+                        minutes_file = meeting_dir / "minutes.md"
+                        if readable_file.exists() and not minutes_file.exists():
+                            self._generate_minutes(meeting_dir, readable_file, minutes_file)
+                    except Exception as e:
+                        logger.warning(f"Auto-minutes failed (non-fatal): {e}")
+
+                    try:
+                        minutes_file = meeting_dir / "minutes.md"
+                        if minutes_file.exists():
+                            summary = None
+                            for line in minutes_file.read_text(encoding="utf-8").splitlines():
+                                if line.startswith("> Summary:"):
+                                    summary = line[len("> Summary:"):].strip()
+                                    break
+                            if summary:
+                                new_name = self._ask_rename_suggestion(meeting_name or "meeting", summary)
+                                if new_name and new_name != meeting_name:
+                                    new_folder_name = f"{date_time_str}_{new_name}"
+                                    new_meeting_dir = meeting_dir.parent / new_folder_name
+                                    if not new_meeting_dir.exists():
+                                        import shutil
+                                        shutil.move(str(meeting_dir), str(new_meeting_dir))
+                                        logger.info(f"Renamed: {folder_name} -> {new_folder_name}")
+                    except Exception as e:
+                        logger.warning(f"Rename suggestion failed (non-fatal): {e}")
+
+                # Rebuild index
+                try:
+                    rebuild_root_index(self._output_dir())
+                except Exception as e:
+                    logger.warning(f"Index rebuild failed (non-fatal): {e}")
+
+                # Toast notification
+                try:
+                    _toast_body = f"{_meet_words} words, {_meet_speakers} speakers"
+                    _folder_path = str(meeting_dir)
+                    def _open_folder(p=_folder_path):
+                        import subprocess as _sp
+                        _sp.Popen(["explorer", p])
+                    notify(
+                        "Queued meeting transcribed",
+                        _toast_body,
+                        buttons=[{"label": "Open Folder", "action": _open_folder}],
+                    )
+                except Exception as e:
+                    logger.debug(f"Meeting toast failed (non-fatal): {e}")
+
+                self.state.emit(MEETING_COMPLETED, meeting_transcribing=False, mode="done")
+                self._schedule_idle(3, blink=True)
+                self._process_meeting_queue()
+            except Exception as e:
+                logger.error(f"Queued meeting transcription error: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
+                self.state.emit(ERROR, meeting_transcribing=False, mode="error" if self.state.current.mode is None else self.state.current.mode, data={"message": str(e), "recoverable": False})
+                if self.state.current.mode == "error":
+                    self._schedule_idle(3)
+                self._process_meeting_queue()
+
+        threading.Thread(target=_transcribe_queued, daemon=True).start()
 
     @staticmethod
     def _truncate_path(p: Path, max_len: int = 40) -> str:
