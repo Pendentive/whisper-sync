@@ -35,6 +35,7 @@ class MeetingJob:
         date_time_str: str,
         week_dir: str,
         folder_name: str,
+        diarize_method: str | None = None,
     ):
         self.app = app
         self.wav_path = wav_path
@@ -44,6 +45,7 @@ class MeetingJob:
         self.date_time_str = date_time_str
         self.week_dir = week_dir
         self.folder_name = folder_name
+        self.diarize_method = diarize_method  # None = use config defaults
 
         # Populated during processing
         self.transcript_result = None  # dict from worker.transcribe()
@@ -103,7 +105,8 @@ class MeetingJob:
                 raise RuntimeError("Worker failed to restart")
 
         self.transcript_result = self.app.worker.transcribe(
-            str(self.wav_path), diarize=True
+            str(self.wav_path), diarize=True,
+            diarize_method=self.diarize_method,
         )
         logger.debug(
             "Transcript saved: %s",

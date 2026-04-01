@@ -74,6 +74,10 @@ The menu is rebuilt on every open via `_refresh_menu()`. Structure:
 │   ├── ──────────────                    │
 │   ├── Dictation Model ►                 │  → _set_model("dictation_model", name)
 │   ├── Meeting Model ►                   │  → _set_model("model", name)
+│   ├── Diarization (Speaker Detection) ► │  → submenu with Primary/Fallback/Last Resort
+│   │   ├── Primary ►     Balanced Mix    │  → _set_diarize_method("diarize_primary", m)
+│   │   ├── Fallback ►    Per-Channel     │  → _set_diarize_method("diarize_fallback", m)
+│   │   └── Last Resort ► Raw Audio       │  → _set_diarize_method("diarize_last_resort", m)
 │   ├── ──────────────                    │
 │   └── Download [model] (~X GB)          │  → _download_model_bg(name)
 │ Restart                                 │  → _restart()
@@ -108,8 +112,8 @@ hover_bg = "#585b70"  # Button hover
 #### Dialog: Save Meeting (`_ask_meeting_name`)
 
 **When:** After stopping a meeting recording
-**Shows:** Text entry for meeting name + 3 buttons
-**Returns:** `_ABORT` or `(name: str, summarize: bool)`
+**Shows:** Text entry for meeting name + diarization method selector + 3 buttons
+**Returns:** `_ABORT` or `(name: str, summarize: bool, diarize_method: str | None)`
 
 ```
 ┌──────────────────────────────────────┐
@@ -121,9 +125,13 @@ hover_bg = "#585b70"  # Button hover
 │  │ architecture-review          │    │
 │  └──────────────────────────────┘    │
 │                                      │
+│  Diarization: [Balanced Mix] [Per-Channel] [Raw Audio] │
+│                                      │
 │  [Discard]   [Save]   [Save & Sum]   │
 └──────────────────────────────────────┘
 ```
+
+The diarization selector defaults to the configured `diarize_primary` method. Selecting a different method overrides the fallback chain for this recording only (passed as `force_method` to `stage_diarize()`). Selecting the default returns `None` (no override).
 
 **Route:** `toggle_meeting()` → stop recording → `_ask_meeting_name()` → `_process()` (transcription)
 

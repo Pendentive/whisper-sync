@@ -27,6 +27,7 @@ _VALID_KEYS = {
     "github_notifications", "log_window", "device", "incognito",
     "always_available_dictation", "backup_device", "backup_model",
     "toast_events",
+    "diarize_primary", "diarize_fallback", "diarize_last_resort",
 }
 
 

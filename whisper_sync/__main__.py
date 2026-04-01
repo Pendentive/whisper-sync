@@ -1000,28 +1000,30 @@ class WhisperSync:
             return False
 
     def _ask_meeting_name(self):
-        """Show a popup to name the meeting.
+        """Show a popup to name the meeting and select diarization method.
 
         Returns:
             _ABORT: user clicked Discard
-            (str, True): user clicked Save & Summarize
-            (str, False): user clicked Save
+            (str, True, str|None): user clicked Save & Summarize (name, summarize, diarize_method)
+            (str, False, str|None): user clicked Save (name, summarize, diarize_method)
         """
         result = [self._ABORT]
         event = threading.Event()
 
         def _show_dialog():
             import tkinter as tk
-            from tkinter import ttk
+
+            from .transcribe import DIARIZE_METHODS
 
             root = tk.Tk()
             root.title("WhisperSync")
             self._style_window(root)
-            root.geometry("440x170")
+            root.geometry("440x210")
 
             bg = "#1e1e2e"
             fg = "#cdd6f4"
             fg_dim = "#6c7086"
+            fg_muted = "#a6adc8"
             accent = "#89b4fa"
             danger = "#f38ba8"
             entry_bg = "#313244"
@@ -1030,7 +1032,7 @@ class WhisperSync:
             tk.Label(root, text="Save Meeting Recording", font=("Segoe UI", 11, "bold"),
                      bg=bg, fg=fg).pack(pady=(14, 2))
 
-            # Entry
+            # Meeting name entry
             tk.Label(root, text="Meeting name (leave blank for default):",
                      font=("Segoe UI", 9), bg=bg, fg=fg_dim).pack(pady=(2, 4))
             entry = tk.Entry(root, width=48, font=("Segoe UI", 10),
@@ -1039,19 +1041,63 @@ class WhisperSync:
             entry.pack(padx=20, ipady=4)
             entry.focus_force()
 
-            # Buttons — order: Discard (left), Save (middle), Save & Summarize (right)
+            # Diarization method selector
+            method_frame = tk.Frame(root, bg=bg)
+            method_frame.pack(pady=(8, 0), padx=20, fill=tk.X)
+
+            tk.Label(method_frame, text="Diarization:", font=("Segoe UI", 9),
+                     bg=bg, fg=fg_muted).pack(side=tk.LEFT)
+
+            # Build method options: display labels and their config keys
+            method_ids = list(DIARIZE_METHODS.keys())
+            method_labels = list(DIARIZE_METHODS.values())
+            primary = self.cfg.get("diarize_primary", "balanced_mix")
+            default_idx = method_ids.index(primary) if primary in method_ids else 0
+
+            selected_method = tk.StringVar(value=method_ids[default_idx])
+
+            # Use flat label-buttons as a toggle group (consistent with dialog style)
+            for i, (mid, mlabel) in enumerate(zip(method_ids, method_labels)):
+                def _select(m=mid):
+                    selected_method.set(m)
+                    # Update visual selection
+                    for child in method_frame.winfo_children():
+                        if hasattr(child, '_method_id'):
+                            if child._method_id == m:
+                                child.configure(bg=accent, fg="#1e1e2e")
+                            else:
+                                child.configure(bg=entry_bg, fg=fg_muted)
+
+                lbl = tk.Label(
+                    method_frame, text=mlabel, font=("Segoe UI", 8),
+                    bg=accent if mid == method_ids[default_idx] else entry_bg,
+                    fg="#1e1e2e" if mid == method_ids[default_idx] else fg_muted,
+                    padx=8, pady=2, cursor="hand2",
+                )
+                lbl._method_id = mid
+                lbl.pack(side=tk.LEFT, padx=(6, 0))
+                lbl.bind("<Button-1>", lambda e, m=mid: _select(m))
+
+            # Buttons
             btn_frame = tk.Frame(root, bg=bg)
             btn_frame.pack(pady=(12, 10))
 
             def _sanitize():
                 return self._sanitize_name(entry.get() or "")
 
+            def _get_method():
+                m = selected_method.get()
+                # Return None if it matches the config default (no override needed)
+                if m == self.cfg.get("diarize_primary", "balanced_mix"):
+                    return None
+                return m
+
             def _save_and_summarize(ev=None):
-                result[0] = (_sanitize(), True)
+                result[0] = (_sanitize(), True, _get_method())
                 root.destroy()
 
             def _save_only():
-                result[0] = (_sanitize(), False)
+                result[0] = (_sanitize(), False, _get_method())
                 root.destroy()
 
             def _abort():
@@ -1479,8 +1525,12 @@ class WhisperSync:
                 self.state.emit(IDLE, mode=None)
                 return
 
-            meeting_name, do_summarize = dialog_result
-            logger.info(f"Meeting saved: {meeting_name or 'meeting'} (summarize={do_summarize})")
+            meeting_name, do_summarize, diarize_method = dialog_result
+            if diarize_method:
+                from .transcribe import DIARIZE_METHODS
+                logger.info(f"Meeting saved: {meeting_name or 'meeting'} (summarize={do_summarize}, diarize={DIARIZE_METHODS.get(diarize_method, diarize_method)})")
+            else:
+                logger.info(f"Meeting saved: {meeting_name or 'meeting'} (summarize={do_summarize})")
 
             self.recorder.stop_streaming()
             try:
@@ -1521,6 +1571,7 @@ class WhisperSync:
                     date_time_str=date_time_str,
                     week_dir=week_dir,
                     folder_name=folder_name,
+                    diarize_method=diarize_method,
                 )
                 self._post_queue.put(job)
                 qsize = self._post_queue.qsize()
@@ -2010,6 +2061,34 @@ class WhisperSync:
             for evt, label in _notification_options
         ]
 
+        # --- Diarization (Speaker Detection) submenu ---
+        from .transcribe import DIARIZE_METHODS
+        _diarize_slots = [
+            ("diarize_primary", "Primary"),
+            ("diarize_fallback", "Fallback"),
+            ("diarize_last_resort", "Last Resort"),
+        ]
+        diarize_sub_items = []
+        for slot_key, slot_label in _diarize_slots:
+            current_method = self.cfg.get(slot_key, "balanced_mix")
+            slot_items = [
+                pystray.MenuItem(
+                    DIARIZE_METHODS.get(method_id, method_id),
+                    self._cb(self._set_diarize_method, slot_key, method_id),
+                    checked=lambda item, m=method_id, sk=slot_key: self.cfg.get(sk, "balanced_mix") == m,
+                    radio=True,
+                )
+                for method_id in DIARIZE_METHODS
+            ]
+            diarize_sub_items.append(
+                pystray.MenuItem(
+                    f"{slot_label}\t{DIARIZE_METHODS.get(current_method, current_method)}",
+                    pystray.Menu(*slot_items),
+                )
+            )
+        primary_method = self.cfg.get("diarize_primary", "balanced_mix")
+        primary_label = DIARIZE_METHODS.get(primary_method, primary_method)
+
         # --- Whisper mode ---
         incognito_on = self.cfg.get("incognito", False)
         incognito_items = [
@@ -2079,6 +2158,8 @@ class WhisperSync:
                     pystray.MenuItem(f"Backup Model\t{backup_model_cfg}",
                                      pystray.Menu(*backup_model_items)),
                 )),
+                pystray.MenuItem(f"Diarization (Speaker Detection)\t{primary_label}",
+                                 pystray.Menu(*diarize_sub_items)),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Change Output Folder...",
                                  lambda: self._change_output_folder()),
@@ -2616,6 +2697,23 @@ class WhisperSync:
         logger.info(f"Backup model: {model_name}", extra={"secondary": True})
         self._backup.stop()
         self._backup.preload()
+        self._save_and_refresh()
+
+    def _set_diarize_method(self, slot_key: str, method_id: str):
+        """Set a diarization slot, swapping with any slot that already has this method."""
+        from .transcribe import DIARIZE_METHODS
+        current = self.cfg.get(slot_key, "balanced_mix")
+        if current == method_id:
+            return
+        # Find if another slot already uses this method and swap
+        all_slots = ["diarize_primary", "diarize_fallback", "diarize_last_resort"]
+        for other_slot in all_slots:
+            if other_slot != slot_key and self.cfg.get(other_slot, "balanced_mix") == method_id:
+                self.cfg[other_slot] = current  # swap
+                break
+        self.cfg[slot_key] = method_id
+        label = DIARIZE_METHODS.get(method_id, method_id)
+        logger.info(f"Diarization {slot_key}: {label}", extra={"secondary": True})
         self._save_and_refresh()
 
     def _set_model(self, key: str, model_name: str):

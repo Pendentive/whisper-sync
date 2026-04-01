@@ -219,7 +219,9 @@ def worker_main(request_queue, response_queue, cfg_snapshot: dict,
 
                 diarize_segments = None
                 if request.get("diarize", False):
-                    diarize_segments = stage_diarize(ctx)
+                    diarize_segments = stage_diarize(
+                        ctx, force_method=request.get("diarize_method"),
+                    )
                     if _check_priority():
                         response_queue.put({
                             "type": "error",
