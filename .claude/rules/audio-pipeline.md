@@ -4,13 +4,19 @@
 
 WhisperSync captures stereo audio: microphone on channel 0, system loopback (speaker output) on channel 1. The `AudioRecorder` class in `capture.py` handles both streams via sounddevice (mic) and PyAudioWPatch (WASAPI loopback). Channel health is tracked and reflected in the tray icon's outer ring.
 
-## Diarization Strategy (3-tier fallback)
+## Diarization Strategy (configurable method order)
 
-`transcribe.py` `stage_diarize()` uses a tiered approach for speaker identification:
+`transcribe.py` `stage_diarize()` uses a configurable fallback chain for speaker identification. The order is controlled by three config keys: `diarize_primary`, `diarize_fallback`, `diarize_last_resort`. Each method returns a result on success or `None` to trigger the next method.
 
-1. **Tier 1 - Per-channel transcription + confidence fusion**: For stereo recordings, each channel is transcribed independently via the full pipeline (transcribe, align, diarize), then merged using energy ratio, timestamp overlap, and text similarity in `channel_merge.py`. Quality is validated before accepting results.
-2. **Tier 2 - Balanced mono + PyAnnote**: `_create_balanced_mono()` normalizes each channel's voiced RMS energy independently before mixing, so PyAnnote can hear both speakers equally. Used when Tier 1 fails quality checks.
-3. **Tier 3 - Raw audio + PyAnnote**: Falls back to the original audio file if balanced mono creation fails.
+**Available methods** (defined in `DIARIZE_METHODS`):
+
+1. **Balanced Mix** (`balanced_mix`): `_create_balanced_mono()` normalizes each channel's voiced RMS energy independently before mixing to mono, so PyAnnote can hear all speakers equally. Best for meetings with 3+ remote participants on loopback setups. Default primary.
+2. **Per-Channel** (`per_channel`): Each stereo channel is transcribed independently via the full pipeline (transcribe, align, diarize), then merged using energy ratio, timestamp overlap, and text similarity in `channel_merge.py`. Quality is validated before accepting results. Best for dual-mic setups with one local speaker. Default fallback.
+3. **Raw Audio** (`raw_audio`): PyAnnote diarization on the original audio file without preprocessing. Default last resort.
+
+**Per-meeting override**: The Save Meeting dialog includes a diarization method selector. When a non-default method is chosen, it is passed through `MeetingJob.diarize_method` -> `worker_manager.transcribe(diarize_method=)` -> `worker.py` -> `stage_diarize(force_method=)`, bypassing the fallback chain.
+
+**Settings UI**: Settings > Diarization (Speaker Detection) exposes Primary, Fallback, and Last Resort slots. Each slot shows a submenu of available methods. Selecting a method already assigned to another slot triggers a swap to enforce uniqueness.
 
 ## Model Loading and VRAM Management
 

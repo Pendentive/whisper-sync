@@ -116,14 +116,22 @@ class TranscriptionWorker:
         return response.get("text", "")
 
     def transcribe(self, audio_path: str, diarize: bool = False,
-                   model_override: str | None = None, timeout: float = 600) -> dict:
-        """Send meeting audio to worker, return result dict."""
+                   model_override: str | None = None,
+                   diarize_method: str | None = None,
+                   timeout: float = 600) -> dict:
+        """Send meeting audio to worker, return result dict.
+
+        Args:
+            diarize_method: Force a specific diarization method
+                ("balanced_mix", "per_channel", "raw_audio"). None uses config.
+        """
         request_id = self._next_id()
         self._request_q.put({
             "type": "transcribe",
             "audio_path": audio_path,
             "diarize": diarize,
             "model": model_override,
+            "diarize_method": diarize_method,
             "request_id": request_id,
         })
         response = self._wait_response(request_id, timeout)

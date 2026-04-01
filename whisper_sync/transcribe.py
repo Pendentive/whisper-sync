@@ -327,6 +327,7 @@ def stage_prepare(audio_path: str, model_override: str = None) -> dict:
         "align_metadata": align_metadata,
         "language": language,
         "model_name": model_name,
+        "_cfg": cfg,  # snapshot for downstream stages (avoids re-reading disk)
     }
 
 
@@ -417,38 +418,50 @@ def _create_balanced_mono(audio_path: str) -> str | None:
         return None
 
 
-def stage_diarize(ctx: dict) -> dict:
-    """Stage 3: Run speaker diarization pipeline.
+# Available diarization methods and their display labels
+DIARIZE_METHODS = {
+    "balanced_mix": "Balanced Mix",
+    "per_channel": "Per-Channel",
+    "raw_audio": "Raw Audio",
+}
 
-    For stereo recordings: per-channel transcription + confidence fusion (Tier 1).
-    Falls back to balanced mono with PyAnnote model (Tier 2), then raw audio
-    with PyAnnote model (Tier 3).
-    """
-    from .channel_merge import is_stereo, split_channels, load_channel_audio, merge_channel_results
 
-    audio_path = ctx["audio_path"]
-
-    # Check if stereo
-    if not is_stereo(audio_path):
-        # Mono: standard model-based diarization
+def _diarize_balanced_mix(ctx: dict, audio_path: str):
+    """Diarize via RMS-balanced mono mix + PyAnnote. Returns PyAnnote Annotation or None."""
+    balanced_path = _create_balanced_mono(audio_path)
+    diarize_path = balanced_path or audio_path
+    try:
         with _lock:
             pipeline = _load_diarize_pipeline()
-        logger.info("Diarizing (mono)...")
-        return pipeline(audio_path)
+        label = "balanced mix" if balanced_path else "mono (channels already balanced)"
+        logger.info(f"Diarizing ({label})...")
+        return pipeline(diarize_path)
+    finally:
+        if balanced_path and os.path.exists(balanced_path):
+            try:
+                os.unlink(balanced_path)
+            except OSError:
+                pass
 
-    # Tier 1: Per-channel transcription + confidence fusion
-    logger.info("Stereo detected, running per-channel pipeline...")
+
+def _diarize_per_channel(ctx: dict, audio_path: str):
+    """Diarize via per-channel transcription + confidence fusion. Returns PyAnnote Annotation or None."""
+    from .channel_merge import is_stereo, split_channels, load_channel_audio, merge_channel_results
+
+    if not is_stereo(audio_path):
+        logger.info("Per-channel requested but audio is mono, skipping")
+        return None
+
+    logger.info("Running per-channel pipeline...")
     ch0_path = ch1_path = None
     try:
         ch0_path, ch1_path = split_channels(audio_path)
         ch0_audio, ch1_audio, sr = load_channel_audio(audio_path)
 
-        # Get duration
         import wave as _wave
         with _wave.open(audio_path, "rb") as wf:
             duration = wf.getnframes() / wf.getframerate()
 
-        # Run full pipeline on ch0
         logger.info("Processing channel 0 (mic)...")
         ctx_ch0 = stage_prepare(ch0_path, model_override=ctx.get("model_name"))
         result_ch0 = stage_transcribe(ctx_ch0)
@@ -459,7 +472,6 @@ def stage_diarize(ctx: dict) -> dict:
         import whisperx
         result_ch0 = whisperx.assign_word_speakers(diarize_ch0, result_ch0)
 
-        # Run full pipeline on ch1
         logger.info("Processing channel 1 (remote)...")
         ctx_ch1 = stage_prepare(ch1_path, model_override=ctx.get("model_name"))
         result_ch1 = stage_transcribe(ctx_ch1)
@@ -467,7 +479,6 @@ def stage_diarize(ctx: dict) -> dict:
         diarize_ch1 = pipeline(ch1_path)
         result_ch1 = whisperx.assign_word_speakers(diarize_ch1, result_ch1)
 
-        # Merge
         segments_ch0 = result_ch0.get("segments", [])
         segments_ch1 = result_ch1.get("segments", [])
         merged, quality_ok = merge_channel_results(
@@ -475,19 +486,17 @@ def stage_diarize(ctx: dict) -> dict:
         )
 
         if quality_ok:
-            # Store merged segments in ctx for stage_finalize to use
             ctx["_per_channel_segments"] = merged
-            # _per_channel_segments consumed by stage_finalize
-            # Return a dummy diarize result; stage_finalize will use _per_channel_segments
-            return diarize_ch0  # not actually used when _per_channel_segments is set
+            return diarize_ch0  # dummy; stage_finalize uses _per_channel_segments
         else:
-            logger.warning("Per-channel quality check failed, falling back to channel diarization")
+            logger.warning("Per-channel quality check failed")
+            return None
 
-    except Exception as e:
+    except Exception:
         logger.warning("Per-channel pipeline failed", exc_info=True)
+        return None
 
     finally:
-        # Clean up temp files
         for p in (ch0_path, ch1_path):
             if p and os.path.exists(p):
                 try:
@@ -495,20 +504,98 @@ def stage_diarize(ctx: dict) -> dict:
                 except OSError:
                     pass
 
-    # Tier 2: Balanced mono + PyAnnote model
-    balanced_path = _create_balanced_mono(audio_path)
-    diarize_path = balanced_path or audio_path
-    try:
-        with _lock:
-            pipeline = _load_diarize_pipeline()
-        logger.info("Diarizing (balanced mono fallback)...")
-        return pipeline(diarize_path)
-    finally:
-        if balanced_path and os.path.exists(balanced_path):
-            try:
-                os.unlink(balanced_path)
-            except OSError:
-                pass
+
+def _diarize_raw_audio(ctx: dict, audio_path: str):
+    """Diarize via PyAnnote on the original audio file. Returns PyAnnote Annotation."""
+    with _lock:
+        pipeline = _load_diarize_pipeline()
+    logger.info("Diarizing (raw audio)...")
+    return pipeline(audio_path)
+
+
+# Dispatch table: method name -> function
+_DIARIZE_DISPATCH = {
+    "balanced_mix": _diarize_balanced_mix,
+    "per_channel": _diarize_per_channel,
+    "raw_audio": _diarize_raw_audio,
+}
+
+
+def _get_method_order(ctx: dict, force_method: str | None = None) -> list[str]:
+    """Return the ordered list of diarization methods to try.
+
+    If force_method is set, only that method is attempted (no fallback).
+    Otherwise, reads method order from the config snapshot stored in ctx
+    (populated during stage_prepare) to avoid re-reading config from disk.
+    """
+    if force_method:
+        if force_method not in _DIARIZE_DISPATCH:
+            logger.warning(f"Unknown diarize method '{force_method}', using config defaults")
+        else:
+            return [force_method]
+
+    cfg = ctx.get("_cfg") or config.load()
+    order = [
+        cfg.get("diarize_primary", "balanced_mix"),
+        cfg.get("diarize_fallback", "per_channel"),
+        cfg.get("diarize_last_resort", "raw_audio"),
+    ]
+    # Deduplicate while preserving order, filter invalid
+    seen = set()
+    result = []
+    for m in order:
+        if m in _DIARIZE_DISPATCH and m not in seen:
+            seen.add(m)
+            result.append(m)
+    # Ensure at least one method
+    if not result:
+        result = ["balanced_mix", "per_channel", "raw_audio"]
+    return result
+
+
+def stage_diarize(ctx: dict, force_method: str | None = None):
+    """Stage 3: Run speaker diarization pipeline.
+
+    Tries methods in the configured order (diarize_primary, diarize_fallback,
+    diarize_last_resort). Each method returns a PyAnnote Annotation on success
+    or None to signal fallback. force_method overrides the config and skips
+    fallback.
+    """
+    from .channel_merge import is_stereo
+
+    audio_path = ctx["audio_path"]
+    method_order = _get_method_order(ctx, force_method)
+
+    # Mono audio: per_channel is incompatible
+    if not is_stereo(audio_path):
+        if force_method == "per_channel":
+            logger.warning("per_channel forced but audio is mono; cannot split channels")
+            raise ValueError(
+                "Diarization method 'per_channel' requires stereo audio, "
+                "but the recording is mono."
+            )
+        method_order = [m for m in method_order if m != "per_channel"]
+        if not method_order:
+            method_order = ["raw_audio"]
+
+    logger.info(f"Diarization order: {' -> '.join(DIARIZE_METHODS.get(m, m) for m in method_order)}")
+
+    last_error = None
+    for method in method_order:
+        try:
+            result = _DIARIZE_DISPATCH[method](ctx, audio_path)
+            if result is not None:
+                logger.info(f"Diarization succeeded with: {DIARIZE_METHODS.get(method, method)}")
+                return result
+            logger.info(f"{DIARIZE_METHODS.get(method, method)} returned no result, trying next...")
+        except Exception as e:
+            last_error = e
+            logger.warning(f"{DIARIZE_METHODS.get(method, method)} failed: {e}", exc_info=True)
+
+    raise RuntimeError(
+        f"All diarization methods exhausted ({', '.join(method_order)}). "
+        f"Last error: {last_error}"
+    )
 
 
 def stage_finalize(ctx: dict, result: dict, diarize_segments=None) -> dict:
