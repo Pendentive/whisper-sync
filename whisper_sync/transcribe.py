@@ -327,6 +327,7 @@ def stage_prepare(audio_path: str, model_override: str = None) -> dict:
         "align_metadata": align_metadata,
         "language": language,
         "model_name": model_name,
+        "_cfg": cfg,  # snapshot for downstream stages (avoids re-reading disk)
     }
 
 
@@ -425,8 +426,8 @@ DIARIZE_METHODS = {
 }
 
 
-def _diarize_balanced_mix(ctx: dict, audio_path: str) -> dict | None:
-    """Diarize via RMS-balanced mono mix + PyAnnote."""
+def _diarize_balanced_mix(ctx: dict, audio_path: str):
+    """Diarize via RMS-balanced mono mix + PyAnnote. Returns PyAnnote Annotation or None."""
     balanced_path = _create_balanced_mono(audio_path)
     diarize_path = balanced_path or audio_path
     try:
@@ -443,8 +444,8 @@ def _diarize_balanced_mix(ctx: dict, audio_path: str) -> dict | None:
                 pass
 
 
-def _diarize_per_channel(ctx: dict, audio_path: str) -> dict | None:
-    """Diarize via per-channel transcription + confidence fusion."""
+def _diarize_per_channel(ctx: dict, audio_path: str):
+    """Diarize via per-channel transcription + confidence fusion. Returns PyAnnote Annotation or None."""
     from .channel_merge import is_stereo, split_channels, load_channel_audio, merge_channel_results
 
     if not is_stereo(audio_path):
@@ -504,8 +505,8 @@ def _diarize_per_channel(ctx: dict, audio_path: str) -> dict | None:
                     pass
 
 
-def _diarize_raw_audio(ctx: dict, audio_path: str) -> dict | None:
-    """Diarize via PyAnnote on the original audio file."""
+def _diarize_raw_audio(ctx: dict, audio_path: str):
+    """Diarize via PyAnnote on the original audio file. Returns PyAnnote Annotation."""
     with _lock:
         pipeline = _load_diarize_pipeline()
     logger.info("Diarizing (raw audio)...")
@@ -520,11 +521,12 @@ _DIARIZE_DISPATCH = {
 }
 
 
-def _get_method_order(force_method: str | None = None) -> list[str]:
+def _get_method_order(ctx: dict, force_method: str | None = None) -> list[str]:
     """Return the ordered list of diarization methods to try.
 
     If force_method is set, only that method is attempted (no fallback).
-    Otherwise, reads from config: diarize_primary, diarize_fallback, diarize_last_resort.
+    Otherwise, reads method order from the config snapshot stored in ctx
+    (populated during stage_prepare) to avoid re-reading config from disk.
     """
     if force_method:
         if force_method not in _DIARIZE_DISPATCH:
@@ -532,7 +534,7 @@ def _get_method_order(force_method: str | None = None) -> list[str]:
         else:
             return [force_method]
 
-    cfg = config.load()
+    cfg = ctx.get("_cfg") or config.load()
     order = [
         cfg.get("diarize_primary", "balanced_mix"),
         cfg.get("diarize_fallback", "per_channel"),
@@ -551,20 +553,27 @@ def _get_method_order(force_method: str | None = None) -> list[str]:
     return result
 
 
-def stage_diarize(ctx: dict, force_method: str | None = None) -> dict:
+def stage_diarize(ctx: dict, force_method: str | None = None):
     """Stage 3: Run speaker diarization pipeline.
 
     Tries methods in the configured order (diarize_primary, diarize_fallback,
-    diarize_last_resort). Each method returns a result dict on success or None
-    to signal fallback. force_method overrides the config and skips fallback.
+    diarize_last_resort). Each method returns a PyAnnote Annotation on success
+    or None to signal fallback. force_method overrides the config and skips
+    fallback.
     """
     from .channel_merge import is_stereo
 
     audio_path = ctx["audio_path"]
-    method_order = _get_method_order(force_method)
+    method_order = _get_method_order(ctx, force_method)
 
-    # Mono audio: skip per_channel (it would fail anyway)
+    # Mono audio: per_channel is incompatible
     if not is_stereo(audio_path):
+        if force_method == "per_channel":
+            logger.warning("per_channel forced but audio is mono; cannot split channels")
+            raise ValueError(
+                "Diarization method 'per_channel' requires stereo audio, "
+                "but the recording is mono."
+            )
         method_order = [m for m in method_order if m != "per_channel"]
         if not method_order:
             method_order = ["raw_audio"]
