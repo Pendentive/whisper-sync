@@ -137,23 +137,58 @@ class MeetingJob:
         self.llm_ok = self.app._is_claude_cli_available()
 
     def step_speaker_id(self):
-        """Identify and confirm speakers via Claude CLI + tkinter dialog."""
+        """Identify and confirm speakers via Claude CLI + tkinter dialog.
+
+        If Claude times out or fails, still shows the dialog with empty names
+        so the user can manually enter speaker names.
+        """
         from .speakers import identify_speakers, write_speaker_map, update_config, get_config_path
 
-        if not self.llm_ok:
-            logger.info("Claude CLI not available, speaker identification skipped")
-            return
+        json_path = self.transcript_result.get(
+            "json_path", str(self.meeting_dir / "transcript.json")
+        )
 
-        try:
-            cfg_path = get_config_path()
-            json_path = self.transcript_result.get(
-                "json_path", str(self.meeting_dir / "transcript.json")
-            )
-            id_result = identify_speakers(json_path, cfg_path, self.folder_name)
-            if id_result and id_result.get("speaker_map"):
+        id_result = None
+        if self.llm_ok:
+            try:
+                cfg_path = get_config_path()
+                id_result = identify_speakers(json_path, cfg_path, self.folder_name)
+            except Exception as e:
+                logger.warning("Speaker identification failed (non-fatal): %s", e)
+
+        if not id_result or not id_result.get("speaker_map"):
+            # Build stub with empty names so the dialog still appears
+            try:
+                import json as _json
+                with open(json_path) as f:
+                    data = _json.load(f)
+                unique_speakers = sorted(set(
+                    s.get("speaker", "UNKNOWN")
+                    for s in data.get("segments", [])
+                    if s.get("speaker")
+                ))
+                if unique_speakers:
+                    id_result = {
+                        "speaker_map": {spk: "" for spk in unique_speakers},
+                        "confidence": {spk: "low" for spk in unique_speakers},
+                        "reasoning": {spk: "Auto-identification failed - enter name manually" for spk in unique_speakers},
+                    }
+                    # Notify user
+                    try:
+                        from .notifications import notify
+                        notify("Speaker ID Failed", "Enter speaker names manually in the dialog.")
+                    except Exception:
+                        pass
+                    logger.warning("Speaker ID failed, showing manual entry dialog")
+            except Exception as e:
+                logger.warning("Could not build manual speaker stub: %s", e)
+
+        if id_result and id_result.get("speaker_map"):
+            try:
                 confirmed_map = self.app._ask_speaker_confirmation(id_result)
                 if confirmed_map:
                     write_speaker_map(json_path, confirmed_map)
+                    cfg_path = get_config_path()
                     update_config(
                         cfg_path, confirmed_map, id_result.get("config_updates")
                     )
@@ -161,10 +196,10 @@ class MeetingJob:
                     self.speakers_confirmed = confirmed_map
                 else:
                     logger.info("Speaker identification skipped by user")
-            else:
-                logger.info("No speakers identified from transcript")
-        except Exception as e:
-            logger.warning("Speaker identification failed (non-fatal): %s", e)
+            except Exception as e:
+                logger.warning("Speaker confirmation dialog failed: %s", e)
+        else:
+            logger.info("No speakers found in transcript")
 
     def step_flatten(self):
         """Flatten transcript JSON to readable text."""
