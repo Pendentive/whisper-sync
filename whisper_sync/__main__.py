@@ -839,6 +839,8 @@ class WhisperSync:
             threading.Thread(target=_transcribe, daemon=True).start()
         self._recovered_meeting_paths = []
 
+    _recovering_meeting: str | None = None  # guard against duplicate recovery clicks
+
     def _recover_meeting_speakers(self, meeting_dir: Path):
         """Re-enter the speaker ID flow for a past meeting."""
         import json as _json
@@ -850,65 +852,84 @@ class WhisperSync:
             logger.warning(f"No transcript.json in {meeting_dir}")
             return
 
+        # Prevent duplicate clicks on the same meeting
+        meeting_key = str(meeting_dir)
+        if self._recovering_meeting == meeting_key:
+            logger.info(f"Recovery already in progress for {meeting_dir.name}")
+            return
+        self._recovering_meeting = meeting_key
+
         def _run():
-            cfg_path = get_config_path()
-
-            # Try Claude identification first
-            id_result = None
-            if self._is_claude_cli_available():
-                try:
-                    id_result = identify_speakers(
-                        str(json_path), cfg_path, meeting_dir.name
-                    )
-                except Exception as e:
-                    logger.warning(f"Speaker ID failed for recovery: {e}")
-
-            # Fall back to manual stub
-            if not id_result or not id_result.get("speaker_map"):
-                id_result = build_manual_stub(str(json_path))
-                if not id_result:
-                    return
-
-            if not id_result or not id_result.get("speaker_map"):
-                logger.warning("No speakers to identify")
-                return
-
-            confirmed_map = self._ask_speaker_confirmation(id_result)
-            if not confirmed_map:
-                logger.info("Recovery: speaker identification skipped by user")
-                return
-
-            # Write speaker map
-            write_speaker_map(str(json_path), confirmed_map)
-            update_config(cfg_path, confirmed_map, id_result.get("config_updates"))
-            logger.info(f"Recovery: speakers confirmed for {meeting_dir.name}: {confirmed_map}")
-
-            # Re-flatten
             try:
-                flatten_transcript(str(json_path))
-                logger.info(f"Recovery: re-flattened {meeting_dir.name}")
-            except Exception as e:
-                logger.warning(f"Recovery: flatten failed: {e}")
-
-            # Regenerate minutes with updated speaker names
-            readable_file = meeting_dir / "transcript-readable.txt"
-            minutes_file = meeting_dir / "minutes.md"
-            if readable_file.exists() and self._is_claude_cli_available():
+                # Immediate feedback
                 try:
                     from .notifications import notify
-                    notify(
-                        f"Speakers updated: {meeting_dir.name}",
-                        "Regenerating minutes with updated speaker names.",
-                    )
+                    notify("Identifying speakers", f"Processing {meeting_dir.name}...")
                 except Exception:
                     pass
-                try:
-                    self._generate_minutes(meeting_dir, readable_file, minutes_file)
-                    logger.info(f"Recovery: minutes regenerated for {meeting_dir.name}")
-                except Exception as e:
-                    logger.warning(f"Recovery: minutes generation failed: {e}")
+                logger.info(f"Recovery: identifying speakers for {meeting_dir.name}")
 
-            self._refresh_menu()
+                cfg_path = get_config_path()
+
+                # Try Claude identification first
+                id_result = None
+                if self._is_claude_cli_available():
+                    try:
+                        id_result = identify_speakers(
+                            str(json_path), cfg_path, meeting_dir.name
+                        )
+                    except Exception as e:
+                        logger.warning(f"Speaker ID failed for recovery: {e}")
+
+                # Fall back to manual stub
+                if not id_result or not id_result.get("speaker_map"):
+                    id_result = build_manual_stub(str(json_path))
+                    if not id_result:
+                        return
+
+                if not id_result or not id_result.get("speaker_map"):
+                    logger.warning("No speakers to identify")
+                    return
+
+                confirmed_map = self._ask_speaker_confirmation(id_result)
+                if not confirmed_map:
+                    logger.info("Recovery: speaker identification skipped by user")
+                    return
+
+                # Write speaker map
+                write_speaker_map(str(json_path), confirmed_map)
+                update_config(cfg_path, confirmed_map, id_result.get("config_updates"))
+                logger.info(f"Recovery: speakers confirmed for {meeting_dir.name}: {confirmed_map}")
+
+                # Re-flatten
+                try:
+                    flatten_transcript(str(json_path))
+                    logger.info(f"Recovery: re-flattened {meeting_dir.name}")
+                except Exception as e:
+                    logger.warning(f"Recovery: flatten failed: {e}")
+
+                # Regenerate minutes with updated speaker names
+                readable_file = meeting_dir / "transcript-readable.txt"
+                minutes_file = meeting_dir / "minutes.md"
+                if readable_file.exists() and self._is_claude_cli_available():
+                    try:
+                        from .notifications import notify
+                        notify(
+                            f"Speakers updated: {meeting_dir.name}",
+                            "Regenerating minutes with updated speaker names.",
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        self._generate_minutes(meeting_dir, readable_file, minutes_file)
+                        logger.info(f"Recovery: minutes regenerated for {meeting_dir.name}")
+                    except Exception as e:
+                        logger.warning(f"Recovery: minutes generation failed: {e}")
+
+                self._refresh_menu()
+
+            finally:
+                self._recovering_meeting = None
 
         threading.Thread(target=_run, daemon=True).start()
 
