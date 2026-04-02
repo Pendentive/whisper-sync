@@ -74,6 +74,155 @@ def distill_transcript(json_path: str) -> str:
     return "\n".join(lines)
 
 
+def compute_fingerprints(json_path: str) -> dict:
+    """Extract speaking pattern metrics from word-level transcript data.
+
+    Pure Python, deterministic, no LLM call. Returns a dict keyed by
+    SPEAKER_XX with timing, vocabulary, and behavioral metrics.
+    """
+    from collections import Counter, defaultdict
+    import statistics
+
+    with open(json_path) as f:
+        data = json.load(f)
+    segments = data.get("segments", [])
+    if not segments:
+        return {}
+
+    FILLERS = {"uh", "um", "like", "so", "yeah", "basically", "actually", "okay", "right", "you know"}
+
+    name_pattern = re.compile(
+        r"\b(?:hey|hi|thanks|thank you|okay|sorry)\s+([A-Z][a-z]+)\b"
+        r"|(?:^|\W)([A-Z][a-z]+),?\s+(?:can you|could you|do you|what do|please|are you)",
+        re.IGNORECASE,
+    )
+
+    by_speaker: dict[str, list[dict]] = defaultdict(list)
+    for s in segments:
+        by_speaker[s.get("speaker", "UNKNOWN")].append(s)
+
+    profiles = {}
+    for spk, segs in sorted(by_speaker.items()):
+        all_wps = []
+        all_gaps = []
+        all_scores = []
+        word_count = 0
+        filler_counts = Counter()
+        all_words_lower = []
+
+        for seg in segs:
+            words = seg.get("words", [])
+            timed_words = [w for w in words if "start" in w and "end" in w]
+
+            if len(timed_words) >= 2:
+                seg_start = timed_words[0]["start"]
+                seg_end = timed_words[-1]["end"]
+                duration = seg_end - seg_start
+                if duration > 0:
+                    all_wps.append(len(timed_words) / duration)
+
+                for i in range(1, len(timed_words)):
+                    gap = timed_words[i]["start"] - timed_words[i - 1]["end"]
+                    if gap >= 0:
+                        all_gaps.append(gap)
+
+            for w in words:
+                if "score" in w:
+                    all_scores.append(w["score"])
+                word_text = w.get("word", "").strip().lower().strip(".,!?;:'\"")
+                if word_text:
+                    all_words_lower.append(word_text)
+                    word_count += 1
+                    if word_text in FILLERS:
+                        filler_counts[word_text] += 1
+
+        seg_lengths = [len(seg.get("text", "").split()) for seg in segs]
+        first_time = segs[0].get("start", 0)
+        last_time = segs[-1].get("end", segs[-1].get("start", 0))
+
+        names_given = []
+        for seg in segs:
+            text = seg.get("text", "")
+            for m in name_pattern.finditer(text):
+                name = m.group(1) or m.group(2)
+                if name:
+                    names_given.append({
+                        "name": name,
+                        "time": seg.get("start", 0),
+                        "context": text.strip()[:80],
+                    })
+
+        sir_count = sum(1 for w in all_words_lower if w == "sir")
+
+        stop_words = {
+            "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+            "of", "is", "it", "that", "this", "was", "be", "have", "has", "had",
+            "do", "does", "did", "will", "would", "could", "should", "can", "may",
+            "not", "no", "with", "from", "by", "as", "are", "were", "been", "being",
+            "i", "you", "we", "they", "he", "she", "me", "my", "your", "our",
+            "what", "which", "who", "how", "when", "where", "why", "if", "then",
+            "about", "just", "also", "more", "some", "there", "here", "all", "one",
+            "two", "three", "its", "than", "other", "into", "out", "up", "down",
+            "very", "much", "well", "going", "know", "think", "want", "need",
+            "get", "got", "go", "come", "make", "take", "see", "say", "said",
+            "thing", "things",
+        }
+        vocab = Counter(w for w in all_words_lower if w not in stop_words and w not in FILLERS and len(w) > 2)
+        total_fillers = sum(filler_counts.values())
+
+        profiles[spk] = {
+            "segment_count": len(segs),
+            "word_count": word_count,
+            "wps": {
+                "avg": round(statistics.mean(all_wps), 2) if all_wps else 0,
+                "median": round(statistics.median(all_wps), 2) if all_wps else 0,
+                "std": round(statistics.stdev(all_wps), 2) if len(all_wps) > 1 else 0,
+            },
+            "inter_word_gap_ms": {
+                "avg": round(statistics.mean(all_gaps) * 1000, 0) if all_gaps else 0,
+                "median": round(statistics.median(all_gaps) * 1000, 0) if all_gaps else 0,
+            },
+            "word_confidence": {
+                "avg": round(statistics.mean(all_scores), 3) if all_scores else 0,
+                "median": round(statistics.median(all_scores), 3) if all_scores else 0,
+                "low_rate": round(sum(1 for s in all_scores if s < 0.5) / len(all_scores), 3) if all_scores else 0,
+            },
+            "filler_rate": round(total_fillers / word_count, 3) if word_count > 0 else 0,
+            "top_fillers": [w for w, _ in filler_counts.most_common(5)],
+            "sir_count": sir_count,
+            "words_per_segment": {
+                "avg": round(statistics.mean(seg_lengths), 1) if seg_lengths else 0,
+                "median": round(statistics.median(seg_lengths), 0) if seg_lengths else 0,
+                "max": max(seg_lengths) if seg_lengths else 0,
+            },
+            "first_appears_s": round(first_time, 1),
+            "last_appears_s": round(last_time, 1),
+            "names_given": names_given[:10],
+            "top_vocab": [w for w, _ in vocab.most_common(15)],
+        }
+
+    return profiles
+
+
+def load_profiles() -> dict:
+    """Load speaker profiles from .whispersync/speaker-profiles.json."""
+    from .paths import get_data_dir
+    path = get_data_dir() / "speaker-profiles.json"
+    if path.exists():
+        with open(path) as f:
+            return json.load(f)
+    return {}
+
+
+def save_profiles(profiles: dict) -> None:
+    """Save speaker profiles to .whispersync/speaker-profiles.json."""
+    from .paths import get_data_dir
+    path = get_data_dir() / "speaker-profiles.json"
+    with open(path, "w") as f:
+        json.dump(profiles, f, indent=2)
+    logger.info(f"Speaker profiles saved: {list(profiles.keys())}")
+
+
 def identify_speakers(
     transcript_json_path: str,
     config_path: str,
