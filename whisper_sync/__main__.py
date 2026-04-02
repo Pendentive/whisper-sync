@@ -1413,8 +1413,8 @@ class WhisperSync:
             conf_colors = {"high": green, "medium": yellow, "low": red}
 
             num_speakers = len(speaker_map)
-            # Each speaker row ~40px + reasoning line ~16px
-            height = min(170 + (num_speakers * 58), 550)
+            # Each speaker row ~44px + reasoning line ~22px + padding
+            height = min(180 + (num_speakers * 70), 700)
             root.geometry(f"500x{height}")
 
             # Header
