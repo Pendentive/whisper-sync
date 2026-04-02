@@ -839,7 +839,10 @@ class WhisperSync:
             threading.Thread(target=_transcribe, daemon=True).start()
         self._recovered_meeting_paths = []
 
-    _recovering_meeting: str | None = None  # guard against duplicate recovery clicks
+    def __init_recovery_guard(self):
+        """Initialize recovery guard set (called from __init__ or lazily)."""
+        if not hasattr(self, "_recovering_meetings"):
+            self._recovering_meetings: set[str] = set()
 
     def _recover_meeting_speakers(self, meeting_dir: Path):
         """Re-enter the speaker ID flow for a past meeting."""
@@ -853,11 +856,12 @@ class WhisperSync:
             return
 
         # Prevent duplicate clicks on the same meeting
+        self.__init_recovery_guard()
         meeting_key = str(meeting_dir)
-        if self._recovering_meeting == meeting_key:
+        if meeting_key in self._recovering_meetings:
             logger.info(f"Recovery already in progress for {meeting_dir.name}")
             return
-        self._recovering_meeting = meeting_key
+        self._recovering_meetings.add(meeting_key)
 
         def _run():
             try:
@@ -929,7 +933,7 @@ class WhisperSync:
                 self._refresh_menu()
 
             finally:
-                self._recovering_meeting = None
+                self._recovering_meetings.discard(meeting_key)
 
         threading.Thread(target=_run, daemon=True).start()
 
