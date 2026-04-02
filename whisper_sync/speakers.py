@@ -69,44 +69,51 @@ def identify_speakers(
         f"Transcript (first 30 segments):\n{seg_text}"
     )
 
-    try:
-        result = subprocess.run(
-            ["claude", "-p", "--model", "haiku"],
-            input=full_prompt,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            cwd=str(Path(__file__).parent.parent.parent),
-        )
-        if result.returncode != 0:
-            logger.warning(f"Speaker identification CLI failed: {result.returncode}")
+    max_attempts = 2
+    timeout_s = 90
+
+    for attempt in range(max_attempts):
+        try:
+            result = subprocess.run(
+                ["claude", "-p", "--model", "haiku"],
+                input=full_prompt,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                cwd=str(Path(__file__).parent.parent.parent),
+            )
+            if result.returncode != 0:
+                logger.warning(f"Speaker identification CLI failed: {result.returncode}")
+                return None
+
+            # Robust JSON extraction: find first { to last }
+            response = result.stdout.strip()
+            first_brace = response.find("{")
+            last_brace = response.rfind("}")
+            if first_brace == -1 or last_brace == -1 or last_brace <= first_brace:
+                logger.warning("Speaker identification response contains no valid JSON object")
+                logger.debug(f"Raw response: {response[:500]}")
+                return None
+
+            json_str = response[first_brace:last_brace + 1]
+            return json.loads(json_str)
+
+        except json.JSONDecodeError as e:
+            logger.warning(f"Speaker identification returned invalid JSON: {e}")
+            logger.debug(f"Raw response: {result.stdout[:500]}")
             return None
-
-        # Robust JSON extraction: find first { to last }
-        response = result.stdout.strip()
-        first_brace = response.find("{")
-        last_brace = response.rfind("}")
-        if first_brace == -1 or last_brace == -1 or last_brace <= first_brace:
-            logger.warning("Speaker identification response contains no valid JSON object")
-            logger.debug(f"Raw response: {response[:500]}")
+        except FileNotFoundError:
+            logger.warning("Claude CLI not found - speaker identification skipped")
             return None
-
-        json_str = response[first_brace:last_brace + 1]
-        return json.loads(json_str)
-
-    except json.JSONDecodeError as e:
-        logger.warning(f"Speaker identification returned invalid JSON: {e}")
-        logger.debug(f"Raw response: {result.stdout[:500]}")
-        return None
-    except FileNotFoundError:
-        logger.warning("Claude CLI not found — speaker identification skipped")
-        return None
-    except subprocess.TimeoutExpired:
-        logger.warning("Speaker identification timed out (30s)")
-        return None
-    except Exception as e:
-        logger.warning(f"Speaker identification failed: {e}")
-        return None
+        except subprocess.TimeoutExpired:
+            if attempt < max_attempts - 1:
+                logger.warning(f"Speaker identification timed out ({timeout_s}s), retrying...")
+                continue
+            logger.warning(f"Speaker identification timed out after {max_attempts} attempts ({timeout_s}s each)")
+            return None
+        except Exception as e:
+            logger.warning(f"Speaker identification failed: {e}")
+            return None
 
 
 def write_speaker_map(transcript_json_path: str, speaker_map: dict) -> None:
