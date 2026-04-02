@@ -14,6 +14,66 @@ from pathlib import Path
 from .logger import logger
 
 
+def distill_transcript(json_path: str) -> str:
+    """Distill full transcript into a compact per-speaker summary.
+
+    Groups all segments by speaker, extracts representative samples
+    (first/last appearances, name callouts, longest segments) so that
+    every speaker is represented regardless of when they appear in the meeting.
+    Returns a formatted text block suitable for LLM consumption.
+    """
+    with open(json_path) as f:
+        data = json.load(f)
+    segments = data.get("segments", [])
+    if not segments:
+        return ""
+
+    from collections import defaultdict
+    by_speaker: dict[str, list[dict]] = defaultdict(list)
+    for s in segments:
+        spk = s.get("speaker", "UNKNOWN")
+        by_speaker[spk].append(s)
+
+    name_patterns = re.compile(
+        r"\b(?:hey|hi|thanks|thank you|okay|sorry|right)\s+([A-Z][a-z]+)\b"
+        r"|(?:^|\W)([A-Z][a-z]+),?\s+(?:can you|could you|do you|what do|please|are you)",
+        re.IGNORECASE,
+    )
+
+    lines = []
+    for spk in sorted(by_speaker.keys()):
+        segs = by_speaker[spk]
+        total_time = sum(s.get("end", 0) - s.get("start", 0) for s in segs)
+        lines.append(f"\n=== {spk} ({len(segs)} segments, ~{total_time / 60:.1f} min) ===")
+
+        def _fmt(s):
+            start = s.get("start", 0)
+            m, sec = int(start // 60), int(start % 60)
+            return f"  [{m:02d}:{sec:02d}] {s.get('text', '').strip()}"
+
+        lines.append("  -- First appearances:")
+        for s in segs[:5]:
+            lines.append(_fmt(s))
+
+        if len(segs) > 10:
+            lines.append("  -- Last appearances:")
+            for s in segs[-5:]:
+                lines.append(_fmt(s))
+
+        callouts = [s for s in segs if name_patterns.search(s.get("text", ""))]
+        if callouts:
+            lines.append("  -- Name callouts:")
+            for s in callouts[:5]:
+                lines.append(_fmt(s))
+
+        longest = sorted(segs, key=lambda s: len(s.get("text", "")), reverse=True)[:3]
+        lines.append("  -- Richest content:")
+        for s in longest:
+            lines.append(_fmt(s))
+
+    return "\n".join(lines)
+
+
 def identify_speakers(
     transcript_json_path: str,
     config_path: str,
@@ -35,21 +95,16 @@ def identify_speakers(
         logger.warning(f"Speaker prompt not found: {prompt_path}")
         return None
 
-    # Load first 30 segments
-    with open(transcript_json_path) as f:
-        data = json.load(f)
-    segments = data.get("segments", [])[:30]
-    if not segments:
+    # Distill transcript into per-speaker summary
+    distilled = distill_transcript(transcript_json_path)
+    if not distilled:
         return None
 
-    # Format segments for the prompt
-    seg_text = ""
-    for s in segments:
-        speaker = s.get("speaker", "UNKNOWN")
-        text = s.get("text", "").strip()
-        start = s.get("start", 0)
-        mins, secs = int(start // 60), int(start % 60)
-        seg_text += f"[{mins:02d}:{secs:02d}] {speaker}: {text}\n"
+    # Load readable transcript for boundary detection
+    readable_path = Path(transcript_json_path).parent / "transcript-readable.txt"
+    readable_text = ""
+    if readable_path.exists():
+        readable_text = readable_path.read_text(encoding="utf-8")
 
     # Load config
     config_text = ""
@@ -66,8 +121,10 @@ def identify_speakers(
         f"---\n\n"
         f"Meeting folder: {folder_name}\n\n"
         f"Known speakers config:\n{config_text}\n\n"
-        f"Transcript (first 30 segments):\n{seg_text}"
+        f"Speaker summary (distilled from full transcript):\n{distilled}"
     )
+    if readable_text:
+        full_prompt += f"\n\n---\n\nFull readable transcript (for boundary detection):\n{readable_text}"
 
     max_attempts = 2
     timeout_s = 90
@@ -75,7 +132,7 @@ def identify_speakers(
     for attempt in range(max_attempts):
         try:
             result = subprocess.run(
-                ["claude", "-p", "--model", "haiku"],
+                ["claude", "-p", "--model", "sonnet"],
                 input=full_prompt,
                 capture_output=True,
                 text=True,
