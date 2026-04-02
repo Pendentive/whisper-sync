@@ -324,16 +324,16 @@ def identify_speakers(
             return None
 
 
-def deep_identify_speakers(
+def opus_deep_identify(
     transcript_json_path: str,
     config_path: str,
     folder_name: str,
     progress_callback=None,
 ) -> dict | None:
-    """Deep speaker identification using full transcript with timestamps.
+    """Opus deep speaker identification with fingerprint analysis.
 
-    Sends the complete transcript to sonnet for thorough analysis including
-    meeting boundary detection. More expensive but more accurate than light mode.
+    Sends pre-computed metrics + full transcript to Opus for thorough
+    analysis. Updates speaker profiles. Produces meeting analysis data.
 
     Args:
         transcript_json_path: Path to transcript.json
@@ -343,7 +343,7 @@ def deep_identify_speakers(
 
     Returns:
         Parsed JSON dict with speaker_map, confidence, reasoning,
-        meeting_boundaries, config_updates. None if failed.
+        profile_updates, meeting_boundaries, analysis. None if failed.
     """
     prompt_path = Path(__file__).parent / "speaker_prompt_deep.md"
     if not prompt_path.exists():
@@ -351,95 +351,75 @@ def deep_identify_speakers(
         return None
 
     if progress_callback:
-        progress_callback("Preparing transcript...", 0.1)
+        progress_callback("Computing fingerprints...", 0.05)
 
-    # Load full transcript
+    # Step 1: Compute fingerprints (Python, instant)
+    fingerprints = compute_fingerprints(transcript_json_path)
+    if not fingerprints:
+        return None
+    fingerprint_text = json.dumps(fingerprints, indent=2)
+
+    if progress_callback:
+        progress_callback("Preparing transcript...", 0.10)
+
+    # Step 2: Load full transcript segments
     with open(transcript_json_path) as f:
         data = json.load(f)
     segments = data.get("segments", [])
     if not segments:
         return None
 
-    # Format segments with timestamps
-    # Sample segments, preserving context around real pauses for boundary detection
-    if len(segments) > 500:
-        max_segments = 500
-        edge_count = 50
-        pause_threshold = 15.0
-        pause_window = 2
-
-        selected_indices = set(range(min(edge_count, len(segments))))
-        selected_indices.update(range(max(0, len(segments) - edge_count), len(segments)))
-
-        # Preserve contiguous context around real pauses
-        for i in range(1, len(segments)):
-            prev_end = segments[i - 1].get("end", segments[i - 1].get("start", 0))
-            curr_start = segments[i].get("start", 0)
-            if curr_start - prev_end > pause_threshold:
-                start_idx = max(edge_count, i - pause_window)
-                end_idx = min(len(segments) - edge_count, i + pause_window + 1)
-                selected_indices.update(range(start_idx, end_idx))
-
-        remaining_budget = max_segments - len(selected_indices)
-        if remaining_budget > 0:
-            middle_start = edge_count
-            middle_end = max(edge_count, len(segments) - edge_count)
-            available_middle = [
-                idx for idx in range(middle_start, middle_end)
-                if idx not in selected_indices
-            ]
-            if available_middle:
-                step = max(1, len(available_middle) // remaining_budget)
-                selected_indices.update(available_middle[::step][:remaining_budget])
-
-        sampled = [(idx, segments[idx]) for idx in sorted(selected_indices)]
-        logger.info(f"Deep ID: sampled {len(sampled)} of {len(segments)} segments")
-    else:
-        sampled = list(enumerate(segments))
-
+    # Format with timestamps - include all segments for Opus
     seg_text = ""
-    for idx, s in sampled:
+    for i, s in enumerate(segments):
         speaker = s.get("speaker", "UNKNOWN")
         text = s.get("text", "").strip()
         start = s.get("start", 0)
         mins, secs = int(start // 60), int(start % 60)
 
         gap_note = ""
-        if idx > 0:
-            prev_end = segments[idx - 1].get("end", segments[idx - 1].get("start", 0))
-            gap_before = start - prev_end
-            if gap_before > 15:
-                gap_note = f" [gap={gap_before:.0f}s]"
+        if i > 0:
+            prev_end = segments[i - 1].get("end", segments[i - 1].get("start", 0))
+            gap = start - prev_end
+            if gap > 5:
+                gap_note = f" [gap={gap:.0f}s]"
 
         seg_text += f"[{mins:02d}:{secs:02d}]{gap_note} {speaker}: {text}\n"
 
-    # Load config
+    # Step 3: Load existing profiles
+    existing_profiles = load_profiles()
+    profiles_text = json.dumps(existing_profiles, indent=2) if existing_profiles else "No existing profiles."
+
+    # Step 4: Load config
     config_text = ""
     config_file = Path(config_path)
     if config_file.exists():
         config_text = config_file.read_text(encoding="utf-8")
 
-    # Load deep prompt
+    # Step 5: Build prompt
     prompt_template = prompt_path.read_text(encoding="utf-8")
 
     full_prompt = (
         f"{prompt_template}\n\n"
         f"---\n\n"
         f"Meeting folder: {folder_name}\n\n"
+        f"Pre-computed fingerprint metrics:\n{fingerprint_text}\n\n"
+        f"Existing speaker profiles:\n{profiles_text}\n\n"
         f"Known speakers config:\n{config_text}\n\n"
-        f"Full transcript ({len(sampled)} segments):\n{seg_text}"
+        f"Full transcript ({len(segments)} segments):\n{seg_text}"
     )
 
     if progress_callback:
-        progress_callback("Analyzing with Sonnet...", 0.25)
+        progress_callback("Analyzing with Opus...", 0.20)
 
+    # Step 6: Call Opus
     try:
         result = subprocess.run(
-            ["claude", "-p", "--model", "sonnet"],
+            ["claude", "-p", "--model", "opus"],
             input=full_prompt,
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=300,
             cwd=str(Path(__file__).parent.parent.parent),
         )
 
@@ -447,7 +427,7 @@ def deep_identify_speakers(
             progress_callback("Processing results...", 0.90)
 
         if result.returncode != 0:
-            logger.warning(f"Deep speaker ID CLI failed: {result.returncode}")
+            logger.warning(f"Opus deep ID CLI failed: {result.returncode}")
             if result.stderr:
                 logger.debug(f"Claude CLI stderr: {result.stderr[:500]}")
             return None
@@ -456,12 +436,17 @@ def deep_identify_speakers(
         first_brace = response.find("{")
         last_brace = response.rfind("}")
         if first_brace == -1 or last_brace == -1 or last_brace <= first_brace:
-            logger.warning("Deep speaker ID response contains no valid JSON")
+            logger.warning("Opus deep ID response contains no valid JSON")
             logger.debug(f"Raw response: {response[:500]}")
             return None
 
         json_str = response[first_brace:last_brace + 1]
         parsed = json.loads(json_str)
+
+        # Step 7: Apply profile updates
+        if parsed.get("profile_updates"):
+            _apply_profile_updates(existing_profiles, parsed["profile_updates"], folder_name)
+            save_profiles(existing_profiles)
 
         if progress_callback:
             progress_callback("Complete", 1.0)
@@ -469,17 +454,58 @@ def deep_identify_speakers(
         return parsed
 
     except json.JSONDecodeError as e:
-        logger.warning(f"Deep speaker ID returned invalid JSON: {e}")
+        logger.warning(f"Opus deep ID returned invalid JSON: {e}")
         return None
     except FileNotFoundError:
-        logger.warning("Claude CLI not found - deep speaker ID skipped")
+        logger.warning("Claude CLI not found - Opus deep ID skipped")
         return None
     except subprocess.TimeoutExpired:
-        logger.warning("Deep speaker ID timed out (180s)")
+        logger.warning("Opus deep ID timed out (300s)")
         return None
     except Exception as e:
-        logger.warning(f"Deep speaker ID failed: {e}")
+        logger.warning(f"Opus deep ID failed: {e}")
         return None
+
+
+def _apply_profile_updates(profiles: dict, updates: dict, folder_name: str) -> None:
+    """Merge Opus profile updates into existing profiles."""
+    from datetime import date
+
+    for name, update in updates.items():
+        name_lower = name.lower()
+        if name_lower not in profiles:
+            profiles[name_lower] = {
+                "meetings_analyzed": [],
+                "last_updated": str(date.today()),
+            }
+
+        profile = profiles[name_lower]
+
+        # Update WPS (running average)
+        if "wps_this_meeting" in update:
+            new_wps = update["wps_this_meeting"]
+            if "wps" in profile:
+                old_avg = profile["wps"].get("avg", new_wps)
+                n = len(profile.get("meetings_analyzed", []))
+                profile["wps"]["avg"] = round((old_avg * n + new_wps) / (n + 1), 2)
+            else:
+                profile["wps"] = {"avg": round(new_wps, 2)}
+
+        # Append new vocab (deduplicated)
+        if "new_vocab" in update:
+            existing = set(profile.get("vocab_signals", []))
+            existing.update(update["new_vocab"])
+            profile["vocab_signals"] = sorted(existing)
+
+        # Update notes
+        if "notes" in update:
+            profile["speaking_style"] = update["notes"]
+
+        # Track meeting
+        if folder_name not in profile.get("meetings_analyzed", []):
+            profile.setdefault("meetings_analyzed", []).append(folder_name)
+
+        profile["last_updated"] = str(date.today())
 
 
 def build_manual_stub(json_path: str, reason: str = "Enter name manually") -> dict | None:
