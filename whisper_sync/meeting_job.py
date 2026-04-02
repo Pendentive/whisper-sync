@@ -181,15 +181,30 @@ class MeetingJob:
 
         if id_result and id_result.get("speaker_map"):
             try:
-                confirmed_map = self.app._ask_speaker_confirmation(id_result)
-                if confirmed_map:
+                self.app._current_meeting_json_path = json_path
+                confirmation = self.app._ask_speaker_confirmation(id_result)
+                if confirmation:
+                    if isinstance(confirmation, tuple):
+                        confirmed_map, boundaries = confirmation
+                    else:
+                        confirmed_map = confirmation
+                        boundaries = None
+
                     write_speaker_map(json_path, confirmed_map)
                     cfg_path = get_config_path()
+                    # config_updates from initial (light) identification.
+                    # Deep mode config_updates are applied via the Meetings recovery flow.
                     update_config(
                         cfg_path, confirmed_map, id_result.get("config_updates")
                     )
                     logger.info("Speakers confirmed: %s", confirmed_map)
                     self.speakers_confirmed = confirmed_map
+
+                    if boundaries:
+                        logger.info(f"Meeting boundaries detected: {boundaries}")
+                        self._detected_boundaries = boundaries
+                        # Boundaries are informational - user can split via Meetings tray menu.
+                        # Automatic splitting will be added in a future update.
                 else:
                     logger.info("Speaker identification skipped by user")
             except Exception as e:

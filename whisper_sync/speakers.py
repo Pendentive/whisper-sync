@@ -14,6 +14,66 @@ from pathlib import Path
 from .logger import logger
 
 
+def distill_transcript(json_path: str) -> str:
+    """Distill full transcript into a compact per-speaker summary.
+
+    Groups all segments by speaker, extracts representative samples
+    (first/last appearances, name callouts, longest segments) so that
+    every speaker is represented regardless of when they appear in the meeting.
+    Returns a formatted text block suitable for LLM consumption.
+    """
+    with open(json_path) as f:
+        data = json.load(f)
+    segments = data.get("segments", [])
+    if not segments:
+        return ""
+
+    from collections import defaultdict
+    by_speaker: dict[str, list[dict]] = defaultdict(list)
+    for s in segments:
+        spk = s.get("speaker", "UNKNOWN")
+        by_speaker[spk].append(s)
+
+    name_patterns = re.compile(
+        r"\b(?:hey|hi|thanks|thank you|okay|sorry|right)\s+([A-Z][a-z]+)\b"
+        r"|(?:^|\W)([A-Z][a-z]+),?\s+(?:can you|could you|do you|what do|please|are you)",
+        re.IGNORECASE,
+    )
+
+    lines = []
+    for spk in sorted(by_speaker.keys()):
+        segs = by_speaker[spk]
+        total_time = sum(s.get("end", 0) - s.get("start", 0) for s in segs)
+        lines.append(f"\n=== {spk} ({len(segs)} segments, ~{total_time / 60:.1f} min) ===")
+
+        def _fmt(s):
+            start = s.get("start", 0)
+            m, sec = int(start // 60), int(start % 60)
+            return f"  [{m:02d}:{sec:02d}] {s.get('text', '').strip()}"
+
+        lines.append("  -- First appearances:")
+        for s in segs[:5]:
+            lines.append(_fmt(s))
+
+        if len(segs) > 10:
+            lines.append("  -- Last appearances:")
+            for s in segs[-5:]:
+                lines.append(_fmt(s))
+
+        callouts = [s for s in segs if name_patterns.search(s.get("text", ""))]
+        if callouts:
+            lines.append("  -- Name callouts:")
+            for s in callouts[:5]:
+                lines.append(_fmt(s))
+
+        longest = sorted(segs, key=lambda s: len(s.get("text", "")), reverse=True)[:3]
+        lines.append("  -- Richest content:")
+        for s in longest:
+            lines.append(_fmt(s))
+
+    return "\n".join(lines)
+
+
 def identify_speakers(
     transcript_json_path: str,
     config_path: str,
@@ -35,21 +95,16 @@ def identify_speakers(
         logger.warning(f"Speaker prompt not found: {prompt_path}")
         return None
 
-    # Load first 30 segments
-    with open(transcript_json_path) as f:
-        data = json.load(f)
-    segments = data.get("segments", [])[:30]
-    if not segments:
+    # Distill transcript into per-speaker summary
+    distilled = distill_transcript(transcript_json_path)
+    if not distilled:
         return None
 
-    # Format segments for the prompt
-    seg_text = ""
-    for s in segments:
-        speaker = s.get("speaker", "UNKNOWN")
-        text = s.get("text", "").strip()
-        start = s.get("start", 0)
-        mins, secs = int(start // 60), int(start % 60)
-        seg_text += f"[{mins:02d}:{secs:02d}] {speaker}: {text}\n"
+    # Load readable transcript for boundary detection
+    readable_path = Path(transcript_json_path).parent / "transcript-readable.txt"
+    readable_text = ""
+    if readable_path.exists():
+        readable_text = readable_path.read_text(encoding="utf-8")
 
     # Load config
     config_text = ""
@@ -66,8 +121,10 @@ def identify_speakers(
         f"---\n\n"
         f"Meeting folder: {folder_name}\n\n"
         f"Known speakers config:\n{config_text}\n\n"
-        f"Transcript (first 30 segments):\n{seg_text}"
+        f"Speaker summary (distilled from full transcript):\n{distilled}"
     )
+    if readable_text:
+        full_prompt += f"\n\n---\n\nFull readable transcript (for boundary detection):\n{readable_text}"
 
     max_attempts = 2
     timeout_s = 90
@@ -75,7 +132,7 @@ def identify_speakers(
     for attempt in range(max_attempts):
         try:
             result = subprocess.run(
-                ["claude", "-p", "--model", "haiku"],
+                ["claude", "-p", "--model", "sonnet"],
                 input=full_prompt,
                 capture_output=True,
                 text=True,
@@ -116,6 +173,164 @@ def identify_speakers(
         except Exception as e:
             logger.warning(f"Speaker identification failed: {e}")
             return None
+
+
+def deep_identify_speakers(
+    transcript_json_path: str,
+    config_path: str,
+    folder_name: str,
+    progress_callback=None,
+) -> dict | None:
+    """Deep speaker identification using full transcript with timestamps.
+
+    Sends the complete transcript to sonnet for thorough analysis including
+    meeting boundary detection. More expensive but more accurate than light mode.
+
+    Args:
+        transcript_json_path: Path to transcript.json
+        config_path: Path to transcription-config.md
+        folder_name: Meeting folder name
+        progress_callback: Optional callable(phase: str, pct: float) for UI updates
+
+    Returns:
+        Parsed JSON dict with speaker_map, confidence, reasoning,
+        meeting_boundaries, config_updates. None if failed.
+    """
+    prompt_path = Path(__file__).parent / "speaker_prompt_deep.md"
+    if not prompt_path.exists():
+        logger.warning(f"Deep speaker prompt not found: {prompt_path}")
+        return None
+
+    if progress_callback:
+        progress_callback("Preparing transcript...", 0.1)
+
+    # Load full transcript
+    with open(transcript_json_path) as f:
+        data = json.load(f)
+    segments = data.get("segments", [])
+    if not segments:
+        return None
+
+    # Format segments with timestamps
+    # Sample segments, preserving context around real pauses for boundary detection
+    if len(segments) > 500:
+        max_segments = 500
+        edge_count = 50
+        pause_threshold = 15.0
+        pause_window = 2
+
+        selected_indices = set(range(min(edge_count, len(segments))))
+        selected_indices.update(range(max(0, len(segments) - edge_count), len(segments)))
+
+        # Preserve contiguous context around real pauses
+        for i in range(1, len(segments)):
+            prev_end = segments[i - 1].get("end", segments[i - 1].get("start", 0))
+            curr_start = segments[i].get("start", 0)
+            if curr_start - prev_end > pause_threshold:
+                start_idx = max(edge_count, i - pause_window)
+                end_idx = min(len(segments) - edge_count, i + pause_window + 1)
+                selected_indices.update(range(start_idx, end_idx))
+
+        remaining_budget = max_segments - len(selected_indices)
+        if remaining_budget > 0:
+            middle_start = edge_count
+            middle_end = max(edge_count, len(segments) - edge_count)
+            available_middle = [
+                idx for idx in range(middle_start, middle_end)
+                if idx not in selected_indices
+            ]
+            if available_middle:
+                step = max(1, len(available_middle) // remaining_budget)
+                selected_indices.update(available_middle[::step][:remaining_budget])
+
+        sampled = [(idx, segments[idx]) for idx in sorted(selected_indices)]
+        logger.info(f"Deep ID: sampled {len(sampled)} of {len(segments)} segments")
+    else:
+        sampled = list(enumerate(segments))
+
+    seg_text = ""
+    for idx, s in sampled:
+        speaker = s.get("speaker", "UNKNOWN")
+        text = s.get("text", "").strip()
+        start = s.get("start", 0)
+        mins, secs = int(start // 60), int(start % 60)
+
+        gap_note = ""
+        if idx > 0:
+            prev_end = segments[idx - 1].get("end", segments[idx - 1].get("start", 0))
+            gap_before = start - prev_end
+            if gap_before > 15:
+                gap_note = f" [gap={gap_before:.0f}s]"
+
+        seg_text += f"[{mins:02d}:{secs:02d}]{gap_note} {speaker}: {text}\n"
+
+    # Load config
+    config_text = ""
+    config_file = Path(config_path)
+    if config_file.exists():
+        config_text = config_file.read_text(encoding="utf-8")
+
+    # Load deep prompt
+    prompt_template = prompt_path.read_text(encoding="utf-8")
+
+    full_prompt = (
+        f"{prompt_template}\n\n"
+        f"---\n\n"
+        f"Meeting folder: {folder_name}\n\n"
+        f"Known speakers config:\n{config_text}\n\n"
+        f"Full transcript ({len(sampled)} segments):\n{seg_text}"
+    )
+
+    if progress_callback:
+        progress_callback("Analyzing with Sonnet...", 0.25)
+
+    try:
+        result = subprocess.run(
+            ["claude", "-p", "--model", "sonnet"],
+            input=full_prompt,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            cwd=str(Path(__file__).parent.parent.parent),
+        )
+
+        if progress_callback:
+            progress_callback("Processing results...", 0.90)
+
+        if result.returncode != 0:
+            logger.warning(f"Deep speaker ID CLI failed: {result.returncode}")
+            if result.stderr:
+                logger.debug(f"Claude CLI stderr: {result.stderr[:500]}")
+            return None
+
+        response = result.stdout.strip()
+        first_brace = response.find("{")
+        last_brace = response.rfind("}")
+        if first_brace == -1 or last_brace == -1 or last_brace <= first_brace:
+            logger.warning("Deep speaker ID response contains no valid JSON")
+            logger.debug(f"Raw response: {response[:500]}")
+            return None
+
+        json_str = response[first_brace:last_brace + 1]
+        parsed = json.loads(json_str)
+
+        if progress_callback:
+            progress_callback("Complete", 1.0)
+
+        return parsed
+
+    except json.JSONDecodeError as e:
+        logger.warning(f"Deep speaker ID returned invalid JSON: {e}")
+        return None
+    except FileNotFoundError:
+        logger.warning("Claude CLI not found - deep speaker ID skipped")
+        return None
+    except subprocess.TimeoutExpired:
+        logger.warning("Deep speaker ID timed out (180s)")
+        return None
+    except Exception as e:
+        logger.warning(f"Deep speaker ID failed: {e}")
+        return None
 
 
 def build_manual_stub(json_path: str, reason: str = "Enter name manually") -> dict | None:

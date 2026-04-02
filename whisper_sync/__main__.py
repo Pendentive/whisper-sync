@@ -895,6 +895,7 @@ class WhisperSync:
                     logger.warning("No speakers to identify")
                     return
 
+                self._current_meeting_json_path = str(json_path)
                 confirmed_map = self._ask_speaker_confirmation(id_result)
                 if not confirmed_map:
                     logger.info("Recovery: speaker identification skipped by user")
@@ -1359,7 +1360,13 @@ class WhisperSync:
         return result[0]
 
     def _ask_speaker_confirmation(self, identification_result: dict) -> dict | None:
-        """Show speaker confirmation dialog. Returns confirmed speaker_map or None to skip."""
+        """Show speaker confirmation dialog.
+
+        Returns:
+            None: user skipped
+            dict: confirmed speaker_map (no boundaries detected)
+            tuple[dict, list]: (speaker_map, boundaries) when deep identify found meeting splits
+        """
         speaker_map = identification_result.get("speaker_map", {})
         confidence = identification_result.get("confidence", {})
         reasoning = identification_result.get("reasoning", {})
@@ -1376,6 +1383,9 @@ class WhisperSync:
 
         result = [None]
         event = threading.Event()
+
+        # Store json_path for deep identify button access
+        self._deep_id_json_path = getattr(self, '_current_meeting_json_path', None)
 
         # Load known speaker names from Known Speakers table ONLY (not Meeting Map)
         config_path = Path(get_config_path())
@@ -1554,18 +1564,130 @@ class WhisperSync:
                     tk.Label(reason_frame, text=f"\u2514 {reason}", font=("Segoe UI", 7, "italic"),
                              bg=bg, fg=fg_dim, anchor="w", wraplength=400).pack(anchor="w")
 
+            # Progress bar (hidden initially)
+            progress_frame = tk.Frame(root, bg=bg)
+            progress_frame.pack(fill="x", padx=24, pady=(4, 0))
+            progress_canvas = tk.Canvas(progress_frame, height=4, bg="#313244",
+                                         highlightthickness=0)
+            progress_canvas.pack(fill="x")
+            progress_bar = progress_canvas.create_rectangle(0, 0, 0, 4, fill=accent, width=0)
+            progress_label = tk.Label(progress_frame, text="", font=("Segoe UI", 7),
+                                       bg=bg, fg=fg_dim)
+            progress_label.pack(anchor="w")
+            progress_frame.pack_forget()  # hidden until needed
+
+            # Boundary notice (hidden initially)
+            boundary_frame = tk.Frame(root, bg=bg)
+            boundary_label = tk.Label(boundary_frame, text="", font=("Segoe UI", 8),
+                                       bg=bg, fg=yellow, wraplength=440)
+            boundary_label.pack(side=tk.LEFT, padx=(24, 8))
+            boundary_frame.pack_forget()  # hidden until boundaries detected
+
+            _boundaries = [None]
+
             # Buttons
             btn_frame = tk.Frame(root, bg=bg)
             btn_frame.pack(pady=(14, 12))
 
             _closing = [False]
+            _deep_running = [False]
+
+            def _update_progress(phase, pct):
+                def _do():
+                    if _closing[0]:
+                        return
+                    progress_label.configure(text=phase)
+                    canvas_width = progress_canvas.winfo_width() or 440
+                    progress_canvas.coords(progress_bar, 0, 0, canvas_width * pct, 4)
+                root.after(0, _do)
+
+            def _deep_identify():
+                if _closing[0] or _deep_running[0]:
+                    return
+                _deep_running[0] = True
+
+                progress_frame.pack(fill="x", padx=24, pady=(4, 0))
+                for child in btn_frame.winfo_children():
+                    try:
+                        child.unbind("<Button-1>")
+                    except Exception:
+                        pass
+
+                def _run_deep():
+                    from .speakers import deep_identify_speakers, get_config_path
+                    try:
+                        cfg_path = get_config_path()
+                        json_path = self._deep_id_json_path
+                        if not json_path:
+                            raise ValueError("No transcript path available for deep identification")
+                        deep_result = deep_identify_speakers(
+                            json_path, cfg_path,
+                            Path(json_path).parent.name,
+                            progress_callback=_update_progress,
+                        )
+                        if deep_result and deep_result.get("speaker_map"):
+                            def _apply():
+                                for spk_id, var in dropdowns.items():
+                                    new_name = deep_result["speaker_map"].get(spk_id, "")
+                                    if new_name:
+                                        var.set(new_name)
+
+                                raw_bounds = deep_result.get("meeting_boundaries", [])
+                                bounds = []
+                                if isinstance(raw_bounds, list):
+                                    for boundary in raw_bounds:
+                                        if not isinstance(boundary, dict):
+                                            continue
+                                        try:
+                                            split_secs = int(float(boundary.get("split_seconds", 0)))
+                                        except (TypeError, ValueError):
+                                            continue
+                                        normalized = dict(boundary)
+                                        normalized["split_seconds"] = split_secs
+                                        bounds.append(normalized)
+
+                                if bounds:
+                                    _boundaries[0] = bounds
+                                    pts = ", ".join(
+                                        f"{int(b['split_seconds']) // 60}:{int(b['split_seconds']) % 60:02d}"
+                                        for b in bounds
+                                    )
+                                    boundary_label.configure(
+                                        text=f"Detected {len(bounds) + 1} meetings (split at {pts}). Use Meetings menu to split."
+                                    )
+                                    boundary_frame.pack(fill="x", pady=(4, 0))
+
+                                _rebind_buttons()
+                                _deep_running[0] = False
+
+                            root.after(0, _apply)
+                        else:
+                            def _fail():
+                                progress_label.configure(text="Deep identification returned no results")
+                                _rebind_buttons()
+                                _deep_running[0] = False
+                            root.after(0, _fail)
+
+                    except Exception as e:
+                        logger.warning(f"Deep identify failed: {e}")
+                        def _err():
+                            progress_label.configure(text=f"Failed: {str(e)[:60]}")
+                            _rebind_buttons()
+                            _deep_running[0] = False
+                        root.after(0, _err)
+
+                threading.Thread(target=_run_deep, daemon=True).start()
 
             def _confirm():
                 if _closing[0]:
                     return
                 _closing[0] = True
                 try:
-                    result[0] = {spk_id: var.get() for spk_id, var in dropdowns.items()}
+                    confirmed = {spk_id: var.get() for spk_id, var in dropdowns.items()}
+                    if _boundaries[0]:
+                        result[0] = (confirmed, _boundaries[0])
+                    else:
+                        result[0] = confirmed
                 except Exception:
                     pass
                 try:
@@ -1583,9 +1705,21 @@ class WhisperSync:
                 except Exception as e:
                     logger.debug(f"Speaker dialog close: {e}")
 
-            self._flat_button(btn_frame, "Confirm", _confirm,
-                              bg=accent, fg="#1e1e2e", hover_bg="#74c7ec", bold=True).pack(side=tk.RIGHT, padx=8)
-            self._flat_button(btn_frame, "Skip", _skip, fg=fg_muted).pack(side=tk.RIGHT, padx=8)
+            # Create buttons - store references for rebinding
+            _confirm_btn = self._flat_button(btn_frame, "Confirm", _confirm,
+                              bg=accent, fg="#1e1e2e", hover_bg="#74c7ec", bold=True)
+            _confirm_btn.pack(side=tk.RIGHT, padx=8)
+            _skip_btn = self._flat_button(btn_frame, "Skip", _skip, fg=fg_muted)
+            _skip_btn.pack(side=tk.RIGHT, padx=8)
+            _deep_btn = self._flat_button(btn_frame, "Deep Identify", _deep_identify,
+                              bg="#45475a", fg=fg, hover_bg="#585b70")
+            _deep_btn.pack(side=tk.RIGHT, padx=8)
+
+            def _rebind_buttons():
+                """Re-bind button clicks after deep identify completes."""
+                _confirm_btn.bind("<Button-1>", lambda e: _confirm())
+                _skip_btn.bind("<Button-1>", lambda e: _skip())
+                _deep_btn.bind("<Button-1>", lambda e: _deep_identify())
 
             self._center_window(root)
             root.protocol("WM_DELETE_WINDOW", _skip)

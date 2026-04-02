@@ -44,11 +44,21 @@ WhisperSync captures stereo audio: microphone on channel 0, system loopback (spe
 - Default backup_model is `base`. The installer can override to `small` or `tiny` based on detected VRAM during installation. No runtime auto-selection.
 - Model merging: dictation and meeting share the primary model instance. The backup model is always a separate instance.
 
-## Speaker Identification Recovery
+## Speaker Identification
 
-`identify_speakers()` calls `claude -p --model haiku` with a 90s timeout and 1 retry. If both attempts fail, `step_speaker_id` in `meeting_job.py` builds a stub with empty names and still shows `_ask_speaker_confirmation()` so the user can enter names manually. A toast notification fires before the dialog to indicate that automatic speaker identification failed and that names can be entered manually.
+Two-tier system, both using sonnet:
 
-The **Meetings** tray menu (above Recent Dictations) shows the 10 most recent meetings with their speaker status. Clicking any meeting re-enters the speaker ID flow: `identify_speakers()` -> `_ask_speaker_confirmation()` -> `write_speaker_map()` -> `flatten()` -> optionally regenerate minutes. This handles recovery from timeouts, accidental skips, and retroactive speaker assignment.
+**Light mode** (automatic after every transcription): `distill_transcript()` in `speakers.py` pre-processes the full transcript into a compact per-speaker summary (first/last appearances, name callouts, longest segments). Sonnet reads this summary + the full readable transcript for boundary detection. Produces speaker_map + meeting_boundaries. Summary size is compact and bounded per speaker, so total input scales with speaker count rather than meeting length alone.
+
+**Deep mode** (manual via "Deep Identify" button in speaker confirmation dialog): Sends the full transcript with timestamps to sonnet for thorough analysis. Includes topic ownership tracking, timestamp evidence for every name callout, and meeting boundary detection. Progress bar shows analysis phases. More expensive but catches nuances light mode misses.
+
+Both modes detect meeting boundaries (farewell exchanges, pauses, new greetings). When boundaries are detected, the dialog offers to split the recording after speaker confirmation.
+
+Speaker identification timeout is 90s with 1 retry for light mode, 180s for deep mode. If identification fails, a manual entry dialog appears with empty fields and known speakers in autocomplete.
+
+The **Meetings** tray menu shows the 10 most recent meetings with speaker status. Clicking any meeting re-enters the speaker ID flow.
+
+IMPORTANT: Accent notes in transcription-config.md are human-authored reference. The LLM analyzes text only, not audio. Prompts explicitly instruct against using accent as a speaker attribution signal.
 
 ## Critical Rules
 
