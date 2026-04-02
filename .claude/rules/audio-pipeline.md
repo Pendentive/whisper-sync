@@ -38,6 +38,12 @@ WhisperSync captures stereo audio: microphone on channel 0, system loopback (spe
 - Default backup_model is `base`. The installer can override to `small` or `tiny` based on detected VRAM during installation. No runtime auto-selection.
 - Model merging: dictation and meeting share the primary model instance. The backup model is always a separate instance.
 
+## Speaker Identification Recovery
+
+`identify_speakers()` calls `claude -p --model haiku` with a 90s timeout and 1 retry. If both attempts fail, `step_speaker_id` in `meeting_job.py` builds a stub with empty names and still shows `_ask_speaker_confirmation()` so the user can enter names manually. A toast notification fires before the dialog to explain the timeout.
+
+The **Meetings** tray menu (above Recent Dictations) shows the 10 most recent meetings with their speaker status. Clicking any meeting re-enters the speaker ID flow: `identify_speakers()` -> `_ask_speaker_confirmation()` -> `write_speaker_map()` -> `flatten()` -> optionally regenerate minutes. This handles recovery from timeouts, accidental skips, and retroactive speaker assignment.
+
 ## Critical Rules
 
 - **Never change the multiprocessing context from "spawn"** - required for CUDA isolation.
