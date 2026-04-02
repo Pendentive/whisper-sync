@@ -142,7 +142,7 @@ class MeetingJob:
         If Claude times out or fails, still shows the dialog with empty names
         so the user can manually enter speaker names.
         """
-        from .speakers import identify_speakers, write_speaker_map, update_config, get_config_path
+        from .speakers import identify_speakers, write_speaker_map, update_config, get_config_path, build_manual_stub
 
         json_path = self.transcript_result.get(
             "json_path", str(self.meeting_dir / "transcript.json")
@@ -157,31 +157,24 @@ class MeetingJob:
                 logger.warning("Speaker identification failed (non-fatal): %s", e)
 
         if not id_result or not id_result.get("speaker_map"):
-            # Build stub with empty names so the dialog still appears
-            try:
-                import json as _json
-                with open(json_path) as f:
-                    data = _json.load(f)
-                unique_speakers = sorted(set(
-                    s.get("speaker", "UNKNOWN")
-                    for s in data.get("segments", [])
-                    if s.get("speaker")
-                ))
-                if unique_speakers:
-                    id_result = {
-                        "speaker_map": {spk: "" for spk in unique_speakers},
-                        "confidence": {spk: "low" for spk in unique_speakers},
-                        "reasoning": {spk: "Auto-identification failed - enter name manually" for spk in unique_speakers},
-                    }
-                    # Notify user
-                    try:
-                        from .notifications import notify
-                        notify("Speaker ID Failed", "Enter speaker names manually in the dialog.")
-                    except Exception:
-                        pass
-                    logger.warning("Speaker ID failed, showing manual entry dialog")
-            except Exception as e:
-                logger.warning("Could not build manual speaker stub: %s", e)
+            # Tailor reasoning and notification based on cause
+            if self.llm_ok:
+                reason = "Auto-identification failed - enter name manually"
+                toast_title = "Speaker ID Failed"
+                toast_body = "Automatic speaker identification failed; enter names manually in the dialog."
+            else:
+                reason = "Auto-identification unavailable (Claude CLI not available) - enter name manually"
+                toast_title = "Speaker ID Unavailable"
+                toast_body = "Speaker identification requires Claude CLI, which is not available. Enter speaker names manually in the dialog."
+
+            id_result = build_manual_stub(json_path, reason)
+            if id_result:
+                try:
+                    from .notifications import notify
+                    notify(toast_title, toast_body)
+                except Exception:
+                    pass
+                logger.warning("Speaker ID not applied, showing manual entry dialog")
 
         if id_result and id_result.get("speaker_map"):
             try:

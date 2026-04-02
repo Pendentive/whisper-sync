@@ -84,6 +84,8 @@ def identify_speakers(
             )
             if result.returncode != 0:
                 logger.warning(f"Speaker identification CLI failed: {result.returncode}")
+                if result.stderr:
+                    logger.debug(f"Claude CLI stderr (truncated): {result.stderr[:500]}")
                 return None
 
             # Robust JSON extraction: find first { to last }
@@ -114,6 +116,33 @@ def identify_speakers(
         except Exception as e:
             logger.warning(f"Speaker identification failed: {e}")
             return None
+
+
+def build_manual_stub(json_path: str, reason: str = "Enter name manually") -> dict | None:
+    """Build a stub identification result with empty names for manual entry.
+
+    Reads unique SPEAKER_XX labels from transcript.json and returns a dict
+    compatible with _ask_speaker_confirmation().
+    """
+    import json as _json
+    try:
+        with open(json_path) as f:
+            data = _json.load(f)
+        unique_speakers = sorted(set(
+            s.get("speaker", "UNKNOWN")
+            for s in data.get("segments", [])
+            if s.get("speaker")
+        ))
+        if not unique_speakers:
+            return None
+        return {
+            "speaker_map": {spk: "" for spk in unique_speakers},
+            "confidence": {spk: "low" for spk in unique_speakers},
+            "reasoning": {spk: reason for spk in unique_speakers},
+        }
+    except Exception as e:
+        logger.warning(f"Could not build manual speaker stub: {e}")
+        return None
 
 
 def write_speaker_map(transcript_json_path: str, speaker_map: dict) -> None:

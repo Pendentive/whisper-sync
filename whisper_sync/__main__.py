@@ -842,7 +842,7 @@ class WhisperSync:
     def _recover_meeting_speakers(self, meeting_dir: Path):
         """Re-enter the speaker ID flow for a past meeting."""
         import json as _json
-        from .speakers import identify_speakers, write_speaker_map, update_config, get_config_path
+        from .speakers import identify_speakers, write_speaker_map, update_config, get_config_path, build_manual_stub
         from .flatten import flatten as flatten_transcript
 
         json_path = meeting_dir / "transcript.json"
@@ -865,22 +865,8 @@ class WhisperSync:
 
             # Fall back to manual stub
             if not id_result or not id_result.get("speaker_map"):
-                try:
-                    with open(json_path) as f:
-                        data = _json.load(f)
-                    unique_speakers = sorted(set(
-                        s.get("speaker", "UNKNOWN")
-                        for s in data.get("segments", [])
-                        if s.get("speaker")
-                    ))
-                    if unique_speakers:
-                        id_result = {
-                            "speaker_map": {spk: "" for spk in unique_speakers},
-                            "confidence": {spk: "low" for spk in unique_speakers},
-                            "reasoning": {spk: "Enter name manually" for spk in unique_speakers},
-                        }
-                except Exception as e:
-                    logger.warning(f"Could not build speaker stub: {e}")
+                id_result = build_manual_stub(str(json_path))
+                if not id_result:
                     return
 
             if not id_result or not id_result.get("speaker_map"):
@@ -904,7 +890,7 @@ class WhisperSync:
             except Exception as e:
                 logger.warning(f"Recovery: flatten failed: {e}")
 
-            # Offer to regenerate minutes
+            # Regenerate minutes with updated speaker names
             readable_file = meeting_dir / "transcript-readable.txt"
             minutes_file = meeting_dir / "minutes.md"
             if readable_file.exists() and self._is_claude_cli_available():
@@ -1921,8 +1907,9 @@ class WhisperSync:
                         with open(json_path) as f:
                             data = _json.load(f)
                         smap = data.get("speaker_map", {})
-                        if smap:
-                            status = ", ".join(sorted(set(smap.values())))
+                        names = [str(v).strip() for v in smap.values() if str(v).strip()]
+                        if names:
+                            status = ", ".join(sorted(set(names)))
                         else:
                             status = "No speakers"
                     except Exception:
