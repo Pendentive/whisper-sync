@@ -175,6 +175,132 @@ def identify_speakers(
             return None
 
 
+def deep_identify_speakers(
+    transcript_json_path: str,
+    config_path: str,
+    folder_name: str,
+    progress_callback=None,
+) -> dict | None:
+    """Deep speaker identification using full transcript with timestamps.
+
+    Sends the complete transcript to sonnet for thorough analysis including
+    meeting boundary detection. More expensive but more accurate than light mode.
+
+    Args:
+        transcript_json_path: Path to transcript.json
+        config_path: Path to transcription-config.md
+        folder_name: Meeting folder name
+        progress_callback: Optional callable(phase: str, pct: float) for UI updates
+
+    Returns:
+        Parsed JSON dict with speaker_map, confidence, reasoning,
+        meeting_boundaries, config_updates. None if failed.
+    """
+    prompt_path = Path(__file__).parent / "speaker_prompt_deep.md"
+    if not prompt_path.exists():
+        logger.warning(f"Deep speaker prompt not found: {prompt_path}")
+        return None
+
+    if progress_callback:
+        progress_callback("Preparing transcript...", 0.1)
+
+    # Load full transcript
+    with open(transcript_json_path) as f:
+        data = json.load(f)
+    segments = data.get("segments", [])
+    if not segments:
+        return None
+
+    # Format segments with timestamps
+    # If >500 segments, sample: first 50, last 50, evenly spaced middle
+    if len(segments) > 500:
+        first = segments[:50]
+        last = segments[-50:]
+        middle_count = 400
+        step = max(1, (len(segments) - 100) // middle_count)
+        middle = segments[50:-50:step][:middle_count]
+        sampled = first + middle + last
+        logger.info(f"Deep ID: sampled {len(sampled)} of {len(segments)} segments")
+    else:
+        sampled = segments
+
+    seg_text = ""
+    for s in sampled:
+        speaker = s.get("speaker", "UNKNOWN")
+        text = s.get("text", "").strip()
+        start = s.get("start", 0)
+        mins, secs = int(start // 60), int(start % 60)
+        seg_text += f"[{mins:02d}:{secs:02d}] {speaker}: {text}\n"
+
+    # Load config
+    config_text = ""
+    config_file = Path(config_path)
+    if config_file.exists():
+        config_text = config_file.read_text(encoding="utf-8")
+
+    # Load deep prompt
+    prompt_template = prompt_path.read_text(encoding="utf-8")
+
+    full_prompt = (
+        f"{prompt_template}\n\n"
+        f"---\n\n"
+        f"Meeting folder: {folder_name}\n\n"
+        f"Known speakers config:\n{config_text}\n\n"
+        f"Full transcript ({len(sampled)} segments):\n{seg_text}"
+    )
+
+    if progress_callback:
+        progress_callback("Analyzing with Sonnet...", 0.25)
+
+    try:
+        result = subprocess.run(
+            ["claude", "-p", "--model", "sonnet"],
+            input=full_prompt,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            cwd=str(Path(__file__).parent.parent.parent),
+        )
+
+        if progress_callback:
+            progress_callback("Processing results...", 0.90)
+
+        if result.returncode != 0:
+            logger.warning(f"Deep speaker ID CLI failed: {result.returncode}")
+            if result.stderr:
+                logger.debug(f"Claude CLI stderr: {result.stderr[:500]}")
+            return None
+
+        response = result.stdout.strip()
+        first_brace = response.find("{")
+        last_brace = response.rfind("}")
+        if first_brace == -1 or last_brace == -1 or last_brace <= first_brace:
+            logger.warning("Deep speaker ID response contains no valid JSON")
+            logger.debug(f"Raw response: {response[:500]}")
+            return None
+
+        json_str = response[first_brace:last_brace + 1]
+        parsed = json.loads(json_str)
+
+        if progress_callback:
+            progress_callback("Complete", 1.0)
+
+        return parsed
+
+    except json.JSONDecodeError as e:
+        logger.warning(f"Deep speaker ID returned invalid JSON: {e}")
+        return None
+    except FileNotFoundError:
+        logger.warning("Claude CLI not found - deep speaker ID skipped")
+        return None
+    except subprocess.TimeoutExpired:
+        logger.warning("Deep speaker ID timed out (180s)")
+        return None
+    except Exception as e:
+        logger.warning(f"Deep speaker ID failed: {e}")
+        return None
+
+
 def build_manual_stub(json_path: str, reason: str = "Enter name manually") -> dict | None:
     """Build a stub identification result with empty names for manual entry.
 
