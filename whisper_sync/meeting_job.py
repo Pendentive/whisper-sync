@@ -140,23 +140,51 @@ class MeetingJob:
         self.llm_ok = self.app._is_claude_cli_available()
 
     def step_speaker_id(self):
-        """Identify and confirm speakers via Claude CLI + tkinter dialog."""
-        from .speakers import identify_speakers, write_speaker_map, update_config, get_config_path
+        """Identify and confirm speakers via Claude CLI + tkinter dialog.
 
-        if not self.llm_ok:
-            logger.info("Claude CLI not available, speaker identification skipped")
-            return
+        If Claude times out or fails, still shows the dialog with empty names
+        so the user can manually enter speaker names.
+        """
+        from .speakers import identify_speakers, write_speaker_map, update_config, get_config_path, build_manual_stub
 
-        try:
-            cfg_path = get_config_path()
-            json_path = self.transcript_result.get(
-                "json_path", str(self.meeting_dir / "transcript.json")
-            )
-            id_result = identify_speakers(json_path, cfg_path, self.folder_name)
-            if id_result and id_result.get("speaker_map"):
+        json_path = self.transcript_result.get(
+            "json_path", str(self.meeting_dir / "transcript.json")
+        )
+
+        id_result = None
+        if self.llm_ok:
+            try:
+                cfg_path = get_config_path()
+                id_result = identify_speakers(json_path, cfg_path, self.folder_name)
+            except Exception as e:
+                logger.warning("Speaker identification failed (non-fatal): %s", e)
+
+        if not id_result or not id_result.get("speaker_map"):
+            # Tailor reasoning and notification based on cause
+            if self.llm_ok:
+                reason = "Auto-identification failed - enter name manually"
+                toast_title = "Speaker ID Failed"
+                toast_body = "Automatic speaker identification failed; enter names manually in the dialog."
+            else:
+                reason = "Auto-identification unavailable (Claude CLI not available) - enter name manually"
+                toast_title = "Speaker ID Unavailable"
+                toast_body = "Speaker identification requires Claude CLI, which is not available. Enter speaker names manually in the dialog."
+
+            id_result = build_manual_stub(json_path, reason)
+            if id_result:
+                try:
+                    from .notifications import notify
+                    notify(toast_title, toast_body)
+                except Exception:
+                    pass
+                logger.warning("Speaker ID not applied, showing manual entry dialog")
+
+        if id_result and id_result.get("speaker_map"):
+            try:
                 confirmed_map = self.app._ask_speaker_confirmation(id_result)
                 if confirmed_map:
                     write_speaker_map(json_path, confirmed_map)
+                    cfg_path = get_config_path()
                     update_config(
                         cfg_path, confirmed_map, id_result.get("config_updates")
                     )
@@ -164,10 +192,10 @@ class MeetingJob:
                     self.speakers_confirmed = confirmed_map
                 else:
                     logger.info("Speaker identification skipped by user")
-            else:
-                logger.info("No speakers identified from transcript")
-        except Exception as e:
-            logger.warning("Speaker identification failed (non-fatal): %s", e)
+            except Exception as e:
+                logger.warning("Speaker confirmation dialog failed: %s", e)
+        else:
+            logger.info("No speakers found in transcript")
 
     def step_flatten(self):
         """Flatten transcript JSON to readable text."""

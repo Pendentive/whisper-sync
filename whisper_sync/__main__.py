@@ -839,6 +839,79 @@ class WhisperSync:
             threading.Thread(target=_transcribe, daemon=True).start()
         self._recovered_meeting_paths = []
 
+    def _recover_meeting_speakers(self, meeting_dir: Path):
+        """Re-enter the speaker ID flow for a past meeting."""
+        import json as _json
+        from .speakers import identify_speakers, write_speaker_map, update_config, get_config_path, build_manual_stub
+        from .flatten import flatten as flatten_transcript
+
+        json_path = meeting_dir / "transcript.json"
+        if not json_path.exists():
+            logger.warning(f"No transcript.json in {meeting_dir}")
+            return
+
+        def _run():
+            cfg_path = get_config_path()
+
+            # Try Claude identification first
+            id_result = None
+            if self._is_claude_cli_available():
+                try:
+                    id_result = identify_speakers(
+                        str(json_path), cfg_path, meeting_dir.name
+                    )
+                except Exception as e:
+                    logger.warning(f"Speaker ID failed for recovery: {e}")
+
+            # Fall back to manual stub
+            if not id_result or not id_result.get("speaker_map"):
+                id_result = build_manual_stub(str(json_path))
+                if not id_result:
+                    return
+
+            if not id_result or not id_result.get("speaker_map"):
+                logger.warning("No speakers to identify")
+                return
+
+            confirmed_map = self._ask_speaker_confirmation(id_result)
+            if not confirmed_map:
+                logger.info("Recovery: speaker identification skipped by user")
+                return
+
+            # Write speaker map
+            write_speaker_map(str(json_path), confirmed_map)
+            update_config(cfg_path, confirmed_map, id_result.get("config_updates"))
+            logger.info(f"Recovery: speakers confirmed for {meeting_dir.name}: {confirmed_map}")
+
+            # Re-flatten
+            try:
+                flatten_transcript(str(json_path))
+                logger.info(f"Recovery: re-flattened {meeting_dir.name}")
+            except Exception as e:
+                logger.warning(f"Recovery: flatten failed: {e}")
+
+            # Regenerate minutes with updated speaker names
+            readable_file = meeting_dir / "transcript-readable.txt"
+            minutes_file = meeting_dir / "minutes.md"
+            if readable_file.exists() and self._is_claude_cli_available():
+                try:
+                    from .notifications import notify
+                    notify(
+                        f"Speakers updated: {meeting_dir.name}",
+                        "Regenerating minutes with updated speaker names.",
+                    )
+                except Exception:
+                    pass
+                try:
+                    self._generate_minutes(meeting_dir, readable_file, minutes_file)
+                    logger.info(f"Recovery: minutes regenerated for {meeting_dir.name}")
+                except Exception as e:
+                    logger.warning(f"Recovery: minutes generation failed: {e}")
+
+            self._refresh_menu()
+
+        threading.Thread(target=_run, daemon=True).start()
+
     def _ask_recovery_name(self, wav_path: str, duration_str: str):
         """Show a dialog to name a recovered meeting. Returns name string or _ABORT."""
         result = [self._ABORT]
@@ -1864,6 +1937,56 @@ class WhisperSync:
         )
         return pystray.Menu(*items)
 
+    def _build_meetings_menu(self):
+        """Build the Meetings submenu showing recent meetings with speaker status."""
+        import json as _json
+
+        output_dir = self._output_dir()
+        meeting_folders = []
+
+        # Scan all week folders for meeting directories with transcript.json
+        for week_dir in sorted(output_dir.iterdir(), reverse=True):
+            if not week_dir.is_dir() or week_dir.name.startswith("."):
+                continue
+            for meeting_dir in sorted(week_dir.iterdir(), reverse=True):
+                if not meeting_dir.is_dir():
+                    continue
+                json_path = meeting_dir / "transcript.json"
+                if json_path.exists():
+                    # Check speaker_map status
+                    try:
+                        with open(json_path) as f:
+                            data = _json.load(f)
+                        smap = data.get("speaker_map", {})
+                        names = [str(v).strip() for v in smap.values() if str(v).strip()]
+                        if names:
+                            status = ", ".join(sorted(set(names)))
+                        else:
+                            status = "No speakers"
+                    except Exception:
+                        status = "Error"
+                    meeting_folders.append((meeting_dir, status))
+                    if len(meeting_folders) >= 10:
+                        break
+            if len(meeting_folders) >= 10:
+                break
+
+        if not meeting_folders:
+            return pystray.Menu(
+                pystray.MenuItem("No meetings found", None, enabled=False),
+            )
+
+        items = []
+        for meeting_dir, status in meeting_folders:
+            label = f"{meeting_dir.name}\t{status}"
+            items.append(
+                pystray.MenuItem(
+                    label,
+                    self._cb(self._recover_meeting_speakers, meeting_dir),
+                )
+            )
+        return pystray.Menu(*items)
+
     def _build_menu(self):
         devices = list_devices(api_filter=self._api_filter)
         dict_hk = self._fmt_hotkey(self.cfg["hotkeys"]["dictation_toggle"])
@@ -2103,6 +2226,7 @@ class WhisperSync:
         # Left-click fires the default menu item
         left_action = self.cfg.get("left_click", "meeting")
         return pystray.Menu(
+            pystray.MenuItem("Meetings", self._build_meetings_menu()),
             pystray.MenuItem("Recent Dictations", self._build_recent_dictations_menu()),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(f"Dictation\t{dict_hk}", lambda: self._on_left_click() if left_action == "dictation" else self.toggle_dictation(),

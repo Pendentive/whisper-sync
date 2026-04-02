@@ -55,6 +55,10 @@ The menu is rebuilt on every open via `_refresh_menu()`. Structure:
 
 ```
 ┌─────────────────────────────────────────┐
+│ Meetings ►                              │  → _build_meetings_menu()
+│   ├── 0401_Abhi-11       No speakers    │  → _recover_meeting_speakers(dir)
+│   ├── 0401_retro         Colby, Vinod   │  → _recover_meeting_speakers(dir)
+│   └── ...  (10 most recent)             │
 │ Dictation              Ctrl+Shift+Space │  → toggle_dictation()
 │ Meeting                Ctrl+Shift+M     │  → toggle_meeting()
 │ ─────────────────────────────────────── │
