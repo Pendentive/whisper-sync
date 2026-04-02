@@ -1414,7 +1414,9 @@ class WhisperSync:
 
             num_speakers = len(speaker_map)
             # Each speaker row ~44px + reasoning line ~22px + padding
-            height = min(180 + (num_speakers * 70), 700)
+            screen_h = root.winfo_screenheight()
+            max_h = min(700, int(screen_h * 0.8))
+            height = min(180 + (num_speakers * 70), max_h)
             root.geometry(f"500x{height}")
 
             # Header
