@@ -212,25 +212,57 @@ def deep_identify_speakers(
         return None
 
     # Format segments with timestamps
-    # If >500 segments, sample: first 50, last 50, evenly spaced middle
+    # Sample segments, preserving context around real pauses for boundary detection
     if len(segments) > 500:
-        first = segments[:50]
-        last = segments[-50:]
-        middle_count = 400
-        step = max(1, (len(segments) - 100) // middle_count)
-        middle = segments[50:-50:step][:middle_count]
-        sampled = first + middle + last
+        max_segments = 500
+        edge_count = 50
+        pause_threshold = 15.0
+        pause_window = 2
+
+        selected_indices = set(range(min(edge_count, len(segments))))
+        selected_indices.update(range(max(0, len(segments) - edge_count), len(segments)))
+
+        # Preserve contiguous context around real pauses
+        for i in range(1, len(segments)):
+            prev_end = segments[i - 1].get("end", segments[i - 1].get("start", 0))
+            curr_start = segments[i].get("start", 0)
+            if curr_start - prev_end > pause_threshold:
+                start_idx = max(edge_count, i - pause_window)
+                end_idx = min(len(segments) - edge_count, i + pause_window + 1)
+                selected_indices.update(range(start_idx, end_idx))
+
+        remaining_budget = max_segments - len(selected_indices)
+        if remaining_budget > 0:
+            middle_start = edge_count
+            middle_end = max(edge_count, len(segments) - edge_count)
+            available_middle = [
+                idx for idx in range(middle_start, middle_end)
+                if idx not in selected_indices
+            ]
+            if available_middle:
+                step = max(1, len(available_middle) // remaining_budget)
+                selected_indices.update(available_middle[::step][:remaining_budget])
+
+        sampled = [(idx, segments[idx]) for idx in sorted(selected_indices)]
         logger.info(f"Deep ID: sampled {len(sampled)} of {len(segments)} segments")
     else:
-        sampled = segments
+        sampled = list(enumerate(segments))
 
     seg_text = ""
-    for s in sampled:
+    for idx, s in sampled:
         speaker = s.get("speaker", "UNKNOWN")
         text = s.get("text", "").strip()
         start = s.get("start", 0)
         mins, secs = int(start // 60), int(start % 60)
-        seg_text += f"[{mins:02d}:{secs:02d}] {speaker}: {text}\n"
+
+        gap_note = ""
+        if idx > 0:
+            prev_end = segments[idx - 1].get("end", segments[idx - 1].get("start", 0))
+            gap_before = start - prev_end
+            if gap_before > 15:
+                gap_note = f" [gap={gap_before:.0f}s]"
+
+        seg_text += f"[{mins:02d}:{secs:02d}]{gap_note} {speaker}: {text}\n"
 
     # Load config
     config_text = ""

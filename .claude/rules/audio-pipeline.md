@@ -48,7 +48,7 @@ WhisperSync captures stereo audio: microphone on channel 0, system loopback (spe
 
 Two-tier system, both using sonnet:
 
-**Light mode** (automatic after every transcription): `distill_transcript()` in `speakers.py` pre-processes the full transcript into a compact per-speaker summary (first/last appearances, name callouts, longest segments). Sonnet reads this summary + the full readable transcript for boundary detection. Produces speaker_map + meeting_boundaries. ~20-40 lines of input regardless of meeting length.
+**Light mode** (automatic after every transcription): `distill_transcript()` in `speakers.py` pre-processes the full transcript into a compact per-speaker summary (first/last appearances, name callouts, longest segments). Sonnet reads this summary + the full readable transcript for boundary detection. Produces speaker_map + meeting_boundaries. Summary size is compact and bounded per speaker, so total input scales with speaker count rather than meeting length alone.
 
 **Deep mode** (manual via "Deep Identify" button in speaker confirmation dialog): Sends the full transcript with timestamps to sonnet for thorough analysis. Includes topic ownership tracking, timestamp evidence for every name callout, and meeting boundary detection. Progress bar shows analysis phases. More expensive but catches nuances light mode misses.
 

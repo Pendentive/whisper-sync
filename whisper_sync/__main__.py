@@ -1360,7 +1360,13 @@ class WhisperSync:
         return result[0]
 
     def _ask_speaker_confirmation(self, identification_result: dict) -> dict | None:
-        """Show speaker confirmation dialog. Returns confirmed speaker_map or None to skip."""
+        """Show speaker confirmation dialog.
+
+        Returns:
+            None: user skipped
+            dict: confirmed speaker_map (no boundaries detected)
+            tuple[dict, list]: (speaker_map, boundaries) when deep identify found meeting splits
+        """
         speaker_map = identification_result.get("speaker_map", {})
         confidence = identification_result.get("confidence", {})
         reasoning = identification_result.get("reasoning", {})
@@ -1626,7 +1632,20 @@ class WhisperSync:
                                     if new_name:
                                         var.set(new_name)
 
-                                bounds = deep_result.get("meeting_boundaries", [])
+                                raw_bounds = deep_result.get("meeting_boundaries", [])
+                                bounds = []
+                                if isinstance(raw_bounds, list):
+                                    for boundary in raw_bounds:
+                                        if not isinstance(boundary, dict):
+                                            continue
+                                        try:
+                                            split_secs = int(float(boundary.get("split_seconds", 0)))
+                                        except (TypeError, ValueError):
+                                            continue
+                                        normalized = dict(boundary)
+                                        normalized["split_seconds"] = split_secs
+                                        bounds.append(normalized)
+
                                 if bounds:
                                     _boundaries[0] = bounds
                                     pts = ", ".join(
@@ -1634,7 +1653,7 @@ class WhisperSync:
                                         for b in bounds
                                     )
                                     boundary_label.configure(
-                                        text=f"Detected {len(bounds) + 1} meetings. Split at {pts}?"
+                                        text=f"Detected {len(bounds) + 1} meetings (split at {pts}). Use Meetings menu to split."
                                     )
                                     boundary_frame.pack(fill="x", pady=(4, 0))
 

@@ -48,6 +48,7 @@ $pyFiles = @(
     "github_status.py",
     "speakers.py",
     "speaker_prompt.md",
+    "speaker_prompt_deep.md",
     "minutes_prompt.md",
     "feature_log.py",
     "feature_prompt.md",
