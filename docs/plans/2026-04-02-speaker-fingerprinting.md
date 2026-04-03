@@ -1,79 +1,38 @@
-"""Speaker identification and config management for WhisperSync.
+# Speaker Fingerprinting Pipeline - Implementation Plan
 
-Handles:
-- LLM-based speaker identification via claude -p
-- Writing speaker_map to transcript.json
-- Updating transcription-config.md with new speaker data
-"""
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-import json
-import re
-import subprocess
-from pathlib import Path
+**Goal:** Build a speaker fingerprinting system that extracts timing/vocabulary metrics from transcripts, uses Sonnet for matching with a 95% confidence gate, and auto-escalates to Opus for deep analysis with persistent profile updates.
 
-from .logger import logger
+**Architecture:** Python `compute_fingerprints()` extracts deterministic metrics from word-level timing data. Sonnet reads metrics + profiles for matching. If confidence < 95%, Opus reads full raw transcript for deep analysis, updates persistent profiles, and produces `analysis.md`. The "Deep Identify" button in the dialog triggers Opus directly.
 
+**Tech Stack:** Python (metrics extraction), Claude CLI (sonnet/opus), JSON (profiles), WhisperSync pipeline integration
 
-def distill_transcript(json_path: str) -> str:
-    """Distill full transcript into a compact per-speaker summary.
+**Scope note:** This plan covers Tasks 1-3 (core functions + one-meeting validation). App integration (confidence gate in meeting_job, Deep Identify button rewiring) is deferred until profiles are validated on real data.
 
-    Groups all segments by speaker, extracts representative samples
-    (first/last appearances, name callouts, longest segments) so that
-    every speaker is represented regardless of when they appear in the meeting.
-    Returns a formatted text block suitable for LLM consumption.
-    """
-    with open(json_path) as f:
-        data = json.load(f)
-    segments = data.get("segments", [])
-    if not segments:
-        return ""
+---
 
-    from collections import defaultdict
-    by_speaker: dict[str, list[dict]] = defaultdict(list)
-    for s in segments:
-        spk = s.get("speaker", "UNKNOWN")
-        by_speaker[spk].append(s)
+## File Structure
 
-    name_patterns = re.compile(
-        r"\b(?:hey|hi|thanks|thank you|okay|sorry|right)\s+([A-Z][a-z]+)\b"
-        r"|(?:^|\W)([A-Z][a-z]+),?\s+(?:can you|could you|do you|what do|please|are you)",
-        re.IGNORECASE,
-    )
+| File | Responsibility | Action |
+|------|---------------|--------|
+| `whisper_sync/speakers.py` | All speaker identification logic | Modify: add `compute_fingerprints()`, `opus_deep_identify()`, `load_profiles()`, `save_profiles()` |
+| `whisper_sync/speaker_prompt.md` | Sonnet light prompt | Modify: add fingerprint matching instructions |
+| `whisper_sync/speaker_prompt_deep.md` | Opus deep dive prompt | Rewrite: full raw transcript analysis with profile updates |
+| `.whispersync/speaker-profiles.json` | Persistent speaker profiles | Created at runtime by Opus |
 
-    lines = []
-    for spk in sorted(by_speaker.keys()):
-        segs = by_speaker[spk]
-        total_time = sum(s.get("end", 0) - s.get("start", 0) for s in segs)
-        lines.append(f"\n=== {spk} ({len(segs)} segments, ~{total_time / 60:.1f} min) ===")
+---
 
-        def _fmt(s):
-            start = s.get("start", 0)
-            m, sec = int(start // 60), int(start % 60)
-            return f"  [{m:02d}:{sec:02d}] {s.get('text', '').strip()}"
+### Task 1: Add compute_fingerprints() to speakers.py
 
-        lines.append("  -- First appearances:")
-        for s in segs[:5]:
-            lines.append(_fmt(s))
+**Files:**
+- Modify: `whisper_sync/speakers.py`
 
-        if len(segs) > 10:
-            lines.append("  -- Last appearances:")
-            for s in segs[-5:]:
-                lines.append(_fmt(s))
+- [ ] **Step 1: Add compute_fingerprints() function**
 
-        callouts = [s for s in segs if name_patterns.search(s.get("text", ""))]
-        if callouts:
-            lines.append("  -- Name callouts:")
-            for s in callouts[:5]:
-                lines.append(_fmt(s))
+Add this function after `distill_transcript()` and before `identify_speakers()` in `whisper_sync/speakers.py`:
 
-        longest = sorted(segs, key=lambda s: len(s.get("text", "")), reverse=True)[:3]
-        lines.append("  -- Richest content:")
-        for s in longest:
-            lines.append(_fmt(s))
-
-    return "\n".join(lines)
-
-
+```python
 def compute_fingerprints(json_path: str) -> dict:
     """Extract speaking pattern metrics from word-level transcript data.
 
@@ -91,6 +50,7 @@ def compute_fingerprints(json_path: str) -> dict:
 
     FILLERS = {"uh", "um", "like", "so", "yeah", "basically", "actually", "okay", "right", "you know"}
 
+    # Name callout pattern
     name_pattern = re.compile(
         r"\b(?:hey|hi|thanks|thank you|okay|sorry)\s+([A-Z][a-z]+)\b"
         r"|(?:^|\W)([A-Z][a-z]+),?\s+(?:can you|could you|do you|what do|please|are you)",
@@ -103,6 +63,7 @@ def compute_fingerprints(json_path: str) -> dict:
 
     profiles = {}
     for spk, segs in sorted(by_speaker.items()):
+        # Word-level metrics
         all_wps = []
         all_gaps = []
         all_scores = []
@@ -121,6 +82,7 @@ def compute_fingerprints(json_path: str) -> dict:
                 if duration > 0:
                     all_wps.append(len(timed_words) / duration)
 
+                # Inter-word gaps
                 for i in range(1, len(timed_words)):
                     gap = timed_words[i]["start"] - timed_words[i - 1]["end"]
                     if gap >= 0:
@@ -136,10 +98,12 @@ def compute_fingerprints(json_path: str) -> dict:
                     if word_text in FILLERS:
                         filler_counts[word_text] += 1
 
+        # Segment-level metrics
         seg_lengths = [len(seg.get("text", "").split()) for seg in segs]
         first_time = segs[0].get("start", 0)
         last_time = segs[-1].get("end", segs[-1].get("start", 0))
 
+        # Name callouts given (this speaker says a name)
         names_given = []
         for seg in segs:
             text = seg.get("text", "")
@@ -152,8 +116,10 @@ def compute_fingerprints(json_path: str) -> dict:
                         "context": text.strip()[:80],
                     })
 
+        # "sir" usage
         sir_count = sum(1 for w in all_words_lower if w == "sir")
 
+        # Top non-filler, non-stop words for vocab signals
         stop_words = {
             "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
             "of", "is", "it", "that", "this", "was", "be", "have", "has", "had",
@@ -202,8 +168,13 @@ def compute_fingerprints(json_path: str) -> dict:
         }
 
     return profiles
+```
 
+- [ ] **Step 2: Add profile load/save helpers**
 
+Add these two functions after `compute_fingerprints()`:
+
+```python
 def load_profiles() -> dict:
     """Load speaker profiles from .whispersync/speaker-profiles.json."""
     from .paths import get_data_dir
@@ -221,109 +192,150 @@ def save_profiles(profiles: dict) -> None:
     with open(path, "w") as f:
         json.dump(profiles, f, indent=2)
     logger.info(f"Speaker profiles saved: {list(profiles.keys())}")
+```
 
+- [ ] **Step 3: Verify syntax**
 
-def identify_speakers(
-    transcript_json_path: str,
-    config_path: str,
-    folder_name: str,
-) -> dict | None:
-    """Identify speakers via Claude CLI.
+Run: `./whisper-env/Scripts/python.exe -c "import py_compile; py_compile.compile('whisper_sync/speakers.py', doraise=True); print('OK')"`
 
-    Args:
-        transcript_json_path: Path to transcript.json
-        config_path: Path to transcription-config.md
-        folder_name: Meeting folder name (for pattern matching)
+Expected: `OK`
 
-    Returns:
-        Parsed JSON dict with speaker_map, confidence, reasoning, config_updates.
-        None if identification failed.
-    """
-    prompt_path = Path(__file__).parent / "speaker_prompt.md"
-    if not prompt_path.exists():
-        logger.warning(f"Speaker prompt not found: {prompt_path}")
-        return None
+- [ ] **Step 4: Quick smoke test on real data**
 
-    # Distill transcript into per-speaker summary
-    distilled = distill_transcript(transcript_json_path)
-    if not distilled:
-        return None
+Run: `./whisper-env/Scripts/python.exe -c "from whisper_sync.speakers import compute_fingerprints; import json; fp = compute_fingerprints('n:/Github/repos/icustomer/ic-product-mgmt/meetings/in-house/03-w5/0331_0619_Abhi-Sprint-Planning---other/transcript.json'); [print(f'{k}: {v[\"word_count\"]} words, WPS={v[\"wps\"][\"avg\"]}, fillers={v[\"filler_rate\"]}, sir={v[\"sir_count\"]}') for k,v in sorted(fp.items())]"`
 
-    # Load readable transcript for boundary detection
-    readable_path = Path(transcript_json_path).parent / "transcript-readable.txt"
-    readable_text = ""
-    if readable_path.exists():
-        readable_text = readable_path.read_text(encoding="utf-8")
+Expected: metrics for SPEAKER_00 through SPEAKER_08
 
-    # Load config
-    config_text = ""
-    config_file = Path(config_path)
-    if config_file.exists():
-        config_text = config_file.read_text(encoding="utf-8")
+- [ ] **Step 5: Commit**
 
-    # Load prompt template
-    prompt_template = prompt_path.read_text(encoding="utf-8")
+```bash
+git add whisper_sync/speakers.py
+git commit --author="Pendentive <pendentive.info@gmail.com>" -m "feat: add compute_fingerprints() and profile load/save (#114)"
+```
 
-    # Build full prompt
-    full_prompt = (
-        f"{prompt_template}\n\n"
-        f"---\n\n"
-        f"Meeting folder: {folder_name}\n\n"
-        f"Known speakers config:\n{config_text}\n\n"
-        f"Speaker summary (distilled from full transcript):\n{distilled}"
-    )
-    if readable_text:
-        full_prompt += f"\n\n---\n\nFull readable transcript (for boundary detection):\n{readable_text}"
+---
 
-    max_attempts = 2
-    timeout_s = 90
+### Task 2: Create Opus deep dive prompt
 
-    for attempt in range(max_attempts):
-        try:
-            result = subprocess.run(
-                ["claude", "-p", "--model", "sonnet"],
-                input=full_prompt,
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
-                cwd=str(Path(__file__).parent.parent.parent),
-            )
-            if result.returncode != 0:
-                logger.warning(f"Speaker identification CLI failed: {result.returncode}")
-                if result.stderr:
-                    logger.debug(f"Claude CLI stderr (truncated): {result.stderr[:500]}")
-                return None
+**Files:**
+- Rewrite: `whisper_sync/speaker_prompt_deep.md`
 
-            # Robust JSON extraction: find first { to last }
-            response = result.stdout.strip()
-            first_brace = response.find("{")
-            last_brace = response.rfind("}")
-            if first_brace == -1 or last_brace == -1 or last_brace <= first_brace:
-                logger.warning("Speaker identification response contains no valid JSON object")
-                logger.debug(f"Raw response: {response[:500]}")
-                return None
+- [ ] **Step 1: Replace speaker_prompt_deep.md**
 
-            json_str = response[first_brace:last_brace + 1]
-            return json.loads(json_str)
+Replace the entire contents of `whisper_sync/speaker_prompt_deep.md` with:
 
-        except json.JSONDecodeError as e:
-            logger.warning(f"Speaker identification returned invalid JSON: {e}")
-            logger.debug(f"Raw response: {result.stdout[:500]}")
-            return None
-        except FileNotFoundError:
-            logger.warning("Claude CLI not found - speaker identification skipped")
-            return None
-        except subprocess.TimeoutExpired:
-            if attempt < max_attempts - 1:
-                logger.warning(f"Speaker identification timed out ({timeout_s}s), retrying...")
-                continue
-            logger.warning(f"Speaker identification timed out after {max_attempts} attempts ({timeout_s}s each)")
-            return None
-        except Exception as e:
-            logger.warning(f"Speaker identification failed: {e}")
-            return None
+```markdown
+You are performing deep speaker analysis on a meeting transcript using Opus-level reasoning. You will receive:
+1. Pre-computed fingerprint metrics per SPEAKER_XX (speaking rate, filler patterns, vocabulary, timing)
+2. Existing speaker profiles from previous meetings (if any)
+3. A known speakers database with names and voice notes
+4. The FULL transcript with word-level timestamps
+5. The meeting folder name
 
+## Your job
 
+### Speaker Identification
+Match each SPEAKER_XX to a real person by comparing their fingerprint metrics against known profiles:
+- WPS (words per second): each person has a characteristic speaking pace
+- Filler patterns: distinctive filler word preferences ("basically" vs "uh" vs "sir")
+- Word confidence distribution: indicates enunciation clarity
+- Vocabulary signals: topic ownership (who talks about what)
+- Address patterns: "sir" usage, first names, formal vs informal
+- Name callouts: direct evidence ("Hey Dinesh", "Thanks Vinod")
+- Name references directed at a speaker: if others say a name and only one SPEAKER_XX responds, that name belongs to them
+
+IMPORTANT: Accent notes in the config are human-authored reference. You are analyzing TEXT, not audio. Do not use accent as an identification signal. Use timing patterns, vocabulary, and address style instead.
+
+### Meeting Boundary Detection
+Look for transitions between separate meetings:
+- Farewell exchanges followed by pauses (>15s gap) and new greetings
+- Speaker composition changes (someone leaves, someone new joins)
+- Topic resets unrelated to previous discussion
+
+### Meeting Analysis
+Provide observations about meeting dynamics:
+- Who led, who contributed, who was passive
+- Interruption patterns (overlapping timestamps indicate interruptions)
+- Tone and intent (productive, tense, brainstorming, status update)
+- Meeting type classification
+
+### Profile Updates
+Based on this meeting's data, suggest updates to speaker profiles:
+- Refined WPS averages (if this meeting's data differs from profile)
+- New vocabulary signals observed
+- Updated filler patterns
+- Any new behavioral observations
+
+Output ONLY valid JSON - no markdown fences, no explanation:
+
+{
+  "speaker_map": {
+    "SPEAKER_00": "Colby",
+    "SPEAKER_01": "Dinesh"
+  },
+  "confidence": {
+    "SPEAKER_00": 98,
+    "SPEAKER_01": 92
+  },
+  "reasoning": {
+    "SPEAKER_00": "WPS 3.9 matches Colby profile (3.9). Filler rate 2.8% matches (2.8%). Called 'Colby' at 02:15, 15:30. PM vocabulary (sprint, goal, ticket). Leads agenda.",
+    "SPEAKER_01": "Uses 'sir' 4x (unique pattern). WPS 2.7 matches Dinesh profile. Backend/API vocabulary. Called 'Dinesh' by SPEAKER_05 at 05:32."
+  },
+  "profile_updates": {
+    "colby": {
+      "wps_this_meeting": 3.9,
+      "new_vocab": ["oauth", "vercel"],
+      "notes": "Led sprint planning, assigned 8 action items"
+    },
+    "dinesh": {
+      "wps_this_meeting": 2.7,
+      "new_vocab": ["provider", "standalone"],
+      "notes": "Used 'sir' consistently when addressing leadership"
+    }
+  },
+  "meeting_boundaries": [
+    {
+      "split_seconds": 1815,
+      "evidence": "Goodbye exchange at 30:10-30:13. 29s gap. New greeting at 30:42."
+    }
+  ],
+  "analysis": {
+    "dynamics": "Colby led agenda. Abhi directed product decisions.",
+    "interruption_patterns": "Abhi interrupted 3x to redirect. Dinesh waited for explicit invitation.",
+    "tone": "Productive and collaborative.",
+    "meeting_type": "Sprint planning"
+  },
+  "config_updates": {
+    "new_voice_notes": {},
+    "new_speakers": [],
+    "flagged_notes": []
+  }
+}
+
+Confidence is 0-100 (not high/medium/low). 95+ means very confident. Below 80 means uncertain.
+
+If any field is empty, use the appropriate empty value: [] for arrays, {} for objects.
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add whisper_sync/speaker_prompt_deep.md
+git commit --author="Pendentive <pendentive.info@gmail.com>" -m "feat: rewrite deep prompt for Opus fingerprint analysis (#114)"
+```
+
+---
+
+### Task 3: Add opus_deep_identify() function
+
+**Files:**
+- Modify: `whisper_sync/speakers.py`
+
+- [ ] **Step 1: Replace deep_identify_speakers() with opus_deep_identify()**
+
+Find `deep_identify_speakers()` in `whisper_sync/speakers.py` (starts around line 178). Replace the ENTIRE function with:
+
+```python
 def opus_deep_identify(
     transcript_json_path: str,
     config_path: str,
@@ -370,6 +382,7 @@ def opus_deep_identify(
         return None
 
     # Format with timestamps - include all segments for Opus
+    # (Opus can handle larger context than Sonnet)
     seg_text = ""
     for i, s in enumerate(segments):
         speaker = s.get("speaker", "UNKNOWN")
@@ -419,7 +432,7 @@ def opus_deep_identify(
             input=full_prompt,
             capture_output=True,
             text=True,
-            timeout=600,
+            timeout=300,  # 5 min for Opus on large transcripts
             cwd=str(Path(__file__).parent.parent.parent),
         )
 
@@ -506,129 +519,96 @@ def _apply_profile_updates(profiles: dict, updates: dict, folder_name: str) -> N
             profile.setdefault("meetings_analyzed", []).append(folder_name)
 
         profile["last_updated"] = str(date.today())
+```
 
+- [ ] **Step 2: Verify syntax**
 
-def build_manual_stub(json_path: str, reason: str = "Enter name manually") -> dict | None:
-    """Build a stub identification result with empty names for manual entry.
+Run: `./whisper-env/Scripts/python.exe -c "import py_compile; py_compile.compile('whisper_sync/speakers.py', doraise=True); print('OK')"`
 
-    Reads unique SPEAKER_XX labels from transcript.json and returns a dict
-    compatible with _ask_speaker_confirmation().
-    """
-    import json as _json
-    try:
-        with open(json_path) as f:
-            data = _json.load(f)
-        unique_speakers = sorted(set(
-            s.get("speaker", "UNKNOWN")
-            for s in data.get("segments", [])
-            if s.get("speaker")
-        ))
-        if not unique_speakers:
-            return None
-        return {
-            "speaker_map": {spk: "" for spk in unique_speakers},
-            "confidence": {spk: "low" for spk in unique_speakers},
-            "reasoning": {spk: reason for spk in unique_speakers},
-        }
-    except Exception as e:
-        logger.warning(f"Could not build manual speaker stub: {e}")
-        return None
+Expected: `OK`
 
+- [ ] **Step 3: Commit**
 
-def write_speaker_map(transcript_json_path: str, speaker_map: dict) -> None:
-    """Write speaker_map to transcript.json (additive — does not modify segments)."""
-    with open(transcript_json_path) as f:
-        data = json.load(f)
+```bash
+git add whisper_sync/speakers.py
+git commit --author="Pendentive <pendentive.info@gmail.com>" -m "feat: add opus_deep_identify() with profile updates (#114)"
+```
 
-    data["speaker_map"] = speaker_map
+---
 
-    with open(transcript_json_path, "w") as f:
-        json.dump(data, f, indent=2)
+### Task 4: Validate on one meeting
 
-    logger.info(f"Speaker map written: {speaker_map}")
+This task runs the full pipeline manually on `0331_0619_Abhi-Sprint-Planning---other` to validate fingerprints and Opus analysis.
 
+**Files:**
+- No code changes. Uses the functions built in Tasks 1-3.
 
-def update_config(config_path: str, speaker_map: dict, config_updates: dict | None) -> None:
-    """Update transcription-config.md with new speaker data.
+- [ ] **Step 1: Run compute_fingerprints and review output**
 
-    - Adds new speakers to Known Speakers table
-    - Appends new voice notes to existing speakers
-    - Does NOT modify Meeting-to-Speaker Map (requires more context — future enhancement)
-    """
-    config_file = Path(config_path)
-    if not config_file.exists():
-        logger.warning(f"Config file not found: {config_path}")
-        return
+```bash
+cd n:/Github/repos/pendentive/whisper-sync
+./whisper-env/Scripts/python.exe -c "
+from whisper_sync.speakers import compute_fingerprints
+import json
 
-    if not config_updates:
-        return
+fp = compute_fingerprints('n:/Github/repos/icustomer/ic-product-mgmt/meetings/in-house/03-w5/0331_0619_Abhi-Sprint-Planning---other/transcript.json')
+print(json.dumps(fp, indent=2, default=str))
+"
+```
 
-    text = config_file.read_text(encoding="utf-8")
-    lines = text.splitlines()
-    modified = False
+Review: Are the metrics sensible? Do different speakers have distinguishable fingerprints?
 
-    # --- Add new speakers ---
-    new_speakers = config_updates.get("new_speakers", [])
-    if new_speakers:
-        # Find the end of the Known Speakers table
-        table_end = None
-        in_table = False
-        for i, line in enumerate(lines):
-            if "| ID | Name | Voice Notes |" in line:
-                in_table = True
-                continue
-            if in_table and line.startswith("|"):
-                table_end = i
-                continue
-            if in_table and not line.startswith("|"):
-                break
+- [ ] **Step 2: Run Opus deep identify**
 
-        if table_end is not None:
-            for speaker in new_speakers:
-                # Handle both dict and string formats from LLM
-                if isinstance(speaker, str):
-                    name = speaker
-                    notes = ""
-                else:
-                    name = speaker.get("name", "Unknown")
-                    notes = speaker.get("notes", "")
-                speaker_id = name.lower().replace(" ", "-")
-                # Check if already exists by scanning ID column only
-                already_exists = False
-                for line in lines:
-                    if line.startswith("|") and f"| {speaker_id} |" in line.lower():
-                        already_exists = True
-                        break
-                if not already_exists:
-                    new_row = f"| {speaker_id} | {name} | {notes} |"
-                    lines.insert(table_end + 1, new_row)
-                    table_end += 1
-                    modified = True
-                    logger.info(f"Added new speaker to config: {name}")
+```bash
+cd n:/Github/repos/pendentive/whisper-sync
+./whisper-env/Scripts/python.exe -c "
+from whisper_sync.speakers import opus_deep_identify, get_config_path
+import json
 
-    # --- Update voice notes for existing speakers ---
-    new_notes = config_updates.get("new_voice_notes", {})
-    if new_notes:
-        for speaker_id, note in new_notes.items():
-            for i, line in enumerate(lines):
-                if line.startswith("|") and f"| {speaker_id} |" in line.lower():
-                    # Append note to existing voice notes column
-                    parts = line.split("|")
-                    if len(parts) >= 4:
-                        existing_notes = parts[3].strip()
-                        if note.lower() not in existing_notes.lower():
-                            parts[3] = f" {existing_notes}; {note} "
-                            lines[i] = "|".join(parts)
-                            modified = True
-                            logger.info(f"Updated voice notes for {speaker_id}: {note}")
-                    break
+result = opus_deep_identify(
+    'n:/Github/repos/icustomer/ic-product-mgmt/meetings/in-house/03-w5/0331_0619_Abhi-Sprint-Planning---other/transcript.json',
+    get_config_path(),
+    '0331_0619_Abhi-Sprint-Planning---other',
+)
+if result:
+    print(json.dumps(result, indent=2, default=str))
+else:
+    print('FAILED')
+"
+```
 
-    if modified:
-        config_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        logger.info("transcription-config.md updated")
+Review:
+- Are speaker identifications correct?
+- Are confidence scores reasonable?
+- Were profiles created in `.whispersync/speaker-profiles.json`?
+- Does the analysis section capture useful meeting dynamics?
 
+- [ ] **Step 3: Review generated profiles**
 
-def get_config_path() -> str:
-    """Return the path to transcription-config.md."""
-    from .paths import get_speaker_config_path
-    return str(get_speaker_config_path())
+```bash
+cat "n:/Github/repos/icustomer/ic-product-mgmt/meetings/in-house/.whispersync/speaker-profiles.json"
+```
+
+Review: Do the profiles look like realistic fingerprints? Are WPS, filler rates, and vocab signals distinguishing?
+
+- [ ] **Step 4: If validation passes, write speaker_map, flatten, and regenerate minutes**
+
+Only after reviewing the Opus output:
+
+```bash
+cd n:/Github/repos/pendentive/whisper-sync
+./whisper-env/Scripts/python.exe -c "
+from whisper_sync.speakers import write_speaker_map
+# Use the speaker_map from the Opus result (copy from Step 2 output)
+write_speaker_map(
+    'n:/Github/repos/icustomer/ic-product-mgmt/meetings/in-house/03-w5/0331_0619_Abhi-Sprint-Planning---other/transcript.json',
+    {'SPEAKER_00': 'Colby', 'SPEAKER_05': 'Abhi', 'SPEAKER_08': 'Vinod', 'SPEAKER_07': 'Dinesh', 'SPEAKER_06': 'Keerthana', 'SPEAKER_01': 'Unknown', 'SPEAKER_02': 'Unknown', 'SPEAKER_03': 'Unknown', 'SPEAKER_04': 'Unknown'}
+)
+from whisper_sync.flatten import flatten
+flatten('n:/Github/repos/icustomer/ic-product-mgmt/meetings/in-house/03-w5/0331_0619_Abhi-Sprint-Planning---other/transcript.json')
+print('Done')
+"
+```
+
+Then regenerate minutes via Claude CLI (same approach as existing `_generate_minutes`).
