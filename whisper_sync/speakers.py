@@ -419,7 +419,7 @@ def opus_deep_identify(
             input=full_prompt,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=600,
             cwd=str(Path(__file__).parent.parent.parent),
         )
 
