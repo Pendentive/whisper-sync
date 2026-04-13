@@ -48,6 +48,8 @@ class TranscriptionWorker:
         self._ready = False
         self._request_counter = 0
         self._lock = threading.Lock()
+        self.gpu_name: str | None = None
+        self.device: str | None = None
 
     def _next_id(self) -> int:
         self._request_counter += 1
@@ -78,6 +80,8 @@ class TranscriptionWorker:
                 msg = self._response_q.get(timeout=1.0)
                 if msg.get("type") == "ready":
                     self._ready = True
+                    self.gpu_name = msg.get("gpu_name")
+                    self.device = msg.get("device")
                     return True
                 if msg.get("type") == "error":
                     logger.error(f"Worker startup error: {msg.get('message')}")
@@ -219,6 +223,8 @@ class TranscriptionWorker:
                 # Handle "ready" messages that arrive while waiting for a response
                 if msg.get("type") == "ready":
                     self._ready = True
+                    self.gpu_name = msg.get("gpu_name")
+                    self.device = msg.get("device")
                 # Stale message from a previous request — discard
             except queue.Empty:
                 continue

@@ -140,7 +140,13 @@ def worker_main(request_queue, response_queue, cfg_snapshot: dict,
             })
             return
 
-    response_queue.put({"type": "ready"})
+    # Report GPU name so the main process can display it without importing torch
+    from .transcribe import get_gpu_name, _get_device
+    response_queue.put({
+        "type": "ready",
+        "gpu_name": get_gpu_name(),
+        "device": _get_device(),
+    })
 
     def _check_priority():
         """Check for priority requests. Returns True if shutdown requested."""
