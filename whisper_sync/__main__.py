@@ -1677,13 +1677,9 @@ class WhisperSync:
 
         # Device (compute) selection
         current_device = self.cfg.get("device", "auto")
-        # Build per-option labels with GPU name for auto
+        # Build per-option labels with GPU name from worker (avoids torch import in main process)
         device_options = []
-        try:
-            from .transcribe import get_gpu_name
-            gpu_name = get_gpu_name()
-        except Exception:
-            gpu_name = None
+        gpu_name = self.worker.gpu_name if self.worker else None
         auto_suffix = f"\t{gpu_name}" if gpu_name else "\tCPU -- no GPU detected"
         device_options.append(("auto", f"Auto{auto_suffix}"))
         gpu_suffix = f"\t{gpu_name}" if gpu_name else "\tnot available"
@@ -2256,24 +2252,15 @@ class WhisperSync:
     def _get_device_label(self) -> str:
         """Return display string for current device setting."""
         device = self.cfg.get("device", "auto")
+        gpu = self.worker.gpu_name if self.worker else None
         if device == "auto":
-            try:
-                from .transcribe import get_gpu_name
-                gpu = get_gpu_name()
-                if gpu:
-                    return f"Auto ({gpu})"
-                return "Auto (CPU -- no GPU detected)"
-            except Exception:
-                return "Auto"
+            if gpu:
+                return f"Auto ({gpu})"
+            return "Auto (CPU -- no GPU detected)"
         elif device in ("gpu", "cuda"):
-            try:
-                from .transcribe import get_gpu_name
-                gpu = get_gpu_name()
-                if gpu:
-                    return f"GPU ({gpu})"
-                return "GPU (not available)"
-            except Exception:
-                return "GPU"
+            if gpu:
+                return f"GPU ({gpu})"
+            return "GPU (not available)"
         else:
             return "CPU"
 
