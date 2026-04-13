@@ -170,7 +170,7 @@ Ok "Dependencies installed"
 
 if ($cudaVersion) {
     Step 5 "Installing PyTorch ($cudaVersion)..."
-    RunWithSpinner "Installing PyTorch" $VenvPip "install torch torchaudio --index-url https://download.pytorch.org/whl/$cudaVersion --force-reinstall --no-deps -qq"
+    RunWithSpinner "Installing PyTorch" $VenvPip "install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/$cudaVersion --force-reinstall --no-deps -qq"
     Ok "PyTorch GPU installed"
 } else {
     Step 5 "Skipping GPU PyTorch (no GPU detected)"
