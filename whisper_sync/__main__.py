@@ -1884,7 +1884,22 @@ class WhisperSync:
             self._emit_error_safe(str(e))
         except FileNotFoundError as e:
             logger.error(str(e))
-            self._show_error_popup("Hugging Face Token Missing", str(e))
+            err_str = str(e).lower()
+            if "winerror 2" in err_str or "ffmpeg" in err_str:
+                import shutil
+                if not shutil.which("ffmpeg"):
+                    self._show_error_popup(
+                        "FFmpeg Not Found",
+                        "FFmpeg is required for audio processing but is not installed or not on PATH.\n\n"
+                        "Install with: winget install Gyan.FFmpeg\n"
+                        "Then restart WhisperSync.",
+                    )
+                else:
+                    self._show_error_popup("File Not Found", str(e))
+            elif "hf" in err_str or "huggingface" in err_str or "token" in err_str:
+                self._show_error_popup("Hugging Face Token Missing", str(e))
+            else:
+                self._show_error_popup("File Not Found", str(e))
             self._emit_error_safe(str(e))
         except Exception as e:
             logger.error(f"Meeting transcription error: {e}")
