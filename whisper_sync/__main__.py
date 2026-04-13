@@ -3382,6 +3382,8 @@ class WhisperSync:
         def _wait_worker():
             if self.worker.wait_ready(timeout=120):
                 logger.info(f"Dictation model '{dictation_model}' ready (worker pid={self.worker._process.pid})")
+                # Refresh menu now that worker has reported GPU name
+                self._refresh_menu()
                 # Recover any crashed dictations/features found at startup
                 for wav_path in self._recovered_dictation_paths:
                     if Path(wav_path).name.startswith("feature_"):
