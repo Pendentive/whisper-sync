@@ -208,10 +208,14 @@ class TranscriptionWorker:
         self._process = None
         self._ready = False
 
-    def _wait_response(self, request_id: int, timeout: float) -> dict:
-        """Wait for a response matching request_id. Raises on crash or timeout."""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+    def _wait_response(self, request_id: int, timeout: float = None) -> dict:
+        """Wait for a response matching request_id.
+
+        Blocks until the worker sends a matching response or dies. There is no
+        hard timeout - the only termination condition is worker death. The
+        ``timeout`` parameter is accepted for backward compatibility but ignored.
+        """
+        while True:
             if not self.is_alive():
                 raise WorkerCrashedError(
                     f"Worker process died (exit code {self._exitcode()})"
@@ -225,10 +229,9 @@ class TranscriptionWorker:
                     self._ready = True
                     self.gpu_name = msg.get("gpu_name")
                     self.device = msg.get("device")
-                # Stale message from a previous request — discard
+                # Stale message from a previous request - discard
             except queue.Empty:
                 continue
-        raise TimeoutError(f"Transcription timed out after {timeout}s")
 
     def _exitcode(self) -> int | None:
         return self._process.exitcode if self._process else None

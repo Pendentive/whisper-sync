@@ -2121,6 +2121,10 @@ class WhisperSync:
         meeting_folders = []
 
         # Scan all week folders for meeting directories with transcript.json
+        # NOTE: Do NOT parse transcript.json here. Reading JSON files during
+        # menu builds (which run on background threads) triggers fatal access
+        # violations when Python's garbage collector runs concurrently.
+        # Instead, check for transcript-readable.txt as a lightweight indicator.
         for week_dir in sorted(output_dir.iterdir(), reverse=True):
             if not week_dir.is_dir() or week_dir.name.startswith("."):
                 continue
@@ -2129,18 +2133,14 @@ class WhisperSync:
                     continue
                 json_path = meeting_dir / "transcript.json"
                 if json_path.exists():
-                    # Check speaker_map status
-                    try:
-                        with open(json_path) as f:
-                            data = _json.load(f)
-                        smap = data.get("speaker_map", {})
-                        names = [str(v).strip() for v in smap.values() if str(v).strip()]
-                        if names:
-                            status = ", ".join(sorted(set(names)))
-                        else:
-                            status = "No speakers"
-                    except Exception:
-                        status = "Error"
+                    readable = meeting_dir / "transcript-readable.txt"
+                    minutes = meeting_dir / "minutes.md"
+                    if minutes.exists():
+                        status = "Complete"
+                    elif readable.exists():
+                        status = "Transcribed"
+                    else:
+                        status = "Processing"
                     meeting_folders.append((meeting_dir, status))
                     if len(meeting_folders) >= 10:
                         break
