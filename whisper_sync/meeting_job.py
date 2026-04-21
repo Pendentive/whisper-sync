@@ -82,7 +82,9 @@ class MeetingJob:
         """Execute the next step. Returns True if more steps remain.
 
         Logs the step name at INFO before and after execution so a silent
-        death mid-step can be pinpointed from the log.
+        death mid-step can be pinpointed from the log. The step index is
+        advanced only on successful completion so a failed step is not
+        silently 'consumed' if any caller inspects/retries the job.
         """
         import time as _time
         if self.is_complete:
@@ -101,14 +103,12 @@ class MeetingJob:
                 step_name, job_label, elapsed,
             )
             raise
-        else:
-            elapsed = _time.monotonic() - started
-            logger.info(
-                "step done: %s job=%s elapsed=%.2fs",
-                step_name, job_label, elapsed,
-            )
-        finally:
-            self._current_step += 1
+        elapsed = _time.monotonic() - started
+        logger.info(
+            "step done: %s job=%s elapsed=%.2fs",
+            step_name, job_label, elapsed,
+        )
+        self._current_step += 1
         return not self.is_complete
 
     # ------------------------------------------------------------------
@@ -320,10 +320,24 @@ class MeetingJob:
             logger.warning("Index rebuild failed (non-fatal): %s", e)
 
     def step_notify(self):
-        """Show toast notification with meeting stats and Open Folder button."""
-        from .notifications import notify
+        """Show toast notification with meeting stats and Open Folder button.
+
+        Honors the user's ``toast_events`` config (tray menu toggle). This
+        toast is dispatched directly rather than through the TOAST_REGISTRY
+        template so it can attach an Open Folder button, but it still must
+        respect the configurable toggle — otherwise disabling 'Meeting
+        Complete' in the tray menu has no effect.
+        """
+        from .notifications import notify, DEFAULT_TOAST_EVENTS
 
         try:
+            cfg = getattr(self.app, "cfg", {}) or {}
+            enabled = cfg.get("toast_events", DEFAULT_TOAST_EVENTS)
+            if not isinstance(enabled, (list, tuple, set)):
+                enabled = DEFAULT_TOAST_EVENTS
+            if "meeting_completed" not in enabled:
+                return
+
             words = self.transcript_result.get("word_count", 0) if self.transcript_result else 0
             speakers = self.transcript_result.get("num_speakers", 0) if self.transcript_result else 0
             body = f"{words} words, {speakers} speakers"

@@ -129,9 +129,11 @@ def install(logger: logging.Logger) -> None:
             name = signal.Signals(signum).name
         except ValueError:
             name = str(signum)
+        # Only record the reason here. The atexit hook emits the single
+        # exit banner during normal interpreter shutdown — doing logging
+        # inside a signal handler is both risky (async-signal-safety) and
+        # duplicates the atexit banner once sys.exit() runs.
         record_exit_reason("signal", {"signal": name})
-        log_exit_banner(logger)
-        # Restore default handler and re-raise so the OS reports the signal.
         try:
             signal.signal(signum, signal.SIG_DFL)
         except Exception:

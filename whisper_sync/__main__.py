@@ -1226,9 +1226,22 @@ class WhisperSync:
             self._center_window(root)
             root.protocol("WM_DELETE_WINDOW", _abort)
             root.mainloop()
-            event.set()
 
-        t = threading.Thread(target=_show_dialog, daemon=True)
+        def _show_dialog_guarded():
+            # Guarantees event.set() + a well-defined outcome even if
+            # _show_dialog raises before root.mainloop() returns. Without
+            # this, _save_and_enqueue's event.wait() blocks forever and the
+            # tray stays stuck in mode="saving" with the recording neither
+            # saved nor discarded.
+            try:
+                _show_dialog()
+            except Exception:
+                logger.exception("dialog crashed: _ask_meeting_name")
+                result[0] = self._ABORT
+            finally:
+                event.set()
+
+        t = threading.Thread(target=_show_dialog_guarded, daemon=True)
         t.start()
         # Previously this used a 60s timeout that silently returned _ABORT
         # while the dialog was still on screen — discarding the recording

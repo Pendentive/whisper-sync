@@ -55,6 +55,29 @@ class HeartbeatTests(unittest.TestCase):
         output = self.stream.getvalue()
         self.assertIn("uptime=", output)
 
+    def test_uptime_computed_even_when_started_at_is_zero(self):
+        # Regression for review #5: a 0.0 value for _started_at must not
+        # be treated as falsey (which `or` would do) and force uptime
+        # to collapse to ~0 forever.
+        from whisper_sync.heartbeat import Heartbeat
+        hb = Heartbeat(self.logger, interval=0.05)
+        hb.start()
+        # Overwrite after start() so the worker thread sees 0.0
+        hb._started_at = 0.0
+        time.sleep(0.12)
+        hb.stop(timeout=0.5)
+        import re
+        matches = re.findall(r"uptime=([\d.]+)s", self.stream.getvalue())
+        self.assertTrue(matches, "no heartbeat uptime lines captured")
+        # With _started_at=0.0 and monotonic typically >>0, uptime should
+        # be a large positive number. If `or` were still in place, the
+        # fallback would use time.monotonic() and uptime would collapse
+        # to ~0s each tick. With `is None`, it stays anchored at 0.
+        self.assertGreater(
+            float(matches[-1]), 1.0,
+            "uptime collapsed to ~0s — the `or` fallback is back",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

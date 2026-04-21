@@ -43,7 +43,8 @@ class Heartbeat:
     def _run(self) -> None:
         pid = os.getpid()
         while not self._stop.wait(self._interval):
-            uptime = time.monotonic() - (self._started_at or time.monotonic())
+            start = self._started_at if self._started_at is not None else time.monotonic()
+            uptime = time.monotonic() - start
             self._logger.debug(
                 "heartbeat pid=%d uptime=%.1fs threads=%d",
                 pid,
