@@ -74,6 +74,155 @@ def distill_transcript(json_path: str) -> str:
     return "\n".join(lines)
 
 
+def compute_fingerprints(json_path: str) -> dict:
+    """Extract speaking pattern metrics from word-level transcript data.
+
+    Pure Python, deterministic, no LLM call. Returns a dict keyed by
+    SPEAKER_XX with timing, vocabulary, and behavioral metrics.
+    """
+    from collections import Counter, defaultdict
+    import statistics
+
+    with open(json_path) as f:
+        data = json.load(f)
+    segments = data.get("segments", [])
+    if not segments:
+        return {}
+
+    FILLERS = {"uh", "um", "like", "so", "yeah", "basically", "actually", "okay", "right", "you know"}
+
+    name_pattern = re.compile(
+        r"\b(?:hey|hi|thanks|thank you|okay|sorry)\s+([A-Z][a-z]+)\b"
+        r"|(?:^|\W)([A-Z][a-z]+),?\s+(?:can you|could you|do you|what do|please|are you)",
+        re.IGNORECASE,
+    )
+
+    by_speaker: dict[str, list[dict]] = defaultdict(list)
+    for s in segments:
+        by_speaker[s.get("speaker", "UNKNOWN")].append(s)
+
+    profiles = {}
+    for spk, segs in sorted(by_speaker.items()):
+        all_wps = []
+        all_gaps = []
+        all_scores = []
+        word_count = 0
+        filler_counts = Counter()
+        all_words_lower = []
+
+        for seg in segs:
+            words = seg.get("words", [])
+            timed_words = [w for w in words if "start" in w and "end" in w]
+
+            if len(timed_words) >= 2:
+                seg_start = timed_words[0]["start"]
+                seg_end = timed_words[-1]["end"]
+                duration = seg_end - seg_start
+                if duration > 0:
+                    all_wps.append(len(timed_words) / duration)
+
+                for i in range(1, len(timed_words)):
+                    gap = timed_words[i]["start"] - timed_words[i - 1]["end"]
+                    if gap >= 0:
+                        all_gaps.append(gap)
+
+            for w in words:
+                if "score" in w:
+                    all_scores.append(w["score"])
+                word_text = w.get("word", "").strip().lower().strip(".,!?;:'\"")
+                if word_text:
+                    all_words_lower.append(word_text)
+                    word_count += 1
+                    if word_text in FILLERS:
+                        filler_counts[word_text] += 1
+
+        seg_lengths = [len(seg.get("text", "").split()) for seg in segs]
+        first_time = segs[0].get("start", 0)
+        last_time = segs[-1].get("end", segs[-1].get("start", 0))
+
+        names_given = []
+        for seg in segs:
+            text = seg.get("text", "")
+            for m in name_pattern.finditer(text):
+                name = m.group(1) or m.group(2)
+                if name:
+                    names_given.append({
+                        "name": name,
+                        "time": seg.get("start", 0),
+                        "context": text.strip()[:80],
+                    })
+
+        sir_count = sum(1 for w in all_words_lower if w == "sir")
+
+        stop_words = {
+            "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+            "of", "is", "it", "that", "this", "was", "be", "have", "has", "had",
+            "do", "does", "did", "will", "would", "could", "should", "can", "may",
+            "not", "no", "with", "from", "by", "as", "are", "were", "been", "being",
+            "i", "you", "we", "they", "he", "she", "me", "my", "your", "our",
+            "what", "which", "who", "how", "when", "where", "why", "if", "then",
+            "about", "just", "also", "more", "some", "there", "here", "all", "one",
+            "two", "three", "its", "than", "other", "into", "out", "up", "down",
+            "very", "much", "well", "going", "know", "think", "want", "need",
+            "get", "got", "go", "come", "make", "take", "see", "say", "said",
+            "thing", "things",
+        }
+        vocab = Counter(w for w in all_words_lower if w not in stop_words and w not in FILLERS and len(w) > 2)
+        total_fillers = sum(filler_counts.values())
+
+        profiles[spk] = {
+            "segment_count": len(segs),
+            "word_count": word_count,
+            "wps": {
+                "avg": round(statistics.mean(all_wps), 2) if all_wps else 0,
+                "median": round(statistics.median(all_wps), 2) if all_wps else 0,
+                "std": round(statistics.stdev(all_wps), 2) if len(all_wps) > 1 else 0,
+            },
+            "inter_word_gap_ms": {
+                "avg": round(statistics.mean(all_gaps) * 1000, 0) if all_gaps else 0,
+                "median": round(statistics.median(all_gaps) * 1000, 0) if all_gaps else 0,
+            },
+            "word_confidence": {
+                "avg": round(statistics.mean(all_scores), 3) if all_scores else 0,
+                "median": round(statistics.median(all_scores), 3) if all_scores else 0,
+                "low_rate": round(sum(1 for s in all_scores if s < 0.5) / len(all_scores), 3) if all_scores else 0,
+            },
+            "filler_rate": round(total_fillers / word_count, 3) if word_count > 0 else 0,
+            "top_fillers": [w for w, _ in filler_counts.most_common(5)],
+            "sir_count": sir_count,
+            "words_per_segment": {
+                "avg": round(statistics.mean(seg_lengths), 1) if seg_lengths else 0,
+                "median": round(statistics.median(seg_lengths), 0) if seg_lengths else 0,
+                "max": max(seg_lengths) if seg_lengths else 0,
+            },
+            "first_appears_s": round(first_time, 1),
+            "last_appears_s": round(last_time, 1),
+            "names_given": names_given[:10],
+            "top_vocab": [w for w, _ in vocab.most_common(15)],
+        }
+
+    return profiles
+
+
+def load_profiles() -> dict:
+    """Load speaker profiles from .whispersync/speaker-profiles.json."""
+    from .paths import get_data_dir
+    path = get_data_dir() / "speaker-profiles.json"
+    if path.exists():
+        with open(path) as f:
+            return json.load(f)
+    return {}
+
+
+def save_profiles(profiles: dict) -> None:
+    """Save speaker profiles to .whispersync/speaker-profiles.json."""
+    from .paths import get_data_dir
+    path = get_data_dir() / "speaker-profiles.json"
+    with open(path, "w") as f:
+        json.dump(profiles, f, indent=2)
+    logger.info(f"Speaker profiles saved: {list(profiles.keys())}")
+
+
 def identify_speakers(
     transcript_json_path: str,
     config_path: str,
@@ -175,16 +324,16 @@ def identify_speakers(
             return None
 
 
-def deep_identify_speakers(
+def opus_deep_identify(
     transcript_json_path: str,
     config_path: str,
     folder_name: str,
     progress_callback=None,
 ) -> dict | None:
-    """Deep speaker identification using full transcript with timestamps.
+    """Opus deep speaker identification with fingerprint analysis.
 
-    Sends the complete transcript to sonnet for thorough analysis including
-    meeting boundary detection. More expensive but more accurate than light mode.
+    Sends pre-computed metrics + full transcript to Opus for thorough
+    analysis. Updates speaker profiles. Produces meeting analysis data.
 
     Args:
         transcript_json_path: Path to transcript.json
@@ -194,7 +343,7 @@ def deep_identify_speakers(
 
     Returns:
         Parsed JSON dict with speaker_map, confidence, reasoning,
-        meeting_boundaries, config_updates. None if failed.
+        profile_updates, meeting_boundaries, analysis. None if failed.
     """
     prompt_path = Path(__file__).parent / "speaker_prompt_deep.md"
     if not prompt_path.exists():
@@ -202,95 +351,75 @@ def deep_identify_speakers(
         return None
 
     if progress_callback:
-        progress_callback("Preparing transcript...", 0.1)
+        progress_callback("Computing fingerprints...", 0.05)
 
-    # Load full transcript
+    # Step 1: Compute fingerprints (Python, instant)
+    fingerprints = compute_fingerprints(transcript_json_path)
+    if not fingerprints:
+        return None
+    fingerprint_text = json.dumps(fingerprints, indent=2)
+
+    if progress_callback:
+        progress_callback("Preparing transcript...", 0.10)
+
+    # Step 2: Load full transcript segments
     with open(transcript_json_path) as f:
         data = json.load(f)
     segments = data.get("segments", [])
     if not segments:
         return None
 
-    # Format segments with timestamps
-    # Sample segments, preserving context around real pauses for boundary detection
-    if len(segments) > 500:
-        max_segments = 500
-        edge_count = 50
-        pause_threshold = 15.0
-        pause_window = 2
-
-        selected_indices = set(range(min(edge_count, len(segments))))
-        selected_indices.update(range(max(0, len(segments) - edge_count), len(segments)))
-
-        # Preserve contiguous context around real pauses
-        for i in range(1, len(segments)):
-            prev_end = segments[i - 1].get("end", segments[i - 1].get("start", 0))
-            curr_start = segments[i].get("start", 0)
-            if curr_start - prev_end > pause_threshold:
-                start_idx = max(edge_count, i - pause_window)
-                end_idx = min(len(segments) - edge_count, i + pause_window + 1)
-                selected_indices.update(range(start_idx, end_idx))
-
-        remaining_budget = max_segments - len(selected_indices)
-        if remaining_budget > 0:
-            middle_start = edge_count
-            middle_end = max(edge_count, len(segments) - edge_count)
-            available_middle = [
-                idx for idx in range(middle_start, middle_end)
-                if idx not in selected_indices
-            ]
-            if available_middle:
-                step = max(1, len(available_middle) // remaining_budget)
-                selected_indices.update(available_middle[::step][:remaining_budget])
-
-        sampled = [(idx, segments[idx]) for idx in sorted(selected_indices)]
-        logger.info(f"Deep ID: sampled {len(sampled)} of {len(segments)} segments")
-    else:
-        sampled = list(enumerate(segments))
-
+    # Format with timestamps - include all segments for Opus
     seg_text = ""
-    for idx, s in sampled:
+    for i, s in enumerate(segments):
         speaker = s.get("speaker", "UNKNOWN")
         text = s.get("text", "").strip()
         start = s.get("start", 0)
         mins, secs = int(start // 60), int(start % 60)
 
         gap_note = ""
-        if idx > 0:
-            prev_end = segments[idx - 1].get("end", segments[idx - 1].get("start", 0))
-            gap_before = start - prev_end
-            if gap_before > 15:
-                gap_note = f" [gap={gap_before:.0f}s]"
+        if i > 0:
+            prev_end = segments[i - 1].get("end", segments[i - 1].get("start", 0))
+            gap = start - prev_end
+            if gap > 5:
+                gap_note = f" [gap={gap:.0f}s]"
 
         seg_text += f"[{mins:02d}:{secs:02d}]{gap_note} {speaker}: {text}\n"
 
-    # Load config
+    # Step 3: Load existing profiles
+    existing_profiles = load_profiles()
+    profiles_text = json.dumps(existing_profiles, indent=2) if existing_profiles else "No existing profiles."
+
+    # Step 4: Load config
     config_text = ""
     config_file = Path(config_path)
     if config_file.exists():
         config_text = config_file.read_text(encoding="utf-8")
 
-    # Load deep prompt
+    # Step 5: Build prompt
     prompt_template = prompt_path.read_text(encoding="utf-8")
 
     full_prompt = (
         f"{prompt_template}\n\n"
         f"---\n\n"
         f"Meeting folder: {folder_name}\n\n"
+        f"Pre-computed fingerprint metrics:\n{fingerprint_text}\n\n"
+        f"Existing speaker profiles:\n{profiles_text}\n\n"
         f"Known speakers config:\n{config_text}\n\n"
-        f"Full transcript ({len(sampled)} segments):\n{seg_text}"
+        f"Full transcript ({len(segments)} segments):\n{seg_text}"
     )
 
     if progress_callback:
-        progress_callback("Analyzing with Sonnet...", 0.25)
+        progress_callback("Analyzing with Opus...", 0.20)
 
+    # Step 6: Call Opus
     try:
         result = subprocess.run(
-            ["claude", "-p", "--model", "sonnet"],
+            ["claude", "-p", "--model", "opus"],
             input=full_prompt,
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=600,
             cwd=str(Path(__file__).parent.parent.parent),
         )
 
@@ -298,7 +427,7 @@ def deep_identify_speakers(
             progress_callback("Processing results...", 0.90)
 
         if result.returncode != 0:
-            logger.warning(f"Deep speaker ID CLI failed: {result.returncode}")
+            logger.warning(f"Opus deep ID CLI failed: {result.returncode}")
             if result.stderr:
                 logger.debug(f"Claude CLI stderr: {result.stderr[:500]}")
             return None
@@ -307,12 +436,17 @@ def deep_identify_speakers(
         first_brace = response.find("{")
         last_brace = response.rfind("}")
         if first_brace == -1 or last_brace == -1 or last_brace <= first_brace:
-            logger.warning("Deep speaker ID response contains no valid JSON")
+            logger.warning("Opus deep ID response contains no valid JSON")
             logger.debug(f"Raw response: {response[:500]}")
             return None
 
         json_str = response[first_brace:last_brace + 1]
         parsed = json.loads(json_str)
+
+        # Step 7: Apply profile updates
+        if parsed.get("profile_updates"):
+            _apply_profile_updates(existing_profiles, parsed["profile_updates"], folder_name)
+            save_profiles(existing_profiles)
 
         if progress_callback:
             progress_callback("Complete", 1.0)
@@ -320,17 +454,58 @@ def deep_identify_speakers(
         return parsed
 
     except json.JSONDecodeError as e:
-        logger.warning(f"Deep speaker ID returned invalid JSON: {e}")
+        logger.warning(f"Opus deep ID returned invalid JSON: {e}")
         return None
     except FileNotFoundError:
-        logger.warning("Claude CLI not found - deep speaker ID skipped")
+        logger.warning("Claude CLI not found - Opus deep ID skipped")
         return None
     except subprocess.TimeoutExpired:
-        logger.warning("Deep speaker ID timed out (180s)")
+        logger.warning("Opus deep ID timed out (300s)")
         return None
     except Exception as e:
-        logger.warning(f"Deep speaker ID failed: {e}")
+        logger.warning(f"Opus deep ID failed: {e}")
         return None
+
+
+def _apply_profile_updates(profiles: dict, updates: dict, folder_name: str) -> None:
+    """Merge Opus profile updates into existing profiles."""
+    from datetime import date
+
+    for name, update in updates.items():
+        name_lower = name.lower()
+        if name_lower not in profiles:
+            profiles[name_lower] = {
+                "meetings_analyzed": [],
+                "last_updated": str(date.today()),
+            }
+
+        profile = profiles[name_lower]
+
+        # Update WPS (running average)
+        if "wps_this_meeting" in update:
+            new_wps = update["wps_this_meeting"]
+            if "wps" in profile:
+                old_avg = profile["wps"].get("avg", new_wps)
+                n = len(profile.get("meetings_analyzed", []))
+                profile["wps"]["avg"] = round((old_avg * n + new_wps) / (n + 1), 2)
+            else:
+                profile["wps"] = {"avg": round(new_wps, 2)}
+
+        # Append new vocab (deduplicated)
+        if "new_vocab" in update:
+            existing = set(profile.get("vocab_signals", []))
+            existing.update(update["new_vocab"])
+            profile["vocab_signals"] = sorted(existing)
+
+        # Update notes
+        if "notes" in update:
+            profile["speaking_style"] = update["notes"]
+
+        # Track meeting
+        if folder_name not in profile.get("meetings_analyzed", []):
+            profile.setdefault("meetings_analyzed", []).append(folder_name)
+
+        profile["last_updated"] = str(date.today())
 
 
 def build_manual_stub(json_path: str, reason: str = "Enter name manually") -> dict | None:
