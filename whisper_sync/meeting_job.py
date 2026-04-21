@@ -79,12 +79,36 @@ class MeetingJob:
         return self._steps[self._current_step].__name__
 
     def execute_next_step(self):
-        """Execute the next step. Returns True if more steps remain."""
+        """Execute the next step. Returns True if more steps remain.
+
+        Logs the step name at INFO before and after execution so a silent
+        death mid-step can be pinpointed from the log.
+        """
+        import time as _time
         if self.is_complete:
             return False
         step = self._steps[self._current_step]
-        step()
-        self._current_step += 1
+        step_name = step.__name__
+        job_label = self.name or "meeting"
+        logger.info("step start: %s job=%s", step_name, job_label)
+        started = _time.monotonic()
+        try:
+            step()
+        except Exception:
+            elapsed = _time.monotonic() - started
+            logger.error(
+                "step failed: %s job=%s elapsed=%.2fs",
+                step_name, job_label, elapsed,
+            )
+            raise
+        else:
+            elapsed = _time.monotonic() - started
+            logger.info(
+                "step done: %s job=%s elapsed=%.2fs",
+                step_name, job_label, elapsed,
+            )
+        finally:
+            self._current_step += 1
         return not self.is_complete
 
     # ------------------------------------------------------------------

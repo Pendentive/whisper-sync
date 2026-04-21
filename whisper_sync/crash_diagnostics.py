@@ -52,9 +52,13 @@ def install_excepthook(log: logging.Logger) -> None:
 def check_previous_crash(log: logging.Logger) -> str | None:
     """Query Windows Event Log for recent python.exe crashes.
 
-    Looks for 'Application Error' events from the last 24 hours
-    matching our venv's python.exe path. Returns a summary string
-    if found, or None.
+    Looks for 'Application Error' events from the last 24 hours matching
+    our venv's python.exe path. Now pulls a larger slice of each event
+    message (the first ~12 lines) so the faulting module name and offset
+    are surfaced — without that detail we can't tell a Tcl/Tk crash from
+    a torch-DLL crash from a Python runtime crash.
+
+    Returns the summary string if any events were found, else None.
     """
     python_exe = sys.executable.replace("\\", "\\\\")
 
@@ -66,8 +70,11 @@ def check_previous_crash(log: logging.Logger) -> str | None:
         "} -ErrorAction SilentlyContinue "
         f"| Where-Object {{ $_.Message -like '*{python_exe}*' }} "
         "| Select-Object -First 3 "
-        "| ForEach-Object { $_.TimeCreated.ToString('HH:mm:ss') + ' | ' + "
-        "($_.Message -split \"`n\" | Select-Object -First 2) -join ' ' }"
+        "| ForEach-Object { "
+        "  $ts = $_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss'); "
+        "  $msg = ($_.Message -split \"`n\" | Select-Object -First 12) -join ' | '; "
+        "  \"$ts -- $msg\" "
+        "}"
     )
 
     try:
@@ -79,9 +86,26 @@ def check_previous_crash(log: logging.Logger) -> str | None:
         )
         output = result.stdout.strip()
         if output:
-            log.warning(f"Previous crash detected in Windows Event Log:\n{output}")
+            log.warning("Previous crash(es) in Windows Event Log:\n%s", output)
+            faulting_module = _extract_faulting_module(output)
+            if faulting_module:
+                log.warning(
+                    "Previous crash faulting module: %s (common culprits: "
+                    "tcl86t.dll/tk86t.dll=Tk GUI thread issue; "
+                    "torch_*.dll=CUDA/DLL load; python3*.dll=Python runtime)",
+                    faulting_module,
+                )
             return output
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
         log.debug(f"Event Log check skipped: {e}")
 
+    return None
+
+
+def _extract_faulting_module(message: str) -> str | None:
+    """Pull 'Faulting module name: X.dll' out of an Application Error message."""
+    import re
+    match = re.search(r"Faulting module name:\s*([^\s,|]+)", message, re.IGNORECASE)
+    if match:
+        return match.group(1)
     return None

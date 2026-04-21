@@ -247,16 +247,33 @@ class AudioRecorder:
             self._speaker_writer = None
 
     def discard_streaming(self):
-        """Close writers and delete the temp files."""
+        """Close writers and delete the temp files.
+
+        Logs each discarded channel (path + size) so the forensic record
+        shows exactly which recording was dropped when the user aborts
+        the meeting-name dialog or the app decides to discard.
+        """
+        import logging as _logging
+        _log = _logging.getLogger("whisper_sync.capture")
         from .streaming_wav import cleanup_temp_files
         parent = None
-        for w in (self._mic_writer, self._speaker_writer):
-            if w is not None:
-                parent = w.path.parent
-                try:
-                    w.close()
-                except Exception:
-                    pass
+        for label, w in (("mic", self._mic_writer), ("speaker", self._speaker_writer)):
+            if w is None:
+                continue
+            parent = w.path.parent
+            size = 0
+            try:
+                size = w.path.stat().st_size if w.path.exists() else 0
+            except OSError:
+                pass
+            _log.info(
+                "discard_streaming: channel=%s path=%s size=%d",
+                label, w.path, size,
+            )
+            try:
+                w.close()
+            except Exception:
+                _log.debug("discard_streaming: close failed for %s", label, exc_info=True)
         self._mic_writer = None
         self._speaker_writer = None
         if parent is not None:
