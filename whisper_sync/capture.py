@@ -51,9 +51,68 @@ def get_default_devices(api_filter: str | None = "WASAPI") -> dict:
     return {"input": defaults[0], "output": defaults[1]}
 
 
+def _open_input_stream(*, device, target_samplerate: int, channels: int,
+                       dtype: str, callback):
+    """Open ``sd.InputStream`` with a fallback ladder for format rejections.
+
+    On Windows, ``device=None`` often resolves to an MME device that rejects
+    ``float32 @ 16000 Hz`` with ``PaErrorCode -9999 / MME error 32`` even
+    though the hardware supports the format under WASAPI. Without this
+    retry, a single failed open propagates out of the hotkey handler and
+    kills the keyboard dispatcher thread, bricking all further hotkeys.
+
+    Retry ladder:
+      1. Caller-requested ``target_samplerate`` at ``dtype``.
+      2. Device's native ``default_samplerate`` at the same ``dtype``.
+      3. Device's native ``default_samplerate`` at ``int16``.
+
+    Returns ``(stream, effective_samplerate)``. Callers are responsible
+    for resampling downstream audio when the effective rate differs from
+    the target.
+
+    Reraises the last ``PortAudioError`` if every attempt fails.
+    """
+    attempts = [(target_samplerate, dtype)]
+    try:
+        native = int(sd.query_devices(device)["default_samplerate"])
+    except Exception:
+        native = None
+    if native and native != target_samplerate:
+        attempts.append((native, dtype))
+        attempts.append((native, "int16"))
+    else:
+        attempts.append((target_samplerate, "int16"))
+
+    last_err = None
+    for rate, this_dtype in attempts:
+        try:
+            stream = sd.InputStream(
+                samplerate=rate,
+                channels=channels,
+                dtype=this_dtype,
+                device=device,
+                callback=callback,
+            )
+            if rate != target_samplerate or this_dtype != dtype:
+                logger.warning(
+                    "mic: requested %d Hz %s rejected; using %d Hz %s",
+                    target_samplerate, dtype, rate, this_dtype,
+                )
+            return stream, rate
+        except sd.PortAudioError as e:
+            last_err = e
+            logger.debug("mic open attempt failed (rate=%s dtype=%s): %s", rate, this_dtype, e)
+    assert last_err is not None
+    raise last_err
+
+
 class AudioRecorder:
     def __init__(self, sample_rate: int = 16000):
         self.sample_rate = sample_rate
+        # Effective mic samplerate for the current session. Usually matches
+        # ``sample_rate``, but ``_open_input_stream`` may fall back to the
+        # device's native rate if the requested rate is rejected.
+        self._mic_effective_rate: int = sample_rate
         self._mic_data: list[np.ndarray] = []
         self._speaker_data: list[np.ndarray] = []
         self._mic_stream = None
@@ -71,10 +130,27 @@ class AudioRecorder:
     def _mic_callback(self, indata, frames, time_info, status):
         try:
             if self._recording:
+                # If the device rejected our target rate and _open_input_stream
+                # fell back to the device's native rate, resample to the
+                # recorder's canonical sample_rate so downstream consumers
+                # (accumulator, WAV writer, transcription) see 16 kHz data.
+                if self._mic_effective_rate != self.sample_rate:
+                    from math import gcd
+                    from scipy.signal import resample_poly
+                    up = self.sample_rate // gcd(self.sample_rate, self._mic_effective_rate)
+                    down = self._mic_effective_rate // gcd(self.sample_rate, self._mic_effective_rate)
+                    raw = indata.astype("float32", copy=False) if indata.dtype != np.float32 else indata
+                    resampled = resample_poly(raw.flatten(), up, down).reshape(-1, 1)
+                    data = resampled.astype("float32", copy=False)
+                elif indata.dtype != np.float32:
+                    # int16 fallback dtype: convert to float32 in [-1, 1].
+                    data = (indata.astype("float32") / 32768.0)
+                else:
+                    data = indata
                 if not self._disk_only:
-                    self._mic_data.append(indata.copy())
+                    self._mic_data.append(data.copy() if data is indata else data)
                 if self._mic_writer is not None:
-                    self._mic_writer.write(indata)
+                    self._mic_writer.write(data)
         except Exception as e:
             # Never let exceptions escape into PortAudio's C thread
             if not getattr(self, "_mic_error_logged", False):
@@ -100,11 +176,11 @@ class AudioRecorder:
             self._speaker_error_logged = False
             self._recording = True
 
-            self._mic_stream = sd.InputStream(
-                samplerate=self.sample_rate,
+            self._mic_stream, self._mic_effective_rate = _open_input_stream(
+                device=mic_device,
+                target_samplerate=self.sample_rate,
                 channels=1,
                 dtype="float32",
-                device=mic_device,
                 callback=self._mic_callback,
             )
             self._mic_stream.start()

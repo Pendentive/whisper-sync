@@ -391,8 +391,18 @@ class WhisperSync:
         self.state.emit(DICTATION_STARTED, mode="dictation")
         mic = self.cfg.get("mic_device")
         if self.cfg.get("use_system_devices", True):
-            mic = None
-        self.recorder.start(mic_device=mic)
+            # Explicitly use the WASAPI default instead of falling through
+            # to sd.default.device[0], which on Windows resolves to an MME
+            # device and often rejects float32 @ 16 kHz with MME error 32.
+            mic = get_default_devices().get("input")
+        try:
+            self.recorder.start(mic_device=mic)
+        except Exception as e:
+            logger.error("Failed to start mic for dictation: %s", e, exc_info=True)
+            notify("Dictation unavailable", f"Mic could not be opened: {e}")
+            self._feature_suggest_active = False
+            self.state.emit(IDLE, mode=None)
+            return
         # Stream to disk for crash recovery -- skip when incognito (RAM only)
         if self.cfg.get("incognito", False):
             self._dictation_wav_path = None
@@ -402,7 +412,11 @@ class WhisperSync:
             ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             prefix = "feature_" if self._feature_suggest_active else ""
             self._dictation_wav_path = log_dir / f"{prefix}{ts}.wav"
-            self.recorder.start_streaming(self._dictation_wav_path)
+            try:
+                self.recorder.start_streaming(self._dictation_wav_path)
+            except Exception as e:
+                logger.warning("Dictation disk streaming disabled: %s", e)
+                self._dictation_wav_path = None
 
     def _stop_dictation(self):
         audio = self.recorder.stop()
@@ -551,8 +565,15 @@ class WhisperSync:
         self._overlay_recorder = AudioRecorder(sample_rate=self.cfg["sample_rate"])
         mic = self.cfg.get("mic_device")
         if self.cfg.get("use_system_devices", True):
-            mic = None
-        self._overlay_recorder.start(mic_device=mic)
+            mic = get_default_devices().get("input")
+        try:
+            self._overlay_recorder.start(mic_device=mic)
+        except Exception as e:
+            logger.error("Failed to start overlay dictation mic: %s", e, exc_info=True)
+            notify("Dictation unavailable", f"Mic could not be opened: {e}")
+            self._overlay_recorder = None
+            self._feature_suggest_active = False
+            return
         logger.info("Dictation during meeting: recording started", extra={"secondary": True})
         self.state.emit(DICTATION_STARTED, dictation_overlay=True)
 
@@ -1033,20 +1054,30 @@ class WhisperSync:
         mic = self.cfg.get("mic_device")
         speaker = self.cfg.get("speaker_device")
         if self.cfg.get("use_system_devices", True):
-            mic = None
             defaults = get_default_devices()
+            # Route mic through WASAPI too (not sd.default.device[0]'s MME)
+            mic = defaults.get("input")
             speaker = defaults["output"]
         elif speaker is None:
             defaults = get_default_devices()
             speaker = defaults["output"]
-        self.recorder.start(mic_device=mic, speaker_device=speaker)
+        try:
+            self.recorder.start(mic_device=mic, speaker_device=speaker)
+        except Exception as e:
+            logger.error("Failed to start mic for meeting: %s", e, exc_info=True)
+            notify("Meeting unavailable", f"Mic could not be opened: {e}")
+            self.state.emit(IDLE, mode=None)
+            return
         if self.recorder.speaker_loopback_active:
             logger.info("Meeting started: mic + speaker loopback")
         else:
             logger.warning("Meeting started: mic only (speaker loopback unavailable)")
         temp = self._meeting_temp_dir()
         mic_temp = temp / "mic-temp.wav"
-        self.recorder.start_streaming(mic_temp, disk_only=True)
+        try:
+            self.recorder.start_streaming(mic_temp, disk_only=True)
+        except Exception as e:
+            logger.warning("Meeting streaming disabled: %s", e)
         if self.cfg.get("always_available_dictation", True):
             self._backup.preload()
 
@@ -3417,21 +3448,38 @@ class WhisperSync:
         # Bootstrap: ensure base models are cached, prompt for large ones
         bootstrap_models(self.cfg, on_large_model=self._prompt_large_download)
 
+        def _guarded(fn, label):
+            # Any exception that escapes a hotkey callback propagates to
+            # keyboard._generic.process and kills the single dispatcher
+            # thread, bricking ALL hotkeys for the rest of the session.
+            # This wrapper is the last line of defense; individual handlers
+            # also try/except their own failures.
+            def _inner():
+                try:
+                    return fn()
+                except Exception as e:
+                    logger.error("%s hotkey handler crashed: %s", label, e, exc_info=True)
+                    try:
+                        notify("WhisperSync error", f"{label}: {e}")
+                    except Exception:
+                        pass
+            return _inner
+
         keyboard.add_hotkey(
             self.cfg["hotkeys"]["dictation_toggle"],
-            self.toggle_dictation,
+            _guarded(self.toggle_dictation, "dictation"),
             suppress=False,
         )
         keyboard.add_hotkey(
             self.cfg["hotkeys"]["meeting_toggle"],
-            self.toggle_meeting,
+            _guarded(self.toggle_meeting, "meeting"),
             suppress=False,
         )
         feature_hk = self.cfg["hotkeys"].get("feature_suggest", "ctrl+shift+alt+f")
         if feature_hk:
             keyboard.add_hotkey(
                 feature_hk,
-                self.toggle_feature_suggest,
+                _guarded(self.toggle_feature_suggest, "feature-suggest"),
                 suppress=False,
             )
 
