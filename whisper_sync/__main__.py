@@ -1423,23 +1423,60 @@ class WhisperSync:
             conf_colors = {"high": green, "medium": yellow, "low": red}
 
             num_speakers = len(speaker_map)
-            # Each speaker row ~44px + reasoning line ~22px + padding
             screen_h = root.winfo_screenheight()
             max_h = min(700, int(screen_h * 0.8))
+            # Size to content, capped at max_h. When content exceeds the cap,
+            # the rows scroll via the Canvas+Scrollbar below and the bottom
+            # button bar stays visible because it is packed with side=BOTTOM
+            # BEFORE the scrollable middle.
             height = min(180 + (num_speakers * 70), max_h)
             root.geometry(f"500x{height}")
+            root.minsize(500, 260)  # guarantee the buttons are always reachable
 
-            # Header
+            # Header: packed FIRST (top)
             header = tk.Frame(root, bg=bg)
-            header.pack(fill="x", padx=24, pady=(14, 0))
+            header.pack(side=tk.TOP, fill="x", padx=24, pady=(14, 0))
             tk.Label(header, text="\U0001f3a4", font=("Segoe UI", 13), bg=bg).pack(side=tk.LEFT)
             tk.Label(header, text="  Identify Speakers", font=("Segoe UI", 11, "bold"),
                      bg=bg, fg=fg).pack(side=tk.LEFT)
 
-            # Speaker rows
+            # Bottom panel: progress + boundary notice + buttons. Packed
+            # NOW (before the scrollable middle) with side=BOTTOM so Tk's
+            # pack algorithm reserves space for them regardless of how
+            # many speakers are added; the Confirm button never slides off.
+            bottom_panel = tk.Frame(root, bg=bg)
+            bottom_panel.pack(side=tk.BOTTOM, fill="x")
+
+            # Scrollable middle: Canvas + Scrollbar + inner Frame. Tk has
+            # no native scrollable frame; this is the standard idiom.
+            middle = tk.Frame(root, bg=bg)
+            middle.pack(side=tk.TOP, fill="both", expand=True, padx=0, pady=(12, 0))
+            _scroll_canvas = tk.Canvas(middle, bg=bg, highlightthickness=0)
+            _scroll_canvas.pack(side=tk.LEFT, fill="both", expand=True)
+            _scrollbar = tk.Scrollbar(middle, orient="vertical", command=_scroll_canvas.yview)
+            _scrollbar.pack(side=tk.RIGHT, fill="y")
+            _scroll_canvas.configure(yscrollcommand=_scrollbar.set)
+
             dropdowns = {}
-            rows_frame = tk.Frame(root, bg=bg)
-            rows_frame.pack(fill="x", padx=24, pady=(12, 0))
+            rows_frame = tk.Frame(_scroll_canvas, bg=bg)
+            _rows_window = _scroll_canvas.create_window((0, 0), window=rows_frame, anchor="nw")
+
+            def _on_rows_configure(_event):
+                _scroll_canvas.configure(scrollregion=_scroll_canvas.bbox("all"))
+            rows_frame.bind("<Configure>", _on_rows_configure)
+
+            def _on_canvas_configure(event):
+                # Match the inner frame width so content wraps correctly.
+                _scroll_canvas.itemconfigure(_rows_window, width=event.width)
+            _scroll_canvas.bind("<Configure>", _on_canvas_configure)
+
+            def _on_mousewheel(event):
+                # Windows: event.delta is a multiple of 120 per notch.
+                _scroll_canvas.yview_scroll(int(-event.delta / 120), "units")
+            # Bind only while the pointer is over the canvas so child
+            # widgets (dropdowns) keep their own wheel events.
+            _scroll_canvas.bind("<Enter>", lambda _e: _scroll_canvas.bind_all("<MouseWheel>", _on_mousewheel))
+            _scroll_canvas.bind("<Leave>", lambda _e: _scroll_canvas.unbind_all("<MouseWheel>"))
 
             for spk_id, name in speaker_map.items():
                 row = tk.Frame(rows_frame, bg=card_bg, highlightbackground="#313244", highlightthickness=1)
@@ -1564,8 +1601,9 @@ class WhisperSync:
                     tk.Label(reason_frame, text=f"\u2514 {reason}", font=("Segoe UI", 7, "italic"),
                              bg=bg, fg=fg_dim, anchor="w", wraplength=400).pack(anchor="w")
 
-            # Progress bar (hidden initially)
-            progress_frame = tk.Frame(root, bg=bg)
+            # Progress bar (hidden initially): lives in bottom_panel so it
+            # sits above the button row and never disappears behind scroll.
+            progress_frame = tk.Frame(bottom_panel, bg=bg)
             progress_frame.pack(fill="x", padx=24, pady=(4, 0))
             progress_canvas = tk.Canvas(progress_frame, height=4, bg="#313244",
                                          highlightthickness=0)
@@ -1576,8 +1614,8 @@ class WhisperSync:
             progress_label.pack(anchor="w")
             progress_frame.pack_forget()  # hidden until needed
 
-            # Boundary notice (hidden initially)
-            boundary_frame = tk.Frame(root, bg=bg)
+            # Boundary notice (hidden initially): also in bottom_panel.
+            boundary_frame = tk.Frame(bottom_panel, bg=bg)
             boundary_label = tk.Label(boundary_frame, text="", font=("Segoe UI", 8),
                                        bg=bg, fg=yellow, wraplength=440)
             boundary_label.pack(side=tk.LEFT, padx=(24, 8))
@@ -1585,8 +1623,8 @@ class WhisperSync:
 
             _boundaries = [None]
 
-            # Buttons
-            btn_frame = tk.Frame(root, bg=bg)
+            # Buttons: permanently visible at the bottom.
+            btn_frame = tk.Frame(bottom_panel, bg=bg)
             btn_frame.pack(pady=(14, 12))
 
             _closing = [False]
