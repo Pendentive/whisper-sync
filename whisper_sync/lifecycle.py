@@ -25,8 +25,19 @@ import sys
 import threading
 from pathlib import Path
 
+# Canonical exit-reason strings. Greppable log markers; callers should
+# import these constants rather than pass raw strings so the labels stay
+# stable across the codebase.
+REASON_UNKNOWN = "unknown"
+REASON_USER_QUIT = "user_quit"
+REASON_USER_RESTART = "user_restart"
+REASON_ATEXIT = "atexit"
+REASON_SIGNAL = "signal"
+REASON_EXCEPTION = "exception"
+REASON_SYSTEM_EXIT = "system_exit"
+
 _state_lock = threading.Lock()
-_exit_reason: str = "unknown"
+_exit_reason: str = REASON_UNKNOWN
 _exit_extra: dict = {}
 _installed: bool = False
 
@@ -35,7 +46,7 @@ def _reset_for_tests() -> None:
     """Reset module state. Test-only."""
     global _exit_reason, _exit_extra, _installed
     with _state_lock:
-        _exit_reason = "unknown"
+        _exit_reason = REASON_UNKNOWN
         _exit_extra = {}
         _installed = False
 
@@ -44,7 +55,7 @@ def record_exit_reason(reason: str, extra: dict | None = None) -> None:
     """Record why the process is about to exit. First caller wins."""
     global _exit_reason, _exit_extra
     with _state_lock:
-        if _exit_reason != "unknown":
+        if _exit_reason != REASON_UNKNOWN:
             return
         _exit_reason = reason
         _exit_extra = dict(extra) if extra else {}
@@ -119,7 +130,7 @@ def install(logger: logging.Logger) -> None:
         _installed = True
 
     def _atexit():
-        record_exit_reason("atexit")
+        record_exit_reason(REASON_ATEXIT)
         log_exit_banner(logger)
 
     atexit.register(_atexit)
@@ -133,7 +144,7 @@ def install(logger: logging.Logger) -> None:
         # exit banner during normal interpreter shutdown — doing logging
         # inside a signal handler is both risky (async-signal-safety) and
         # duplicates the atexit banner once sys.exit() runs.
-        record_exit_reason("signal", {"signal": name})
+        record_exit_reason(REASON_SIGNAL, {"signal": name})
         try:
             signal.signal(signum, signal.SIG_DFL)
         except Exception:

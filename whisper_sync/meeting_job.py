@@ -328,14 +328,11 @@ class MeetingJob:
         respect the configurable toggle — otherwise disabling 'Meeting
         Complete' in the tray menu has no effect.
         """
-        from .notifications import notify, DEFAULT_TOAST_EVENTS
+        from .notifications import notify, is_toast_enabled
 
         try:
-            cfg = getattr(self.app, "cfg", {}) or {}
-            enabled = cfg.get("toast_events", DEFAULT_TOAST_EVENTS)
-            if not isinstance(enabled, (list, tuple, set)):
-                enabled = DEFAULT_TOAST_EVENTS
-            if "meeting_completed" not in enabled:
+            cfg = getattr(self.app, "cfg", None)
+            if not is_toast_enabled("meeting_completed", cfg):
                 return
 
             words = self.transcript_result.get("word_count", 0) if self.transcript_result else 0

@@ -253,27 +253,24 @@ class AudioRecorder:
         shows exactly which recording was dropped when the user aborts
         the meeting-name dialog or the app decides to discard.
         """
-        import logging as _logging
-        _log = _logging.getLogger("whisper_sync.capture")
         from .streaming_wav import cleanup_temp_files
         parent = None
         for label, w in (("mic", self._mic_writer), ("speaker", self._speaker_writer)):
             if w is None:
                 continue
             parent = w.path.parent
-            size = 0
             try:
-                size = w.path.stat().st_size if w.path.exists() else 0
+                size = w.path.stat().st_size
             except OSError:
-                pass
-            _log.info(
+                size = 0
+            logger.info(
                 "discard_streaming: channel=%s path=%s size=%d",
                 label, w.path, size,
             )
             try:
                 w.close()
             except Exception:
-                _log.debug("discard_streaming: close failed for %s", label, exc_info=True)
+                logger.debug("discard_streaming: close failed for %s", label, exc_info=True)
         self._mic_writer = None
         self._speaker_writer = None
         if parent is not None:

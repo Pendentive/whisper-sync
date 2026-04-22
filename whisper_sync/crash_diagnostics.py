@@ -4,11 +4,62 @@ Zero runtime cost: excepthook is a passive function pointer,
 Event Log is queried once at startup.
 """
 
+import faulthandler
 import logging
 import subprocess
 import sys
 import threading
 import traceback
+from pathlib import Path
+
+# Module-level reference to the faulthandler log file. Without a strong ref,
+# the FileIO can be garbage-collected, its fd closes, and later native crash
+# dumps are silently lost — which is exactly what produced the historic
+# silent-death logs with no forensic trace. Both the main tray process and
+# the worker subprocess install their faulthandler via this module so the
+# fix applies uniformly.
+_FAULTHANDLER_FILE = None
+
+
+def _reset_faulthandler_for_tests() -> None:
+    """Test-only: close and drop the retained faulthandler file."""
+    global _FAULTHANDLER_FILE
+    try:
+        if _FAULTHANDLER_FILE is not None and not _FAULTHANDLER_FILE.closed:
+            _FAULTHANDLER_FILE.close()
+    except Exception:
+        pass
+    _FAULTHANDLER_FILE = None
+
+
+def install_faulthandler(log_path) -> "object | None":
+    """Enable ``faulthandler`` with a retained log file.
+
+    Opens ``log_path`` in line-buffered append mode, stores the handle at
+    module scope so CPython cannot GC it, then registers the handle with
+    ``faulthandler.enable``. On failure (e.g. path not writable) falls back
+    to the stderr default and returns ``None``.
+
+    Returns the open file object on success so callers can inspect it; the
+    file is also retained internally for the lifetime of the interpreter.
+    """
+    global _FAULTHANDLER_FILE
+    try:
+        f = open(Path(log_path), "a", buffering=1, encoding="utf-8")
+    except (OSError, ValueError):
+        try:
+            faulthandler.enable()
+        except Exception:
+            pass
+        return None
+    _FAULTHANDLER_FILE = f
+    try:
+        faulthandler.enable(file=f, all_threads=True)
+    except Exception:
+        # Extremely unusual; leave the file retained so any later attempt
+        # to enable can still target it, but don't hide the failure.
+        return None
+    return f
 
 
 def install_excepthook(log: logging.Logger) -> None:

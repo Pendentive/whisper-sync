@@ -88,8 +88,17 @@ def worker_main(request_queue, response_queue, cfg_snapshot: dict,
         preload_model_name: Model to preload at startup. None = skip preload
             (model loads on first request instead).
     """
-    # Enable faulthandler in child so segfaults are logged to stderr
-    faulthandler.enable()
+    # Enable faulthandler in the worker subprocess. Use the shared helper
+    # so the file handle is retained module-scope; otherwise CPython can
+    # GC it and native crash dumps from CTranslate2/CUDA vanish. The log
+    # path mirrors the main process so both streams land in the same
+    # dated file.
+    try:
+        from .crash_diagnostics import install_faulthandler
+        from .logger import get_log_path
+        install_faulthandler(get_log_path())
+    except Exception:
+        faulthandler.enable()  # best-effort fallback to stderr
 
     # Suppress known harmless warnings before any imports trigger them
     import warnings
