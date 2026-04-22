@@ -38,6 +38,27 @@ class InstallFaulthandlerTests(unittest.TestCase):
             finally:
                 crash_diagnostics._reset_faulthandler_for_tests()
 
+    def test_second_call_closes_previous_file_no_fd_leak(self):
+        # Regression for PR #127 review #4: calling install_faulthandler
+        # twice must not leak the previously retained file descriptor.
+        from whisper_sync import crash_diagnostics
+        with tempfile.TemporaryDirectory() as tmp:
+            first = crash_diagnostics.install_faulthandler(Path(tmp) / "first.log")
+            try:
+                self.assertIsNotNone(first)
+                self.assertFalse(first.closed)
+                second = crash_diagnostics.install_faulthandler(Path(tmp) / "second.log")
+                self.assertIsNotNone(second)
+                # The first handle must now be closed by the helper.
+                self.assertTrue(
+                    first.closed,
+                    "previous faulthandler file must be closed on re-install",
+                )
+                # And the module should only retain the newest one.
+                self.assertIs(crash_diagnostics._FAULTHANDLER_FILE, second)
+            finally:
+                crash_diagnostics._reset_faulthandler_for_tests()
+
 
 if __name__ == "__main__":
     unittest.main()

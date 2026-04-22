@@ -53,6 +53,17 @@ def install_faulthandler(log_path) -> "object | None":
         except Exception:
             pass
 
+    # Close any previously retained file. If install_faulthandler is ever
+    # called twice in the same process (log rotation, re-init, long session
+    # scenarios), leaving the old file open leaks a descriptor.
+    if _FAULTHANDLER_FILE is not None:
+        try:
+            if not _FAULTHANDLER_FILE.closed:
+                _FAULTHANDLER_FILE.close()
+        except Exception:
+            pass
+        _FAULTHANDLER_FILE = None
+
     try:
         f = open(Path(log_path), "a", buffering=1, encoding="utf-8")
     except (OSError, ValueError):

@@ -98,7 +98,10 @@ class MeetingJob:
             step()
         except Exception:
             elapsed = _time.monotonic() - started
-            logger.error(
+            # logger.exception emits the full traceback at the point of
+            # failure so forensic logs pin which step failed AND why,
+            # even if the outer handler only catches and re-labels.
+            logger.exception(
                 "step failed: %s job=%s elapsed=%.2fs",
                 step_name, job_label, elapsed,
             )

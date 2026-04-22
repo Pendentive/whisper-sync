@@ -60,6 +60,20 @@ class LogExitBannerTests(unittest.TestCase):
         output = self.stream.getvalue()
         self.assertIn("reason=unknown", output)
 
+    def test_exit_banner_is_idempotent(self):
+        # Regression for PR #127 review #1+#2: both quit() and the atexit
+        # hook call log_exit_banner. Without dedupe, every shutdown logs
+        # two banners.
+        from whisper_sync import lifecycle
+        lifecycle.record_exit_reason("user_quit")
+        lifecycle.log_exit_banner(self.logger)
+        lifecycle.log_exit_banner(self.logger)  # simulate atexit firing
+        lifecycle.log_exit_banner(self.logger)  # belt and suspenders
+        banners = [ln for ln in self.stream.getvalue().splitlines()
+                   if "WhisperSync exiting" in ln]
+        self.assertEqual(len(banners), 1,
+                         f"expected exactly 1 banner, got {len(banners)}: {banners}")
+
 
 class StartupBannerTests(unittest.TestCase):
     def setUp(self):

@@ -40,15 +40,19 @@ _state_lock = threading.Lock()
 _exit_reason: str = REASON_UNKNOWN
 _exit_extra: dict = {}
 _installed: bool = False
+# Ensures exactly one exit banner per process even when multiple emitters
+# race (e.g. quit() logs explicitly AND the atexit hook fires on shutdown).
+_banner_emitted: bool = False
 
 
 def _reset_for_tests() -> None:
     """Reset module state. Test-only."""
-    global _exit_reason, _exit_extra, _installed
+    global _exit_reason, _exit_extra, _installed, _banner_emitted
     with _state_lock:
         _exit_reason = REASON_UNKNOWN
         _exit_extra = {}
         _installed = False
+        _banner_emitted = False
 
 
 def record_exit_reason(reason: str, extra: dict | None = None) -> None:
@@ -104,7 +108,17 @@ def log_startup_banner(logger: logging.Logger) -> None:
 
 
 def log_exit_banner(logger: logging.Logger) -> None:
-    """Emit the exit banner using the currently-recorded reason."""
+    """Emit the exit banner. Idempotent across callers.
+
+    Guards against duplicate banners when both an explicit caller (e.g.
+    ``quit()``) AND the atexit hook run on the same shutdown. The first
+    call wins; subsequent calls are silent no-ops.
+    """
+    global _banner_emitted
+    with _state_lock:
+        if _banner_emitted:
+            return
+        _banner_emitted = True
     reason, extra = get_exit_reason()
     logger.info(
         "=== WhisperSync exiting === reason=%s%s",
