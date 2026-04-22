@@ -229,10 +229,11 @@ def has_input_text_box():
 # Toast templates keyed by event type.  Only events listed here AND enabled
 # in config["toast_events"] will trigger a toast.
 TOAST_REGISTRY: dict[str, dict] = {
-    "meeting_completed": {
-        "title": "Meeting transcribed",
-        "body": "{words} words, {speakers} speakers",
-    },
+    # NOTE: meeting_completed toasts are fired directly from
+    # MeetingJob.step_notify so the toast can attach an "Open Folder"
+    # button. A template entry here would double-fire and the
+    # MEETING_COMPLETED state event does not carry words/speakers,
+    # so it produced a DEBUG-level KeyError every meeting.
     "dictation_completed": {
         "title": "Dictation complete",
         "body": "",
@@ -251,6 +252,20 @@ TOAST_REGISTRY: dict[str, dict] = {
 DEFAULT_TOAST_EVENTS = ["meeting_completed", "error", "pr_status_changed"]
 
 
+def is_toast_enabled(event_type: str, cfg: dict | None) -> bool:
+    """Return True if ``event_type`` should fire a toast per ``cfg``.
+
+    Shared between ``ToastListener`` and direct-dispatch call sites such as
+    ``MeetingJob.step_notify`` so both respect the same user toggle and
+    the same config-validation rules (garbage values fall back to
+    ``DEFAULT_TOAST_EVENTS``).
+    """
+    raw = (cfg or {}).get("toast_events", DEFAULT_TOAST_EVENTS)
+    if not isinstance(raw, (list, tuple, set)):
+        raw = DEFAULT_TOAST_EVENTS
+    return event_type in raw
+
+
 class ToastListener:
     """State event subscriber that shows configurable Windows toasts.
 
@@ -263,15 +278,7 @@ class ToastListener:
         self._config = config
 
     def __call__(self, event) -> None:
-        raw_events = self._config.get("toast_events", DEFAULT_TOAST_EVENTS)
-        if not isinstance(raw_events, (list, tuple, set)):
-            _logger.debug(
-                "Invalid toast_events config (%r); falling back to defaults",
-                raw_events,
-            )
-            raw_events = DEFAULT_TOAST_EVENTS
-        enabled = set(raw_events)
-        if event.type not in enabled:
+        if not is_toast_enabled(event.type, self._config):
             return
 
         template = TOAST_REGISTRY.get(event.type)
