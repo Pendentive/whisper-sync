@@ -51,15 +51,9 @@ from . import dictation_log
 from . import feature_log
 from . import weekly_stats
 from .streaming_wav import fix_orphan
-from .crash_diagnostics import install_excepthook, check_previous_crash
+from .crash_diagnostics import install_excepthook, check_previous_crash, install_faulthandler
 from . import lifecycle
 from .heartbeat import Heartbeat
-
-# Module-level reference to the faulthandler log file. Without holding this,
-# the FileIO object is garbage-collected, its fd closes, and any later native
-# crash dumps vanish — which is exactly what happened historically with silent
-# deaths that left no trace.
-_FAULTHANDLER_FILE = None
 from .flatten import flatten as flatten_transcript
 from .notifications import notify, ToastListener
 from .state_manager import (
@@ -1469,23 +1463,64 @@ class WhisperSync:
             conf_colors = {"high": green, "medium": yellow, "low": red}
 
             num_speakers = len(speaker_map)
-            # Each speaker row ~44px + reasoning line ~22px + padding
             screen_h = root.winfo_screenheight()
             max_h = min(700, int(screen_h * 0.8))
+            # Size to content, capped at max_h. When content exceeds the cap,
+            # the middle content scrolls via the inline Canvas/Scrollbar setup,
+            # and the bottom button bar remains visible because it is packed
+            # with side=BOTTOM BEFORE the scrollable middle.
             height = min(180 + (num_speakers * 70), max_h)
             root.geometry(f"500x{height}")
+            root.minsize(500, 260)  # guarantee the buttons are always reachable
 
-            # Header
+            # Header: packed FIRST (top)
             header = tk.Frame(root, bg=bg)
-            header.pack(fill="x", padx=24, pady=(14, 0))
+            header.pack(side=tk.TOP, fill="x", padx=24, pady=(14, 0))
             tk.Label(header, text="\U0001f3a4", font=("Segoe UI", 13), bg=bg).pack(side=tk.LEFT)
             tk.Label(header, text="  Identify Speakers", font=("Segoe UI", 11, "bold"),
                      bg=bg, fg=fg).pack(side=tk.LEFT)
 
-            # Speaker rows
+            # Bottom panel: progress + boundary notice + buttons. These are
+            # packed NOW (before the scrollable middle) with side=BOTTOM so
+            # Tk's pack algorithm reserves space for them regardless of how
+            # many speakers are added; the Confirm button never slides off.
+            bottom_panel = tk.Frame(root, bg=bg)
+            bottom_panel.pack(side=tk.BOTTOM, fill="x")
+
+            # Scrollable middle: contains speaker rows + reasoning text.
+            # Tk does not have a native scrollable frame; the idiom is a
+            # Canvas + Scrollbar + inner Frame. The inner frame behaves like
+            # a normal Frame you can pack into.
+            middle = tk.Frame(root, bg=bg)
+            middle.pack(side=tk.TOP, fill="both", expand=True, padx=0, pady=(12, 0))
+            _scroll_canvas = tk.Canvas(middle, bg=bg, highlightthickness=0)
+            _scroll_canvas.pack(side=tk.LEFT, fill="both", expand=True)
+            _scrollbar = tk.Scrollbar(middle, orient="vertical", command=_scroll_canvas.yview)
+            _scrollbar.pack(side=tk.RIGHT, fill="y")
+            _scroll_canvas.configure(yscrollcommand=_scrollbar.set)
+
+            rows_frame = tk.Frame(_scroll_canvas, bg=bg)
+            _rows_window = _scroll_canvas.create_window((0, 0), window=rows_frame, anchor="nw")
+
+            def _on_rows_configure(_event):
+                _scroll_canvas.configure(scrollregion=_scroll_canvas.bbox("all"))
+            rows_frame.bind("<Configure>", _on_rows_configure)
+
+            def _on_canvas_configure(event):
+                # Make the inner frame match the canvas width so content wraps
+                # correctly instead of being clipped horizontally.
+                _scroll_canvas.itemconfigure(_rows_window, width=event.width)
+            _scroll_canvas.bind("<Configure>", _on_canvas_configure)
+
+            def _on_mousewheel(event):
+                # Windows: event.delta is a multiple of 120 per notch.
+                _scroll_canvas.yview_scroll(int(-event.delta / 120), "units")
+            # Bind only when the mouse is over the canvas so we don't steal
+            # wheel events from child dropdowns.
+            _scroll_canvas.bind("<Enter>", lambda _e: _scroll_canvas.bind_all("<MouseWheel>", _on_mousewheel))
+            _scroll_canvas.bind("<Leave>", lambda _e: _scroll_canvas.unbind_all("<MouseWheel>"))
+
             dropdowns = {}
-            rows_frame = tk.Frame(root, bg=bg)
-            rows_frame.pack(fill="x", padx=24, pady=(12, 0))
 
             for spk_id, name in speaker_map.items():
                 row = tk.Frame(rows_frame, bg=card_bg, highlightbackground="#313244", highlightthickness=1)
@@ -1610,8 +1645,9 @@ class WhisperSync:
                     tk.Label(reason_frame, text=f"\u2514 {reason}", font=("Segoe UI", 7, "italic"),
                              bg=bg, fg=fg_dim, anchor="w", wraplength=400).pack(anchor="w")
 
-            # Progress bar (hidden initially)
-            progress_frame = tk.Frame(root, bg=bg)
+            # Progress bar (hidden initially): lives in bottom_panel so it
+            # sits above the button row and never disappears behind scroll.
+            progress_frame = tk.Frame(bottom_panel, bg=bg)
             progress_frame.pack(fill="x", padx=24, pady=(4, 0))
             progress_canvas = tk.Canvas(progress_frame, height=4, bg="#313244",
                                          highlightthickness=0)
@@ -1622,8 +1658,8 @@ class WhisperSync:
             progress_label.pack(anchor="w")
             progress_frame.pack_forget()  # hidden until needed
 
-            # Boundary notice (hidden initially)
-            boundary_frame = tk.Frame(root, bg=bg)
+            # Boundary notice (hidden initially): also in bottom_panel.
+            boundary_frame = tk.Frame(bottom_panel, bg=bg)
             boundary_label = tk.Label(boundary_frame, text="", font=("Segoe UI", 8),
                                        bg=bg, fg=yellow, wraplength=440)
             boundary_label.pack(side=tk.LEFT, padx=(24, 8))
@@ -1631,8 +1667,8 @@ class WhisperSync:
 
             _boundaries = [None]
 
-            # Buttons
-            btn_frame = tk.Frame(root, bg=bg)
+            # Buttons: permanently visible at the bottom.
+            btn_frame = tk.Frame(bottom_panel, bg=bg)
             btn_frame.pack(pady=(14, 12))
 
             _closing = [False]
@@ -1770,11 +1806,25 @@ class WhisperSync:
             self._center_window(root)
             root.protocol("WM_DELETE_WINDOW", _skip)
             root.mainloop()
-            event.set()
 
-        t = threading.Thread(target=_show, daemon=True)
+        def _show_guarded():
+            # Guarantees event.set() fires even if Tk init/geometry raises.
+            # Without this, a crash in _show would hang the meeting
+            # post-processing pipeline indefinitely waiting on the event.
+            try:
+                _show()
+            except Exception:
+                logger.exception("speaker dialog crashed")
+                result[0] = None
+            finally:
+                event.set()
+
+        t = threading.Thread(target=_show_guarded, daemon=True)
         t.start()
-        event.wait(timeout=120)
+        # Wait as long as the user needs. A 2-minute timeout would silently
+        # skip speaker confirmation while the dialog was still on screen:
+        # data loss with no log.
+        event.wait()
 
         return result[0]
 
@@ -3263,7 +3313,7 @@ class WhisperSync:
         def _do_restart():
             import subprocess
             import time
-            lifecycle.record_exit_reason("user_restart")
+            lifecycle.record_exit_reason(lifecycle.REASON_USER_RESTART)
             time.sleep(self._CALLBACK_DEFER_SECS)
             self._cleanup()
             # Spawn new process first so it starts loading immediately
@@ -3286,11 +3336,17 @@ class WhisperSync:
         """Quit WhisperSync. Deferred like _restart for the same reason."""
         def _do_quit():
             import time
-            lifecycle.record_exit_reason("user_quit")
+            lifecycle.record_exit_reason(lifecycle.REASON_USER_QUIT)
             time.sleep(self._CALLBACK_DEFER_SECS)
             self._cleanup()
             if self.tray:
                 self.tray.stop()
+            # Explicit banner for symmetry with _restart. In theory the
+            # atexit hook emits one when the interpreter shuts down, but
+            # daemon threads keeping the interpreter alive can swallow
+            # atexit; better to log here and let atexit be a no-op via
+            # the first-wins rule in record_exit_reason.
+            lifecycle.log_exit_banner(logger)
         threading.Thread(target=_do_quit, daemon=True).start()
 
     @staticmethod
@@ -3494,15 +3550,9 @@ class WhisperSync:
 
 
 def main():
-    global _FAULTHANDLER_FILE
-    # Enable faulthandler FIRST so native segfaults get logged to the log file.
-    # Keep a module-level reference to the file; otherwise CPython can GC the
-    # FileIO object, close its fd, and silently drop later crash dumps.
-    try:
-        _FAULTHANDLER_FILE = open(get_log_path(), "a", buffering=1, encoding="utf-8")
-        faulthandler.enable(file=_FAULTHANDLER_FILE, all_threads=True)
-    except Exception:
-        faulthandler.enable()  # fallback to stderr
+    # Install faulthandler FIRST so native segfaults are persisted. The
+    # helper retains the file handle module-scope so it cannot be GC'd.
+    install_faulthandler(get_log_path())
 
     heartbeat = Heartbeat(logger, interval=60.0)
     try:
@@ -3514,11 +3564,14 @@ def main():
         app = WhisperSync()
         app.run()
     except SystemExit:
-        lifecycle.record_exit_reason("system_exit")
+        lifecycle.record_exit_reason(lifecycle.REASON_SYSTEM_EXIT)
         raise
     except Exception:
         import traceback
-        lifecycle.record_exit_reason("exception", {"type": type(sys.exc_info()[1]).__name__})
+        lifecycle.record_exit_reason(
+            lifecycle.REASON_EXCEPTION,
+            {"type": type(sys.exc_info()[1]).__name__},
+        )
         logger.critical(f"FATAL CRASH:\n{traceback.format_exc()}")
         # Last-resort hook cleanup — prevents stuck Ctrl key on crash
         try:
