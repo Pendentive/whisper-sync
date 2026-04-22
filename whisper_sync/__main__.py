@@ -51,9 +51,7 @@ from . import dictation_log
 from . import feature_log
 from . import weekly_stats
 from .streaming_wav import fix_orphan
-from .crash_diagnostics import install_excepthook, check_previous_crash, install_faulthandler
-from . import lifecycle
-from .heartbeat import Heartbeat
+from .crash_diagnostics import install_excepthook, check_previous_crash
 from .flatten import flatten as flatten_transcript
 from .notifications import notify, ToastListener
 from .state_manager import (
@@ -391,18 +389,8 @@ class WhisperSync:
         self.state.emit(DICTATION_STARTED, mode="dictation")
         mic = self.cfg.get("mic_device")
         if self.cfg.get("use_system_devices", True):
-            # Explicitly use the WASAPI default instead of falling through
-            # to sd.default.device[0], which on Windows resolves to an MME
-            # device and often rejects float32 @ 16 kHz with MME error 32.
-            mic = get_default_devices().get("input")
-        try:
-            self.recorder.start(mic_device=mic)
-        except Exception as e:
-            logger.error("Failed to start mic for dictation: %s", e, exc_info=True)
-            notify("Dictation unavailable", f"Mic could not be opened: {e}")
-            self._feature_suggest_active = False
-            self.state.emit(IDLE, mode=None)
-            return
+            mic = None
+        self.recorder.start(mic_device=mic)
         # Stream to disk for crash recovery -- skip when incognito (RAM only)
         if self.cfg.get("incognito", False):
             self._dictation_wav_path = None
@@ -412,11 +400,7 @@ class WhisperSync:
             ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             prefix = "feature_" if self._feature_suggest_active else ""
             self._dictation_wav_path = log_dir / f"{prefix}{ts}.wav"
-            try:
-                self.recorder.start_streaming(self._dictation_wav_path)
-            except Exception as e:
-                logger.warning("Dictation disk streaming disabled: %s", e)
-                self._dictation_wav_path = None
+            self.recorder.start_streaming(self._dictation_wav_path)
 
     def _stop_dictation(self):
         audio = self.recorder.stop()
@@ -565,15 +549,8 @@ class WhisperSync:
         self._overlay_recorder = AudioRecorder(sample_rate=self.cfg["sample_rate"])
         mic = self.cfg.get("mic_device")
         if self.cfg.get("use_system_devices", True):
-            mic = get_default_devices().get("input")
-        try:
-            self._overlay_recorder.start(mic_device=mic)
-        except Exception as e:
-            logger.error("Failed to start overlay dictation mic: %s", e, exc_info=True)
-            notify("Dictation unavailable", f"Mic could not be opened: {e}")
-            self._overlay_recorder = None
-            self._feature_suggest_active = False
-            return
+            mic = None
+        self._overlay_recorder.start(mic_device=mic)
         logger.info("Dictation during meeting: recording started", extra={"secondary": True})
         self.state.emit(DICTATION_STARTED, dictation_overlay=True)
 
@@ -1054,30 +1031,20 @@ class WhisperSync:
         mic = self.cfg.get("mic_device")
         speaker = self.cfg.get("speaker_device")
         if self.cfg.get("use_system_devices", True):
+            mic = None
             defaults = get_default_devices()
-            # Route mic through WASAPI too (not sd.default.device[0]'s MME)
-            mic = defaults.get("input")
             speaker = defaults["output"]
         elif speaker is None:
             defaults = get_default_devices()
             speaker = defaults["output"]
-        try:
-            self.recorder.start(mic_device=mic, speaker_device=speaker)
-        except Exception as e:
-            logger.error("Failed to start mic for meeting: %s", e, exc_info=True)
-            notify("Meeting unavailable", f"Mic could not be opened: {e}")
-            self.state.emit(IDLE, mode=None)
-            return
+        self.recorder.start(mic_device=mic, speaker_device=speaker)
         if self.recorder.speaker_loopback_active:
             logger.info("Meeting started: mic + speaker loopback")
         else:
             logger.warning("Meeting started: mic only (speaker loopback unavailable)")
         temp = self._meeting_temp_dir()
         mic_temp = temp / "mic-temp.wav"
-        try:
-            self.recorder.start_streaming(mic_temp, disk_only=True)
-        except Exception as e:
-            logger.warning("Meeting streaming disabled: %s", e)
+        self.recorder.start_streaming(mic_temp, disk_only=True)
         if self.cfg.get("always_available_dictation", True):
             self._backup.preload()
 
@@ -1139,9 +1106,6 @@ class WhisperSync:
             (str, True, str|None): user clicked Save & Summarize (name, summarize, diarize_method)
             (str, False, str|None): user clicked Save (name, summarize, diarize_method)
         """
-        import time as _time
-        dialog_started = _time.monotonic()
-        logger.info("dialog open: _ask_meeting_name")
         result = [self._ABORT]
         event = threading.Event()
 
@@ -1251,46 +1215,11 @@ class WhisperSync:
             self._center_window(root)
             root.protocol("WM_DELETE_WINDOW", _abort)
             root.mainloop()
+            event.set()
 
-        def _show_dialog_guarded():
-            # Guarantees event.set() + a well-defined outcome even if
-            # _show_dialog raises before root.mainloop() returns. Without
-            # this, _save_and_enqueue's event.wait() blocks forever and the
-            # tray stays stuck in mode="saving" with the recording neither
-            # saved nor discarded.
-            try:
-                _show_dialog()
-            except Exception:
-                logger.exception("dialog crashed: _ask_meeting_name")
-                result[0] = self._ABORT
-            finally:
-                event.set()
-
-        t = threading.Thread(target=_show_dialog_guarded, daemon=True)
+        t = threading.Thread(target=_show_dialog, daemon=True)
         t.start()
-        # Previously this used a 60s timeout that silently returned _ABORT
-        # while the dialog was still on screen — discarding the recording
-        # while the user thought they were still naming it. The dialog
-        # itself has no auto-close timer, so we wait as long as it's open.
-        event.wait()
-
-        # Report dialog outcome with the actual returned value so forensic
-        # logs can distinguish ABORT vs save vs timeout vs garbage.
-        elapsed = _time.monotonic() - dialog_started
-        outcome = result[0]
-        if outcome is self._ABORT:
-            logger.info("dialog close: _ask_meeting_name outcome=abort elapsed=%.1fs", elapsed)
-        elif isinstance(outcome, tuple) and len(outcome) == 3:
-            name, summarize, method = outcome
-            logger.info(
-                "dialog close: _ask_meeting_name outcome=save name=%r summarize=%s method=%s elapsed=%.1fs",
-                name or "", summarize, method, elapsed,
-            )
-        else:
-            logger.warning(
-                "dialog close: _ask_meeting_name outcome=unexpected value=%r elapsed=%.1fs",
-                outcome, elapsed,
-            )
+        event.wait(timeout=60)
 
         return result[0]
 
@@ -1497,9 +1426,9 @@ class WhisperSync:
             screen_h = root.winfo_screenheight()
             max_h = min(700, int(screen_h * 0.8))
             # Size to content, capped at max_h. When content exceeds the cap,
-            # the middle content scrolls via the inline Canvas/Scrollbar setup,
-            # and the bottom button bar remains visible because it is packed
-            # with side=BOTTOM BEFORE the scrollable middle.
+            # the rows scroll via the Canvas+Scrollbar below and the bottom
+            # button bar stays visible because it is packed with side=BOTTOM
+            # BEFORE the scrollable middle.
             height = min(180 + (num_speakers * 70), max_h)
             root.geometry(f"500x{height}")
             root.minsize(500, 260)  # guarantee the buttons are always reachable
@@ -1511,17 +1440,15 @@ class WhisperSync:
             tk.Label(header, text="  Identify Speakers", font=("Segoe UI", 11, "bold"),
                      bg=bg, fg=fg).pack(side=tk.LEFT)
 
-            # Bottom panel: progress + boundary notice + buttons. These are
-            # packed NOW (before the scrollable middle) with side=BOTTOM so
-            # Tk's pack algorithm reserves space for them regardless of how
+            # Bottom panel: progress + boundary notice + buttons. Packed
+            # NOW (before the scrollable middle) with side=BOTTOM so Tk's
+            # pack algorithm reserves space for them regardless of how
             # many speakers are added; the Confirm button never slides off.
             bottom_panel = tk.Frame(root, bg=bg)
             bottom_panel.pack(side=tk.BOTTOM, fill="x")
 
-            # Scrollable middle: contains speaker rows + reasoning text.
-            # Tk does not have a native scrollable frame; the idiom is a
-            # Canvas + Scrollbar + inner Frame. The inner frame behaves like
-            # a normal Frame you can pack into.
+            # Scrollable middle: Canvas + Scrollbar + inner Frame. Tk has
+            # no native scrollable frame; this is the standard idiom.
             middle = tk.Frame(root, bg=bg)
             middle.pack(side=tk.TOP, fill="both", expand=True, padx=0, pady=(12, 0))
             _scroll_canvas = tk.Canvas(middle, bg=bg, highlightthickness=0)
@@ -1530,6 +1457,7 @@ class WhisperSync:
             _scrollbar.pack(side=tk.RIGHT, fill="y")
             _scroll_canvas.configure(yscrollcommand=_scrollbar.set)
 
+            dropdowns = {}
             rows_frame = tk.Frame(_scroll_canvas, bg=bg)
             _rows_window = _scroll_canvas.create_window((0, 0), window=rows_frame, anchor="nw")
 
@@ -1538,20 +1466,17 @@ class WhisperSync:
             rows_frame.bind("<Configure>", _on_rows_configure)
 
             def _on_canvas_configure(event):
-                # Make the inner frame match the canvas width so content wraps
-                # correctly instead of being clipped horizontally.
+                # Match the inner frame width so content wraps correctly.
                 _scroll_canvas.itemconfigure(_rows_window, width=event.width)
             _scroll_canvas.bind("<Configure>", _on_canvas_configure)
 
             def _on_mousewheel(event):
                 # Windows: event.delta is a multiple of 120 per notch.
                 _scroll_canvas.yview_scroll(int(-event.delta / 120), "units")
-            # Bind only when the mouse is over the canvas so we don't steal
-            # wheel events from child dropdowns.
+            # Bind only while the pointer is over the canvas so child
+            # widgets (dropdowns) keep their own wheel events.
             _scroll_canvas.bind("<Enter>", lambda _e: _scroll_canvas.bind_all("<MouseWheel>", _on_mousewheel))
             _scroll_canvas.bind("<Leave>", lambda _e: _scroll_canvas.unbind_all("<MouseWheel>"))
-
-            dropdowns = {}
 
             for spk_id, name in speaker_map.items():
                 row = tk.Frame(rows_frame, bg=card_bg, highlightbackground="#313244", highlightthickness=1)
@@ -1837,25 +1762,11 @@ class WhisperSync:
             self._center_window(root)
             root.protocol("WM_DELETE_WINDOW", _skip)
             root.mainloop()
+            event.set()
 
-        def _show_guarded():
-            # Guarantees event.set() fires even if Tk init/geometry raises.
-            # Without this, a crash in _show would hang the meeting
-            # post-processing pipeline indefinitely waiting on the event.
-            try:
-                _show()
-            except Exception:
-                logger.exception("speaker dialog crashed")
-                result[0] = None
-            finally:
-                event.set()
-
-        t = threading.Thread(target=_show_guarded, daemon=True)
+        t = threading.Thread(target=_show, daemon=True)
         t.start()
-        # Wait as long as the user needs. A 2-minute timeout would silently
-        # skip speaker confirmation while the dialog was still on screen:
-        # data loss with no log.
-        event.wait()
+        event.wait(timeout=120)
 
         return result[0]
 
@@ -3344,7 +3255,6 @@ class WhisperSync:
         def _do_restart():
             import subprocess
             import time
-            lifecycle.record_exit_reason(lifecycle.REASON_USER_RESTART)
             time.sleep(self._CALLBACK_DEFER_SECS)
             self._cleanup()
             # Spawn new process first so it starts loading immediately
@@ -3358,7 +3268,6 @@ class WhisperSync:
             if self.tray:
                 self.tray.stop()
             time.sleep(0.2)
-            lifecycle.log_exit_banner(logger)
             os._exit(0)
 
         threading.Thread(target=_do_restart, daemon=True).start()
@@ -3367,17 +3276,10 @@ class WhisperSync:
         """Quit WhisperSync. Deferred like _restart for the same reason."""
         def _do_quit():
             import time
-            lifecycle.record_exit_reason(lifecycle.REASON_USER_QUIT)
             time.sleep(self._CALLBACK_DEFER_SECS)
             self._cleanup()
             if self.tray:
                 self.tray.stop()
-            # Explicit banner for symmetry with _restart. In theory the
-            # atexit hook emits one when the interpreter shuts down, but
-            # daemon threads keeping the interpreter alive can swallow
-            # atexit; better to log here and let atexit be a no-op via
-            # the first-wins rule in record_exit_reason.
-            lifecycle.log_exit_banner(logger)
         threading.Thread(target=_do_quit, daemon=True).start()
 
     @staticmethod
@@ -3448,38 +3350,21 @@ class WhisperSync:
         # Bootstrap: ensure base models are cached, prompt for large ones
         bootstrap_models(self.cfg, on_large_model=self._prompt_large_download)
 
-        def _guarded(fn, label):
-            # Any exception that escapes a hotkey callback propagates to
-            # keyboard._generic.process and kills the single dispatcher
-            # thread, bricking ALL hotkeys for the rest of the session.
-            # This wrapper is the last line of defense; individual handlers
-            # also try/except their own failures.
-            def _inner():
-                try:
-                    return fn()
-                except Exception as e:
-                    logger.error("%s hotkey handler crashed: %s", label, e, exc_info=True)
-                    try:
-                        notify("WhisperSync error", f"{label}: {e}")
-                    except Exception:
-                        pass
-            return _inner
-
         keyboard.add_hotkey(
             self.cfg["hotkeys"]["dictation_toggle"],
-            _guarded(self.toggle_dictation, "dictation"),
+            self.toggle_dictation,
             suppress=False,
         )
         keyboard.add_hotkey(
             self.cfg["hotkeys"]["meeting_toggle"],
-            _guarded(self.toggle_meeting, "meeting"),
+            self.toggle_meeting,
             suppress=False,
         )
         feature_hk = self.cfg["hotkeys"].get("feature_suggest", "ctrl+shift+alt+f")
         if feature_hk:
             keyboard.add_hotkey(
                 feature_hk,
-                _guarded(self.toggle_feature_suggest, "feature-suggest"),
+                self.toggle_feature_suggest,
                 suppress=False,
             )
 
@@ -3598,28 +3483,19 @@ class WhisperSync:
 
 
 def main():
-    # Install faulthandler FIRST so native segfaults are persisted. The
-    # helper retains the file handle module-scope so it cannot be GC'd.
-    install_faulthandler(get_log_path())
-
-    heartbeat = Heartbeat(logger, interval=60.0)
+    # Enable faulthandler FIRST so native segfaults get logged to the log file
     try:
-        lifecycle.log_startup_banner(logger)
-        lifecycle.install(logger)
+        faulthandler.enable(file=open(get_log_path(), "a"), all_threads=True)
+    except Exception:
+        faulthandler.enable()  # fallback to stderr
+    try:
+        logger.info("=== WhisperSync starting ===")
         install_excepthook(logger)
         check_previous_crash(logger)
-        heartbeat.start()
         app = WhisperSync()
         app.run()
-    except SystemExit:
-        lifecycle.record_exit_reason(lifecycle.REASON_SYSTEM_EXIT)
-        raise
     except Exception:
         import traceback
-        lifecycle.record_exit_reason(
-            lifecycle.REASON_EXCEPTION,
-            {"type": type(sys.exc_info()[1]).__name__},
-        )
         logger.critical(f"FATAL CRASH:\n{traceback.format_exc()}")
         # Last-resort hook cleanup — prevents stuck Ctrl key on crash
         try:
@@ -3627,8 +3503,6 @@ def main():
         except Exception:
             pass
         raise
-    finally:
-        heartbeat.stop(timeout=1.0)
 
 
 if __name__ == "__main__":
