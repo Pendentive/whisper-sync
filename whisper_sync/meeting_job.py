@@ -79,11 +79,38 @@ class MeetingJob:
         return self._steps[self._current_step].__name__
 
     def execute_next_step(self):
-        """Execute the next step. Returns True if more steps remain."""
+        """Execute the next step. Returns True if more steps remain.
+
+        Logs the step name at INFO before and after execution so a silent
+        death mid-step can be pinpointed from the log. The step index is
+        advanced only on successful completion so a failed step is not
+        silently 'consumed' if any caller inspects/retries the job.
+        """
+        import time as _time
         if self.is_complete:
             return False
         step = self._steps[self._current_step]
-        step()
+        step_name = step.__name__
+        job_label = self.name or "meeting"
+        logger.info("step start: %s job=%s", step_name, job_label)
+        started = _time.monotonic()
+        try:
+            step()
+        except Exception:
+            elapsed = _time.monotonic() - started
+            # logger.exception emits the full traceback at the point of
+            # failure so forensic logs pin which step failed AND why,
+            # even if the outer handler only catches and re-labels.
+            logger.exception(
+                "step failed: %s job=%s elapsed=%.2fs",
+                step_name, job_label, elapsed,
+            )
+            raise
+        elapsed = _time.monotonic() - started
+        logger.info(
+            "step done: %s job=%s elapsed=%.2fs",
+            step_name, job_label, elapsed,
+        )
         self._current_step += 1
         return not self.is_complete
 
@@ -296,10 +323,21 @@ class MeetingJob:
             logger.warning("Index rebuild failed (non-fatal): %s", e)
 
     def step_notify(self):
-        """Show toast notification with meeting stats and Open Folder button."""
-        from .notifications import notify
+        """Show toast notification with meeting stats and Open Folder button.
+
+        Honors the user's ``toast_events`` config (tray menu toggle). This
+        toast is dispatched directly rather than through the TOAST_REGISTRY
+        template so it can attach an Open Folder button, but it still must
+        respect the configurable toggle — otherwise disabling 'Meeting
+        Complete' in the tray menu has no effect.
+        """
+        from .notifications import notify, is_toast_enabled
 
         try:
+            cfg = getattr(self.app, "cfg", None)
+            if not is_toast_enabled("meeting_completed", cfg):
+                return
+
             words = self.transcript_result.get("word_count", 0) if self.transcript_result else 0
             speakers = self.transcript_result.get("num_speakers", 0) if self.transcript_result else 0
             body = f"{words} words, {speakers} speakers"
