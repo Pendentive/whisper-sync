@@ -1,4 +1,4 @@
-"""Crash diagnostics — exception hooks and Windows Event Log check.
+"""Crash diagnostics - exception hooks and Windows Event Log check.
 
 Zero runtime cost: excepthook is a passive function pointer,
 Event Log is queried once at startup.
@@ -14,7 +14,7 @@ from pathlib import Path
 
 # Module-level reference to the faulthandler log file. Without a strong ref,
 # the FileIO can be garbage-collected, its fd closes, and later native crash
-# dumps are silently lost — which is exactly what produced the historic
+# dumps are silently lost, which is exactly what produced the historic
 # silent-death logs with no forensic trace. Both the main tray process and
 # the worker subprocess install their faulthandler via this module so the
 # fix applies uniformly.
@@ -37,27 +37,40 @@ def install_faulthandler(log_path) -> "object | None":
 
     Opens ``log_path`` in line-buffered append mode, stores the handle at
     module scope so CPython cannot GC it, then registers the handle with
-    ``faulthandler.enable``. On failure (e.g. path not writable) falls back
-    to the stderr default and returns ``None``.
+    ``faulthandler.enable``. On any failure (path not writable, enable
+    raising), closes the file, clears the retained ref, and best-effort
+    falls back to the stderr default with ``all_threads=True`` so thread
+    crashes are still captured.
 
-    Returns the open file object on success so callers can inspect it; the
-    file is also retained internally for the lifetime of the interpreter.
+    Returns the open file object on success, ``None`` if the file-backed
+    install failed (stderr fallback may still be active).
     """
     global _FAULTHANDLER_FILE
+
+    def _fallback_to_stderr():
+        try:
+            faulthandler.enable(all_threads=True)
+        except Exception:
+            pass
+
     try:
         f = open(Path(log_path), "a", buffering=1, encoding="utf-8")
     except (OSError, ValueError):
-        try:
-            faulthandler.enable()
-        except Exception:
-            pass
+        _fallback_to_stderr()
         return None
+
     _FAULTHANDLER_FILE = f
     try:
         faulthandler.enable(file=f, all_threads=True)
     except Exception:
-        # Extremely unusual; leave the file retained so any later attempt
-        # to enable can still target it, but don't hide the failure.
+        # enable() failed with the file. Release the file and fall back
+        # to stderr so thread crashes are still captured.
+        try:
+            f.close()
+        except Exception:
+            pass
+        _FAULTHANDLER_FILE = None
+        _fallback_to_stderr()
         return None
     return f
 

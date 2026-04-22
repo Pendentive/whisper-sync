@@ -98,7 +98,9 @@ def worker_main(request_queue, response_queue, cfg_snapshot: dict,
         from .logger import get_log_path
         install_faulthandler(get_log_path())
     except Exception:
-        faulthandler.enable()  # best-effort fallback to stderr
+        # Thread crashes in native libs (CTranslate2, CUDA) are common here;
+        # all_threads=True is essential so they are captured.
+        faulthandler.enable(all_threads=True)  # best-effort fallback to stderr
 
     # Suppress known harmless warnings before any imports trigger them
     import warnings

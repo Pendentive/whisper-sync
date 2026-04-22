@@ -27,14 +27,16 @@ class InstallFaulthandlerTests(unittest.TestCase):
 
     def test_returns_none_on_bad_path_and_falls_back(self):
         from whisper_sync import crash_diagnostics
-        # A path inside a nonexistent parent directory cannot be opened
-        # "a" mode, which forces the fallback branch.
-        bad = Path("/this/path/should/not/exist/fh.log")
-        result = crash_diagnostics.install_faulthandler(bad)
-        try:
-            self.assertIsNone(result)
-        finally:
-            crash_diagnostics._reset_faulthandler_for_tests()
+        # A subpath of a temp directory whose intermediate segment does not
+        # exist guarantees open("a") fails regardless of platform or prior
+        # filesystem state.
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "does-not-exist" / "fh.log"
+            result = crash_diagnostics.install_faulthandler(bad)
+            try:
+                self.assertIsNone(result)
+            finally:
+                crash_diagnostics._reset_faulthandler_for_tests()
 
 
 if __name__ == "__main__":

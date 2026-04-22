@@ -1466,14 +1466,14 @@ class WhisperSync:
             screen_h = root.winfo_screenheight()
             max_h = min(700, int(screen_h * 0.8))
             # Size to content, capped at max_h. When content exceeds the cap,
-            # the middle scrolls (see _make_scrollable below) and the bottom
-            # button bar remains visible because it is packed with side=BOTTOM
-            # BEFORE the scrollable middle.
+            # the middle content scrolls via the inline Canvas/Scrollbar setup,
+            # and the bottom button bar remains visible because it is packed
+            # with side=BOTTOM BEFORE the scrollable middle.
             height = min(180 + (num_speakers * 70), max_h)
             root.geometry(f"500x{height}")
             root.minsize(500, 260)  # guarantee the buttons are always reachable
 
-            # Header — packed FIRST (top)
+            # Header: packed FIRST (top)
             header = tk.Frame(root, bg=bg)
             header.pack(side=tk.TOP, fill="x", padx=24, pady=(14, 0))
             tk.Label(header, text="\U0001f3a4", font=("Segoe UI", 13), bg=bg).pack(side=tk.LEFT)
@@ -1483,7 +1483,7 @@ class WhisperSync:
             # Bottom panel: progress + boundary notice + buttons. These are
             # packed NOW (before the scrollable middle) with side=BOTTOM so
             # Tk's pack algorithm reserves space for them regardless of how
-            # many speakers are added — the Confirm button never slides off.
+            # many speakers are added; the Confirm button never slides off.
             bottom_panel = tk.Frame(root, bg=bg)
             bottom_panel.pack(side=tk.BOTTOM, fill="x")
 
@@ -1645,7 +1645,7 @@ class WhisperSync:
                     tk.Label(reason_frame, text=f"\u2514 {reason}", font=("Segoe UI", 7, "italic"),
                              bg=bg, fg=fg_dim, anchor="w", wraplength=400).pack(anchor="w")
 
-            # Progress bar (hidden initially) — lives in bottom_panel so it
+            # Progress bar (hidden initially): lives in bottom_panel so it
             # sits above the button row and never disappears behind scroll.
             progress_frame = tk.Frame(bottom_panel, bg=bg)
             progress_frame.pack(fill="x", padx=24, pady=(4, 0))
@@ -1658,7 +1658,7 @@ class WhisperSync:
             progress_label.pack(anchor="w")
             progress_frame.pack_forget()  # hidden until needed
 
-            # Boundary notice (hidden initially) — also in bottom_panel.
+            # Boundary notice (hidden initially): also in bottom_panel.
             boundary_frame = tk.Frame(bottom_panel, bg=bg)
             boundary_label = tk.Label(boundary_frame, text="", font=("Segoe UI", 8),
                                        bg=bg, fg=yellow, wraplength=440)
@@ -1667,7 +1667,7 @@ class WhisperSync:
 
             _boundaries = [None]
 
-            # Buttons — permanently visible at the bottom.
+            # Buttons: permanently visible at the bottom.
             btn_frame = tk.Frame(bottom_panel, bg=bg)
             btn_frame.pack(pady=(14, 12))
 
@@ -1822,7 +1822,7 @@ class WhisperSync:
         t = threading.Thread(target=_show_guarded, daemon=True)
         t.start()
         # Wait as long as the user needs. A 2-minute timeout would silently
-        # skip speaker confirmation while the dialog was still on screen —
+        # skip speaker confirmation while the dialog was still on screen:
         # data loss with no log.
         event.wait()
 
@@ -3344,7 +3344,7 @@ class WhisperSync:
             # Explicit banner for symmetry with _restart. In theory the
             # atexit hook emits one when the interpreter shuts down, but
             # daemon threads keeping the interpreter alive can swallow
-            # atexit — better to log here and let atexit be a no-op via
+            # atexit; better to log here and let atexit be a no-op via
             # the first-wins rule in record_exit_reason.
             lifecycle.log_exit_banner(logger)
         threading.Thread(target=_do_quit, daemon=True).start()
