@@ -236,33 +236,6 @@ See the `.claude/rules/` directory for transcription workflow conventions used w
 
 Logs: `whisper_sync/logs/app/whisper-sync-YYYY-MM-DD.log`
 
-### Reading the log
-
-Each run emits a startup banner with PID, Python version, OS, and git SHA:
-
-```
-=== WhisperSync starting === pid=12840 python=3.13.0 os=Windows-11-10.0.26200 git=a1b2c3d
-```
-
-Every clean exit (tray quit, restart, SIGTERM, uncaught exception) emits a matching exit banner with a reason:
-
-```
-=== WhisperSync exiting === reason=user_quit
-=== WhisperSync exiting === reason=exception type=RuntimeError
-```
-
-**Missing exit banner** between two startups = silent native crash. Check the Windows Application Event Log:
-
-```powershell
-Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='Application Error'; StartTime=(Get-Date).AddHours(-1)} | Format-List Message
-```
-
-The faulting module name identifies the culprit (e.g. `tcl86t.dll` = Tk GUI thread, `torch_cuda.dll` = CUDA DLL load). WhisperSync also scans the Event Log on startup and logs any recent crashes it finds with the faulting module highlighted.
-
-A `heartbeat` DEBUG line fires every 60 seconds; the last heartbeat before a silent death pins down time-of-death within a minute.
-
-Meeting post-processing logs each step start/end at INFO (`step start: transcribe job=...`, `step done: transcribe job=... elapsed=12.3s`) so a crash mid-step reveals which step was active.
-
 ---
 
 ## Updating

@@ -52,14 +52,6 @@ from . import feature_log
 from . import weekly_stats
 from .streaming_wav import fix_orphan
 from .crash_diagnostics import install_excepthook, check_previous_crash
-from . import lifecycle
-from .heartbeat import Heartbeat
-
-# Module-level reference to the faulthandler log file. Without holding this,
-# the FileIO object is garbage-collected, its fd closes, and any later native
-# crash dumps vanish — which is exactly what happened historically with silent
-# deaths that left no trace.
-_FAULTHANDLER_FILE = None
 from .flatten import flatten as flatten_transcript
 from .notifications import notify, ToastListener
 from .state_manager import (
@@ -1114,9 +1106,6 @@ class WhisperSync:
             (str, True, str|None): user clicked Save & Summarize (name, summarize, diarize_method)
             (str, False, str|None): user clicked Save (name, summarize, diarize_method)
         """
-        import time as _time
-        dialog_started = _time.monotonic()
-        logger.info("dialog open: _ask_meeting_name")
         result = [self._ABORT]
         event = threading.Event()
 
@@ -1226,46 +1215,11 @@ class WhisperSync:
             self._center_window(root)
             root.protocol("WM_DELETE_WINDOW", _abort)
             root.mainloop()
+            event.set()
 
-        def _show_dialog_guarded():
-            # Guarantees event.set() + a well-defined outcome even if
-            # _show_dialog raises before root.mainloop() returns. Without
-            # this, _save_and_enqueue's event.wait() blocks forever and the
-            # tray stays stuck in mode="saving" with the recording neither
-            # saved nor discarded.
-            try:
-                _show_dialog()
-            except Exception:
-                logger.exception("dialog crashed: _ask_meeting_name")
-                result[0] = self._ABORT
-            finally:
-                event.set()
-
-        t = threading.Thread(target=_show_dialog_guarded, daemon=True)
+        t = threading.Thread(target=_show_dialog, daemon=True)
         t.start()
-        # Previously this used a 60s timeout that silently returned _ABORT
-        # while the dialog was still on screen — discarding the recording
-        # while the user thought they were still naming it. The dialog
-        # itself has no auto-close timer, so we wait as long as it's open.
-        event.wait()
-
-        # Report dialog outcome with the actual returned value so forensic
-        # logs can distinguish ABORT vs save vs timeout vs garbage.
-        elapsed = _time.monotonic() - dialog_started
-        outcome = result[0]
-        if outcome is self._ABORT:
-            logger.info("dialog close: _ask_meeting_name outcome=abort elapsed=%.1fs", elapsed)
-        elif isinstance(outcome, tuple) and len(outcome) == 3:
-            name, summarize, method = outcome
-            logger.info(
-                "dialog close: _ask_meeting_name outcome=save name=%r summarize=%s method=%s elapsed=%.1fs",
-                name or "", summarize, method, elapsed,
-            )
-        else:
-            logger.warning(
-                "dialog close: _ask_meeting_name outcome=unexpected value=%r elapsed=%.1fs",
-                outcome, elapsed,
-            )
+        event.wait(timeout=60)
 
         return result[0]
 
@@ -3263,7 +3217,6 @@ class WhisperSync:
         def _do_restart():
             import subprocess
             import time
-            lifecycle.record_exit_reason("user_restart")
             time.sleep(self._CALLBACK_DEFER_SECS)
             self._cleanup()
             # Spawn new process first so it starts loading immediately
@@ -3277,7 +3230,6 @@ class WhisperSync:
             if self.tray:
                 self.tray.stop()
             time.sleep(0.2)
-            lifecycle.log_exit_banner(logger)
             os._exit(0)
 
         threading.Thread(target=_do_restart, daemon=True).start()
@@ -3286,7 +3238,6 @@ class WhisperSync:
         """Quit WhisperSync. Deferred like _restart for the same reason."""
         def _do_quit():
             import time
-            lifecycle.record_exit_reason("user_quit")
             time.sleep(self._CALLBACK_DEFER_SECS)
             self._cleanup()
             if self.tray:
@@ -3494,31 +3445,19 @@ class WhisperSync:
 
 
 def main():
-    global _FAULTHANDLER_FILE
-    # Enable faulthandler FIRST so native segfaults get logged to the log file.
-    # Keep a module-level reference to the file; otherwise CPython can GC the
-    # FileIO object, close its fd, and silently drop later crash dumps.
+    # Enable faulthandler FIRST so native segfaults get logged to the log file
     try:
-        _FAULTHANDLER_FILE = open(get_log_path(), "a", buffering=1, encoding="utf-8")
-        faulthandler.enable(file=_FAULTHANDLER_FILE, all_threads=True)
+        faulthandler.enable(file=open(get_log_path(), "a"), all_threads=True)
     except Exception:
         faulthandler.enable()  # fallback to stderr
-
-    heartbeat = Heartbeat(logger, interval=60.0)
     try:
-        lifecycle.log_startup_banner(logger)
-        lifecycle.install(logger)
+        logger.info("=== WhisperSync starting ===")
         install_excepthook(logger)
         check_previous_crash(logger)
-        heartbeat.start()
         app = WhisperSync()
         app.run()
-    except SystemExit:
-        lifecycle.record_exit_reason("system_exit")
-        raise
     except Exception:
         import traceback
-        lifecycle.record_exit_reason("exception", {"type": type(sys.exc_info()[1]).__name__})
         logger.critical(f"FATAL CRASH:\n{traceback.format_exc()}")
         # Last-resort hook cleanup — prevents stuck Ctrl key on crash
         try:
@@ -3526,8 +3465,6 @@ def main():
         except Exception:
             pass
         raise
-    finally:
-        heartbeat.stop(timeout=1.0)
 
 
 if __name__ == "__main__":

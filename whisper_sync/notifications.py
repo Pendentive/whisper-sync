@@ -229,11 +229,10 @@ def has_input_text_box():
 # Toast templates keyed by event type.  Only events listed here AND enabled
 # in config["toast_events"] will trigger a toast.
 TOAST_REGISTRY: dict[str, dict] = {
-    # NOTE: meeting_completed toasts are fired directly from
-    # MeetingJob.step_notify so the toast can attach an "Open Folder"
-    # button. A template entry here would double-fire and the
-    # MEETING_COMPLETED state event does not carry words/speakers,
-    # so it produced a DEBUG-level KeyError every meeting.
+    "meeting_completed": {
+        "title": "Meeting transcribed",
+        "body": "{words} words, {speakers} speakers",
+    },
     "dictation_completed": {
         "title": "Dictation complete",
         "body": "",
