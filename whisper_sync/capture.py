@@ -1,11 +1,13 @@
-"""Audio capture — mic and system audio (WASAPI loopback on Windows)."""
+"""Audio capture - mic and system audio (WASAPI loopback on Windows)."""
 
 import threading
 import wave
+from math import gcd
 from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
+from scipy.signal import resample_poly
 
 try:
     import pyaudiowpatch as pyaudio
@@ -113,6 +115,11 @@ class AudioRecorder:
         # ``sample_rate``, but ``_open_input_stream`` may fall back to the
         # device's native rate if the requested rate is rejected.
         self._mic_effective_rate: int = sample_rate
+        # Precomputed resample ratio for the current session. Set in
+        # ``start()`` alongside the stream so the audio callback never
+        # recomputes it per buffer.
+        self._mic_resample_up: int = 1
+        self._mic_resample_down: int = 1
         self._mic_data: list[np.ndarray] = []
         self._speaker_data: list[np.ndarray] = []
         self._mic_stream = None
@@ -129,28 +136,39 @@ class AudioRecorder:
 
     def _mic_callback(self, indata, frames, time_info, status):
         try:
-            if self._recording:
-                # If the device rejected our target rate and _open_input_stream
-                # fell back to the device's native rate, resample to the
-                # recorder's canonical sample_rate so downstream consumers
-                # (accumulator, WAV writer, transcription) see 16 kHz data.
-                if self._mic_effective_rate != self.sample_rate:
-                    from math import gcd
-                    from scipy.signal import resample_poly
-                    up = self.sample_rate // gcd(self.sample_rate, self._mic_effective_rate)
-                    down = self._mic_effective_rate // gcd(self.sample_rate, self._mic_effective_rate)
-                    raw = indata.astype("float32", copy=False) if indata.dtype != np.float32 else indata
-                    resampled = resample_poly(raw.flatten(), up, down).reshape(-1, 1)
-                    data = resampled.astype("float32", copy=False)
-                elif indata.dtype != np.float32:
-                    # int16 fallback dtype: convert to float32 in [-1, 1].
-                    data = (indata.astype("float32") / 32768.0)
-                else:
-                    data = indata
-                if not self._disk_only:
-                    self._mic_data.append(data.copy() if data is indata else data)
-                if self._mic_writer is not None:
-                    self._mic_writer.write(data)
+            if not self._recording:
+                return
+
+            # Normalize to float32 in [-1, 1] regardless of what dtype the
+            # device actually produced. Integer samples must be scaled
+            # BEFORE resampling, otherwise downstream audio stays in the
+            # ~[-32768, 32767] range and clips catastrophically when
+            # written to disk or fed to the transcriber.
+            if indata.dtype == np.int16:
+                normalized = indata.astype(np.float32) / 32768.0
+            elif indata.dtype != np.float32:
+                normalized = indata.astype(np.float32)
+            else:
+                normalized = indata
+
+            # Resample to the canonical sample_rate only when the device
+            # fell back to its native rate. up/down are precomputed in
+            # start() so the callback is a single resample_poly call.
+            if self._mic_resample_up != self._mic_resample_down:
+                # Mono view; reshape(-1) avoids the copy flatten() would do.
+                mono = normalized.reshape(-1)
+                resampled = resample_poly(mono, self._mic_resample_up, self._mic_resample_down)
+                data = resampled.reshape(-1, 1).astype(np.float32, copy=False)
+            else:
+                data = normalized
+
+            if not self._disk_only:
+                # Always copy into the accumulator - PortAudio reuses the
+                # indata buffer for the next callback, and normalized may
+                # alias indata on the float32 no-op path.
+                self._mic_data.append(data.copy() if data is indata else data)
+            if self._mic_writer is not None:
+                self._mic_writer.write(data)
         except Exception as e:
             # Never let exceptions escape into PortAudio's C thread
             if not getattr(self, "_mic_error_logged", False):
@@ -174,16 +192,40 @@ class AudioRecorder:
             self._speaker_data = []
             self._mic_error_logged = False
             self._speaker_error_logged = False
-            self._recording = True
 
-            self._mic_stream, self._mic_effective_rate = _open_input_stream(
-                device=mic_device,
-                target_samplerate=self.sample_rate,
-                channels=1,
-                dtype="float32",
-                callback=self._mic_callback,
-            )
-            self._mic_stream.start()
+            # Transactional: the recorder only becomes "recording" AFTER
+            # the mic stream is fully open and started. On any failure we
+            # close a partially created stream and leave ``_recording``
+            # False so stop()/subsequent starts see a clean state.
+            stream = None
+            try:
+                stream, effective_rate = _open_input_stream(
+                    device=mic_device,
+                    target_samplerate=self.sample_rate,
+                    channels=1,
+                    dtype="float32",
+                    callback=self._mic_callback,
+                )
+                stream.start()
+            except Exception:
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+                raise
+
+            self._mic_stream = stream
+            self._mic_effective_rate = effective_rate
+            # Precompute the resample ratio once per session.
+            if effective_rate != self.sample_rate:
+                g = gcd(self.sample_rate, effective_rate)
+                self._mic_resample_up = self.sample_rate // g
+                self._mic_resample_down = effective_rate // g
+            else:
+                self._mic_resample_up = 1
+                self._mic_resample_down = 1
+            self._recording = True
 
             if speaker_device is not None:
                 self._start_speaker_loopback()
@@ -307,11 +349,20 @@ class AudioRecorder:
         Args:
             mic_path: Path for mic WAV file.
             speaker_path: Optional path for speaker WAV file.
-            disk_only: If True, skip RAM accumulation — audio lives only on disk.
+            disk_only: If True, skip RAM accumulation -- audio lives only on disk.
                 Use for long meetings to prevent MemoryError.
+
+        Transactional: if ``StreamingWavWriter`` raises (e.g. unwritable
+        disk), the ``_disk_only`` flag is NOT flipped, so the callback
+        continues to accumulate into RAM and the meeting is still usable.
         """
+        writer = StreamingWavWriter(mic_path, channels=1, rate=self.sample_rate)
+        # Only commit state after the writer is successfully opened. The
+        # old ordering flipped _disk_only first; a writer-open failure
+        # then left the callback skipping BOTH RAM and disk and the
+        # meeting silently captured nothing.
+        self._mic_writer = writer
         self._disk_only = disk_only
-        self._mic_writer = StreamingWavWriter(mic_path, channels=1, rate=self.sample_rate)
 
     def stop_streaming(self):
         """Close and finalize streaming WAV writers."""
