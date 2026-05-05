@@ -67,6 +67,7 @@ from .state_manager import (
 from .meeting_job import MeetingJob
 from .rebuild_index import rebuild_root_index
 from .speakers import identify_speakers, write_speaker_map, update_config, get_config_path
+from .dialog_dispatcher import DialogDispatcher
 
 HOTKEY_OPTIONS = [
     "ctrl+shift+space",
@@ -152,6 +153,12 @@ class WhisperSync:
         self._feature_suggest_active = False  # routes dictation output to feature log
         self._post_queue = queue.Queue()  # Post-processing queue for completed meetings
         self._post_worker_thread = None  # Started in run()
+        # Single long-lived thread for ALL tkinter dialogs. tk.Tk() must not
+        # be created on rotating worker threads; doing so corrupts Win32 heap
+        # state and crashes the next GC cycle (fatal exception 0x80000003).
+        # See whisper_sync/dialog_dispatcher.py for the rationale.
+        self._dialog_dispatcher = DialogDispatcher()
+        self._dialog_dispatcher.start()
         self._cpu_name = _get_cpu_name()
         # Session stats
         self._stats = {
@@ -964,7 +971,6 @@ class WhisperSync:
     def _ask_recovery_name(self, wav_path: str, duration_str: str):
         """Show a dialog to name a recovered meeting. Returns name string or _ABORT."""
         result = [self._ABORT]
-        event = threading.Event()
 
         def _show():
             import tkinter as tk
@@ -1007,11 +1013,12 @@ class WhisperSync:
 
             root.protocol("WM_DELETE_WINDOW", _skip)
             root.mainloop()
-            event.set()
 
-        t = threading.Thread(target=_show, daemon=True)
-        t.start()
-        event.wait(timeout=120)
+        try:
+            self._dialog_dispatcher.run(_show, label="ask_recovery_name")
+        except Exception:
+            logger.exception("dialog crashed: _ask_recovery_name")
+            return self._ABORT
 
         if result[0] is self._ABORT:
             return self._ABORT
@@ -1143,7 +1150,6 @@ class WhisperSync:
         dialog_started = _time.monotonic()
         logger.info("dialog open: _ask_meeting_name")
         result = [self._ABORT]
-        event = threading.Event()
 
         def _show_dialog():
             import tkinter as tk
@@ -1252,27 +1258,16 @@ class WhisperSync:
             root.protocol("WM_DELETE_WINDOW", _abort)
             root.mainloop()
 
-        def _show_dialog_guarded():
-            # Guarantees event.set() + a well-defined outcome even if
-            # _show_dialog raises before root.mainloop() returns. Without
-            # this, _save_and_enqueue's event.wait() blocks forever and the
-            # tray stays stuck in mode="saving" with the recording neither
-            # saved nor discarded.
-            try:
-                _show_dialog()
-            except Exception:
-                logger.exception("dialog crashed: _ask_meeting_name")
-                result[0] = self._ABORT
-            finally:
-                event.set()
-
-        t = threading.Thread(target=_show_dialog_guarded, daemon=True)
-        t.start()
-        # Previously this used a 60s timeout that silently returned _ABORT
-        # while the dialog was still on screen — discarding the recording
-        # while the user thought they were still naming it. The dialog
-        # itself has no auto-close timer, so we wait as long as it's open.
-        event.wait()
+        # Run on the shared dialog dispatcher thread. The dispatcher catches
+        # exceptions and re-raises them in our thread, so we mirror the prior
+        # "abort on crash" behavior with a try/except here. This preserves
+        # the prior contract: _save_and_enqueue's caller never sees a hang
+        # if Tk init or geometry blows up mid-dialog.
+        try:
+            self._dialog_dispatcher.run(_show_dialog, label="ask_meeting_name")
+        except Exception:
+            logger.exception("dialog crashed: _ask_meeting_name")
+            result[0] = self._ABORT
 
         # Report dialog outcome with the actual returned value so forensic
         # logs can distinguish ABORT vs save vs timeout vs garbage.
@@ -1388,7 +1383,6 @@ class WhisperSync:
     def _show_llm_unavailable(self):
         """Show a dialog when Claude CLI is not available. Returns True if user checked 'don't show again'."""
         result = [False]
-        event = threading.Event()
 
         def _show():
             import tkinter as tk
@@ -1422,11 +1416,11 @@ class WhisperSync:
             self._center_window(root)
             root.protocol("WM_DELETE_WINDOW", _ok)
             root.mainloop()
-            event.set()
 
-        t = threading.Thread(target=_show, daemon=True)
-        t.start()
-        event.wait(timeout=30)
+        try:
+            self._dialog_dispatcher.run(_show, label="show_llm_unavailable")
+        except Exception:
+            logger.exception("dialog crashed: _show_llm_unavailable")
 
         return result[0]
 
@@ -1453,7 +1447,6 @@ class WhisperSync:
                 return speaker_map
 
         result = [None]
-        event = threading.Event()
 
         # Store json_path for deep identify button access
         self._deep_id_json_path = getattr(self, '_current_meeting_json_path', None)
@@ -1838,24 +1831,16 @@ class WhisperSync:
             root.protocol("WM_DELETE_WINDOW", _skip)
             root.mainloop()
 
-        def _show_guarded():
-            # Guarantees event.set() fires even if Tk init/geometry raises.
-            # Without this, a crash in _show would hang the meeting
-            # post-processing pipeline indefinitely waiting on the event.
-            try:
-                _show()
-            except Exception:
-                logger.exception("speaker dialog crashed")
-                result[0] = None
-            finally:
-                event.set()
-
-        t = threading.Thread(target=_show_guarded, daemon=True)
-        t.start()
-        # Wait as long as the user needs. A 2-minute timeout would silently
-        # skip speaker confirmation while the dialog was still on screen:
-        # data loss with no log.
-        event.wait()
+        # Run on the shared dialog dispatcher thread. Previously this method
+        # spawned a fresh daemon thread per call and ran tk.Tk() there. That
+        # short-lived-thread pattern corrupted Win32/heap state and surfaced
+        # later as STATUS_BREAKPOINT (0x80000003) at speakers.py:541 inside
+        # json.load, on the post-processing worker thread.
+        try:
+            self._dialog_dispatcher.run(_show, label="ask_speaker_confirmation")
+        except Exception:
+            logger.exception("speaker dialog crashed")
+            result[0] = None
 
         return result[0]
 
@@ -2814,7 +2799,13 @@ class WhisperSync:
             logger.warning(f"PR merge error: {e}")
 
     def _show_error_popup(self, title: str, message: str):
-        """Show a tkinter error dialog with the given message."""
+        """Show a tkinter error dialog with the given message.
+
+        Fire-and-forget: callers don't wait for the popup to close. We still
+        run on the dispatcher thread to keep all tk.Tk() creation on a single
+        consistent thread; we just don't block our caller. A small worker
+        thread bridges the call so this method returns immediately as before.
+        """
         def _show():
             import tkinter as tk
             from tkinter import messagebox
@@ -2822,7 +2813,14 @@ class WhisperSync:
             root.withdraw()
             messagebox.showerror(f"WhisperSync: {title}", message)
             root.destroy()
-        threading.Thread(target=_show, daemon=True).start()
+
+        def _dispatch():
+            try:
+                self._dialog_dispatcher.run(_show, label="error_popup")
+            except Exception:
+                logger.exception("error popup failed: %s", title)
+
+        threading.Thread(target=_dispatch, daemon=True).start()
 
     def _open_output_folder(self):
         import subprocess
@@ -2836,7 +2834,6 @@ class WhisperSync:
 
         current = self._output_dir()
         result = [None]  # None=cancelled, (Path, bool)=(new_path, move_files)
-        event = threading.Event()
 
         def _show():
             import tkinter as tk
@@ -2853,7 +2850,6 @@ class WhisperSync:
             root.destroy()
 
             if not new_dir or Path(new_dir) == current:
-                event.set()
                 return
 
             new_path = Path(new_dir)
@@ -2862,12 +2858,12 @@ class WhisperSync:
 
             if not has_files:
                 result[0] = (new_path, False)
-                event.set()
                 return
 
-            # Ask about moving files
+            # Ask about moving files. Run inline (we are already on the
+            # dispatcher thread, so the dispatcher's reentrancy guard makes
+            # this a same-thread call rather than a deadlock).
             move_result = [None]
-            move_event = threading.Event()
 
             def _show_move_dialog():
                 dlg = tk.Tk()
@@ -2916,22 +2912,24 @@ class WhisperSync:
                 self._center_window(dlg)
                 dlg.protocol("WM_DELETE_WINDOW", _cancel)
                 dlg.mainloop()
-                move_event.set()
 
-            t2 = threading.Thread(target=_show_move_dialog, daemon=True)
-            t2.start()
-            move_event.wait(timeout=60)
+            # Same-thread call via dispatcher (reentrancy guard runs inline).
+            try:
+                self._dialog_dispatcher.run(_show_move_dialog, label="change_output_move_dialog")
+            except Exception:
+                logger.exception("change-output move dialog crashed")
+                move_result[0] = None
 
             if move_result[0] is None:
-                event.set()
                 return
 
             result[0] = (new_path, move_result[0])
-            event.set()
 
-        t = threading.Thread(target=_show, daemon=True)
-        t.start()
-        event.wait(timeout=120)
+        try:
+            self._dialog_dispatcher.run(_show, label="change_output_folder")
+        except Exception:
+            logger.exception("change-output dialog crashed")
+            return
 
         if result[0] is None:
             return
@@ -3380,11 +3378,9 @@ class WhisperSync:
             lifecycle.log_exit_banner(logger)
         threading.Thread(target=_do_quit, daemon=True).start()
 
-    @staticmethod
-    def _prompt_large_download(model_name: str, size: str) -> bool:
+    def _prompt_large_download(self, model_name: str, size: str) -> bool:
         """Show a tkinter dialog asking if user wants to download a large model."""
         result = [False]
-        event = threading.Event()
 
         def _show():
             import tkinter as tk
@@ -3400,11 +3396,12 @@ class WhisperSync:
             )
             result[0] = answer
             root.destroy()
-            event.set()
 
-        t = threading.Thread(target=_show, daemon=True)
-        t.start()
-        event.wait(timeout=120)
+        try:
+            self._dialog_dispatcher.run(_show, label="prompt_large_download")
+        except Exception:
+            logger.exception("dialog crashed: _prompt_large_download")
+
         return result[0]
 
     def run(self):
@@ -3595,6 +3592,10 @@ class WhisperSync:
             self._backup.stop()
             if self._github_poller:
                 self._github_poller.stop()
+            try:
+                self._dialog_dispatcher.shutdown(timeout=2.0)
+            except Exception:
+                pass
 
 
 def main():
