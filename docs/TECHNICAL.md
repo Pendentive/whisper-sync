@@ -356,3 +356,69 @@ To also clear models: `Remove-Item -Recurse -Force ".\whisper_sync\models\*"`
 - Crash recovery: WAV must be >= 5 seconds (`streaming_wav.py`)
 - Watchdog: 5 max restarts, 5s cooldown, 300s stability reset (`watchdog.py`)
 - Pause threshold for paragraph breaks: 2.0 seconds (`flatten.py`)
+
+---
+
+## Recovery and Backfill
+
+When the meeting post-processing pipeline crashes mid-run, the audio is preserved and the meeting can be finished without re-recording. This section covers the recovery paths.
+
+### Pipeline Crash Semantics
+
+The meeting post-processing pipeline (`whisper_sync/meeting_job.py`) runs 8 steps sequentially:
+
+| # | Step | Action |
+|---|------|--------|
+| 1 | `step_transcribe` | Worker subprocess transcribes the WAV and writes `transcript.json` |
+| 2 | `step_speaker_id` | Claude CLI identifies speakers, tkinter dialog confirms, `speaker_map` is written into `transcript.json` |
+| 3 | `step_flatten` | `flatten.py` writes `transcript-readable.txt` |
+| 4 | `step_minutes` | Claude CLI generates `minutes.md` from the readable transcript |
+| 5 | `step_rename` | Folder is renamed to include the meeting topic |
+| 6 | `step_index` | `INDEX.md` is regenerated for the week folder |
+| 7 | `step_notify` | Windows toast fires with completion summary |
+| 8 | `step_complete` | State machine returns to idle |
+
+If any step raises, subsequent steps do not run for that job. **`transcript.json` is always written by step 1** inside the worker subprocess, so audio is never lost: the WAV stays on disk and the JSON exists from the moment transcription returns. Each step start and end is logged at INFO (`step start: <name> job=<label>` / `step done: <name> job=<label> elapsed=<s>`), and a failure logs `step failed: ...` with a full traceback. Pinning which step crashed is straightforward from `whisper_sync/logs/app/whisper-sync-YYYY-MM-DD.log`.
+
+The historical crash pattern was specifically step 2 (`step_speaker_id`), where tkinter heap corruption could take down the dialog (fixed in PR #129). Other steps fail less catastrophically: `step_minutes` is wrapped in a broad try/except and only logs failures (the meeting is still marked transcribed), and `step_transcribe` failures surface from the worker subprocess with a clean error rather than a crash.
+
+### Tray Menu Recovery Flow
+
+The tray's **Meetings** submenu is the user-facing recovery entry point.
+
+- **Where it lives**: `whisper_sync/__main__.py` -> `_build_meetings_menu()` (line 2243) constructs the submenu; `_recover_meeting_speakers()` (line 870) is the click handler.
+- **What it shows**: the 10 most recent meeting folders containing `transcript.json`. Each row label is `<folder-name>\t<status>`, where status is one of `Complete` (minutes.md exists), `Transcribed` (transcript-readable.txt exists), or `Processing` (neither exists).
+- **What clicking does**: invokes `_recover_meeting_speakers(meeting_dir)` which:
+  1. Re-runs Claude-based speaker identification on `transcript.json` (falls back to a manual entry stub if Claude is unavailable or fails).
+  2. Re-opens the tkinter speaker confirmation dialog so the user can edit names.
+  3. Writes the confirmed `speaker_map` back to `transcript.json` via `speakers.write_speaker_map()`.
+  4. Re-runs `flatten.flatten()` to regenerate `transcript-readable.txt` with named speakers.
+  5. If the Claude CLI is installed and available (gated by `_is_claude_cli_available()`), calls `_generate_minutes()` to regenerate `minutes.md` from the updated readable transcript. When the CLI is missing, the recovery flow stops after step 4 and the meeting status remains `Transcribed` rather than `Complete`.
+  6. Refreshes the tray menu so the new status appears.
+
+A guard set (`_recovering_meetings`) prevents duplicate clicks on the same meeting from launching parallel recovery threads.
+
+### Manual Recovery (When the Tray Flow Is Unavailable)
+
+If the tray menu is unavailable (app not running) or you want to fix things by hand, call the same modules directly from a Python REPL:
+
+```powershell
+.\whisper-env\Scripts\python.exe
+```
+
+```python
+from pathlib import Path
+from whisper_sync.flatten import flatten as flatten_transcript
+from whisper_sync.speakers import write_speaker_map
+
+meeting_dir = Path(r"meetings\local-transcriptions\05-w1\0501_1430_my-meeting")
+json_path = meeting_dir / "transcript.json"
+
+# Optional: write a speaker_map by hand if names are wrong or missing
+write_speaker_map(str(json_path), {"SPEAKER_00": "Colby", "SPEAKER_01": "Abhi"})
+
+# Regenerate transcript-readable.txt
+flatten_transcript(str(json_path))
+```
+
+To regenerate `minutes.md` outside the tray, the simplest path is to launch WhisperSync and use the Meetings submenu; `_generate_minutes()` is an instance method on the running `WhisperSync` app and depends on app state (config, Claude CLI availability checks, toast routing). Running it in isolation is possible but not recommended; trigger it via the tray instead.

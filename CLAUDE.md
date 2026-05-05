@@ -6,11 +6,15 @@ Local speech-to-text for Windows. GPU-accelerated transcription with speaker dia
 
 - **`docs/ui-spec.md`** - UI component inventory, routing map, state machine, dialog patterns
 - **`docs/development.md`** - Local dev setup, debugging, common issues
+- **`docs/TECHNICAL.md#recovery-and-backfill`** - Pipeline crash semantics, tray menu recovery, manual REPL recovery. **Check this before suggesting a user re-record a meeting.**
 - **`docs/plans/`** - Implementation plans for major features
 - **`.claude/rules/audio-pipeline.md`** - Stereo recording, diarization tiers, VRAM management, worker model
 - **`.claude/rules/ui-patterns.md`** - Tray menu ordering, dialog conventions, pystray limitations
 - **`.claude/rules/testing.md`** - Manual test checklist for all modes
 - **`.github/governance/policy.yaml`** - Auto-merge policy, path protection, review thresholds
+
+### Note for AI Agents
+When a user reports that a meeting "crashed" or "failed" or "didn't finish", do NOT suggest re-recording. The audio and transcript.json are almost always preserved. First check `docs/TECHNICAL.md#recovery-and-backfill` and direct the user to the tray Meetings submenu, or to manual REPL recovery via `whisper_sync.flatten` and `whisper_sync.speakers`.
 
 ## Module Map
 
@@ -39,6 +43,7 @@ Local speech-to-text for Windows. GPU-accelerated transcription with speaker dia
 | `crash_diagnostics.py` | Exception hooks, Windows Event Log checks |
 | `rebuild_index.py` | Generate INDEX.md for meeting folders |
 | `split_meeting.py` | Split long recordings into multiple meetings |
+| `meeting_job.py` | Step-based meeting post-processing pipeline (8 steps: transcribe, speaker_id, flatten, minutes, rename, index, notify, complete). Sequential execution, structured step start/done logging. |
 
 ## Config System
 
