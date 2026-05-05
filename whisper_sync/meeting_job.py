@@ -49,6 +49,10 @@ class MeetingJob:
 
         # Populated during processing
         self.transcript_result = None  # dict from worker.transcribe()
+        # Full parsed transcript dict, retained in memory after step_transcribe
+        # so step_speaker_id can pass it to write_speaker_map and avoid a
+        # background-thread json.load (which has caused 0x80000003 crashes).
+        self.transcript_data: dict | None = None
         self.speakers_confirmed = None  # dict or None
         self.llm_ok = False  # whether Claude CLI is available
 
@@ -139,6 +143,12 @@ class MeetingJob:
             "Transcript saved: %s",
             self.transcript_result.get("json_path", self.wav_path),
         )
+
+        # Pop the full parsed transcript dict off the result and stash it on
+        # self. step_speaker_id passes this to write_speaker_map so the write
+        # never has to re-read transcript.json on a background thread.
+        # See speakers.write_speaker_map for the crash-mode rationale.
+        self.transcript_data = self.transcript_result.pop("transcript_data", None)
 
         # Structured meeting result logging
         from .logger import log_meeting_result, log_transcript_preview
@@ -232,7 +242,11 @@ class MeetingJob:
                             confirmed_map = confirmation
                             boundaries = None
 
-                        write_speaker_map(json_path, confirmed_map)
+                        write_speaker_map(
+                            json_path,
+                            confirmed_map,
+                            transcript_data=self.transcript_data,
+                        )
                         cfg_path = get_config_path()
                         # config_updates from initial (light) identification.
                         # Deep mode config_updates are applied via the Meetings recovery flow.
@@ -289,7 +303,11 @@ class MeetingJob:
                     )
                 else:
                     try:
-                        _write_speaker_map(json_path, placeholder_map)
+                        _write_speaker_map(
+                            json_path,
+                            placeholder_map,
+                            transcript_data=self.transcript_data,
+                        )
                     except Exception as e:
                         logger.warning(
                             "Could not write placeholder speaker map (leaving speakers_confirmed unset): %s",

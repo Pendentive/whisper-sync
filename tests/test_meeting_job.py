@@ -118,7 +118,7 @@ def _install_fake_speakers_module(
             raise identify_side_effect
         return {"speaker_map": {"SPEAKER_00": "Alice"}}
 
-    def _write_speaker_map(json_path, speaker_map):
+    def _write_speaker_map(json_path, speaker_map, transcript_data=None):
         if write_side_effect is not None:
             raise write_side_effect
         writes.append((json_path, dict(speaker_map)))

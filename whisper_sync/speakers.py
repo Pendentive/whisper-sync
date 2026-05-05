@@ -535,15 +535,33 @@ def build_manual_stub(json_path: str, reason: str = "Enter name manually") -> di
         return None
 
 
-def write_speaker_map(transcript_json_path: str, speaker_map: dict) -> None:
-    """Write speaker_map to transcript.json (additive — does not modify segments)."""
-    with open(transcript_json_path) as f:
-        data = json.load(f)
+def write_speaker_map(
+    transcript_json_path: str,
+    speaker_map: dict,
+    transcript_data: dict | None = None,
+) -> None:
+    """Write speaker_map to transcript.json (additive, does not modify segments).
 
-    data["speaker_map"] = speaker_map
+    If ``transcript_data`` is provided, mutates the in-memory dict and writes
+    that out instead of reading the file again. This is required when called
+    from a background thread: ``json.load`` on a worker thread can interleave
+    with CPython's garbage collector and trigger a Windows fatal access
+    violation (status 0x80000003). The same pattern caused the build_meetings
+    menu crashes fixed in commit 4f3b307; this is the remaining hot path.
+
+    The disk-read fallback is retained for callers on the main thread
+    (notably __main__.py recovery flows) and for callers that genuinely
+    do not have the dict in memory.
+    """
+    if transcript_data is None:
+        # Disk-read path. Only safe to call from the main thread.
+        with open(transcript_json_path) as f:
+            transcript_data = json.load(f)
+
+    transcript_data["speaker_map"] = speaker_map
 
     with open(transcript_json_path, "w") as f:
-        json.dump(data, f, indent=2)
+        json.dump(transcript_data, f, indent=2, default=str)
 
     logger.info(f"Speaker map written: {speaker_map}")
 
