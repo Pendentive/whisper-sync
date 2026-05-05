@@ -178,6 +178,17 @@ The automatic VRAM-tier sizing:
 2. Check if a worker process is still running (see orphan cleanup above)
 3. If the file was from a crash, `streaming_wav.fix_orphan(path)` can repair the WAV header without needing the original process
 
+### Meeting Post-Processing Crashed Mid-Pipeline
+
+**Symptom**: A meeting recording finished, but `minutes.md` is missing, speaker names are wrong, or `transcript-readable.txt` was never written. The folder shows `Processing` or `Transcribed` status in the tray Meetings submenu instead of `Complete`.
+
+**Cause**: The 8-step post-processing pipeline (transcribe, speaker_id, flatten, minutes, rename, index, notify, complete) failed at one of the steps. The `transcript.json` was already written by step 1, so audio and raw transcript are preserved.
+
+**Fix**:
+1. Open the tray **Meetings** submenu and click the affected meeting. This re-runs speaker identification, regenerates `transcript-readable.txt`, and regenerates `minutes.md`.
+2. If the original transcript itself is poor quality, run `python retranscribe_tier2.py <recording.wav>` to force a Tier 2 re-transcription.
+3. For full recovery options including manual REPL recovery, see [docs/TECHNICAL.md#recovery-and-backfill](TECHNICAL.md#recovery-and-backfill).
+
 ### PyTorch Using CPU Instead of GPU
 
 **Symptom**: Transcription is 5-10x slower than expected. Tray menu shows "CUDA: No".
