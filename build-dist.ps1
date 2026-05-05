@@ -45,6 +45,7 @@ $pyFiles = @(
     "watchdog.py",
     "worker.py",
     "worker_manager.py",
+    "dialog_dispatcher.py",
     "backup_worker.py",
     "notifications.py",
     "github_status.py",

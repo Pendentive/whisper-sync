@@ -67,6 +67,7 @@ class DialogDispatcher:
         self._queue: "queue.Queue[Any]" = queue.Queue()
         self._thread: threading.Thread | None = None
         self._started = False
+        self._shutting_down = False
         self._lock = threading.Lock()
 
     def start(self) -> None:
@@ -84,17 +85,40 @@ class DialogDispatcher:
             logger.debug("DialogDispatcher started")
 
     def shutdown(self, timeout: float | None = 5.0) -> None:
-        """Signal the dispatcher to stop and wait for it to exit."""
+        """Signal the dispatcher to stop and wait for it to exit.
+
+        Sets ``_shutting_down`` BEFORE enqueuing the sentinel so that any
+        concurrent ``run()`` call observes the flag and refuses to enqueue
+        a request that would otherwise sit behind the sentinel forever.
+        """
         with self._lock:
             if not self._started:
                 return
+            self._shutting_down = True
             self._queue.put(self._SENTINEL)
         t = self._thread
         if t is not None:
             t.join(timeout=timeout)
         with self._lock:
+            # Only clear state if the thread actually exited. If it's still
+            # alive (timeout hit), leave _started and _thread intact so a
+            # later call doesn't spawn a duplicate dispatcher behind the
+            # hung one. The "single long-lived thread" guarantee matters
+            # for tkinter on Windows.
+            if t is not None and t.is_alive():
+                logger.warning(
+                    "DialogDispatcher shutdown timed out after %ss; "
+                    "thread %r is still alive, leaving state intact.",
+                    timeout,
+                    self._name,
+                )
+                return
             self._started = False
             self._thread = None
+            # ``_shutting_down`` stays True. A DialogDispatcher is a
+            # single-use lifecycle: once shut down it cannot accept new
+            # work. Callers that need a fresh dispatcher must construct
+            # a new instance.
 
     def run(self, fn: Callable[[], Any], label: str = "dialog") -> Any:
         """Submit a dialog callable to the dispatcher and wait for its result.
@@ -106,6 +130,11 @@ class DialogDispatcher:
 
         ``label`` is used for diagnostic logging only.
         """
+        if self._shutting_down:
+            # Refuse new submissions during shutdown so requests don't pile
+            # up behind the sentinel and block the caller forever.
+            raise RuntimeError("DialogDispatcher is shutting down")
+
         if not self._started:
             # Lazy auto-start so callers don't have to remember to call
             # start() before the first dialog.

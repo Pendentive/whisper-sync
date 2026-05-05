@@ -109,6 +109,16 @@ class DialogDispatcherTests(unittest.TestCase):
         # Second shutdown must not raise or hang.
         d.shutdown(timeout=2.0)
 
+    def test_run_after_shutdown_raises(self) -> None:
+        # Once shutdown() is called, run() must refuse new submissions
+        # rather than queue them behind the sentinel where they would
+        # block the caller forever.
+        d = DialogDispatcher(name="post-shutdown")
+        d.start()
+        d.shutdown(timeout=2.0)
+        with self.assertRaises(RuntimeError):
+            d.run(lambda: "should-not-run", label="rejected")
+
     def test_reentrant_call_runs_inline(self) -> None:
         # If a dialog callback wants to invoke another dialog, that nested
         # call must NOT be re-queued (it would deadlock waiting on itself).
