@@ -247,6 +247,11 @@ class MeetingJob:
                             confirmed_map,
                             transcript_data=self.transcript_data,
                         )
+                        # Release the large transcript dict for GC. After
+                        # write_speaker_map returns, no other step in the job
+                        # reads self.transcript_data, so keeping it alive only
+                        # adds GC pressure on the post-processing thread.
+                        self.transcript_data = None
                         cfg_path = get_config_path()
                         # config_updates from initial (light) identification.
                         # Deep mode config_updates are applied via the Meetings recovery flow.
@@ -319,6 +324,11 @@ class MeetingJob:
                             "Placeholder speakers applied: %s. Re-edit via Meetings tray menu recovery flow.",
                             placeholder_map,
                         )
+                    finally:
+                        # Release the transcript dict regardless of success.
+                        # Downstream steps do not consume self.transcript_data;
+                        # holding it just inflates the post-processing thread.
+                        self.transcript_data = None
 
     def _build_placeholder_speaker_map(self, json_path: str) -> dict[str, str]:
         """Read SPEAKER_XX labels from transcript and produce a placeholder map.
