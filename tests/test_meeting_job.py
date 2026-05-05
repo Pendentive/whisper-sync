@@ -118,7 +118,7 @@ def _install_fake_speakers_module(
             raise identify_side_effect
         return {"speaker_map": {"SPEAKER_00": "Alice"}}
 
-    def _write_speaker_map(json_path, speaker_map):
+    def _write_speaker_map(json_path, speaker_map, transcript_data=None):
         if write_side_effect is not None:
             raise write_side_effect
         writes.append((json_path, dict(speaker_map)))
@@ -196,6 +196,45 @@ class StepSpeakerIdFailsafeTests(unittest.TestCase):
             "speakers_confirmed should be set to a placeholder map after dialog failure",
         )
         self.assertIsInstance(job.speakers_confirmed, dict)
+
+    def test_step_speaker_id_clears_transcript_data_on_confirmed_path(self):
+        # Regression for Copilot review on PR #131: the large transcript dict
+        # held on the post-processing thread must be released for GC after
+        # write_speaker_map. Confirmed-write path.
+        class _AcceptApp(_StubApp):
+            def _ask_speaker_confirmation(self, id_result):
+                return {"SPEAKER_00": "Alice"}
+
+        fake, writes = _install_fake_speakers_module()
+        with mock.patch.dict(sys.modules, {"whisper_sync.speakers": fake}):
+            job = _make_speaker_id_job(app=_AcceptApp())
+            job.transcript_data = {"segments": [{"speaker": "SPEAKER_00"}]}
+            job.step_speaker_id()
+
+        self.assertEqual(
+            job.speakers_confirmed, {"SPEAKER_00": "Alice"},
+            "confirmed map should be applied",
+        )
+        self.assertIsNone(
+            job.transcript_data,
+            "transcript_data should be cleared after confirmed write",
+        )
+
+    def test_step_speaker_id_clears_transcript_data_on_placeholder_path(self):
+        # Same regression, placeholder-write path (dialog skipped).
+        fake, _writes = _install_fake_speakers_module(
+            identify_side_effect=RuntimeError("claude exploded"),
+        )
+        with mock.patch.dict(sys.modules, {"whisper_sync.speakers": fake}):
+            job = _make_speaker_id_job()
+            job.transcript_data = {"segments": [{"speaker": "SPEAKER_00"}]}
+            job.step_speaker_id()
+
+        self.assertIsNotNone(job.speakers_confirmed)
+        self.assertIsNone(
+            job.transcript_data,
+            "transcript_data should be cleared after placeholder write",
+        )
 
     def test_step_speaker_id_leaves_speakers_unset_when_write_fails(self):
         # If even the placeholder write fails, speakers_confirmed should

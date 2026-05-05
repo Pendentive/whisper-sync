@@ -535,15 +535,36 @@ def build_manual_stub(json_path: str, reason: str = "Enter name manually") -> di
         return None
 
 
-def write_speaker_map(transcript_json_path: str, speaker_map: dict) -> None:
-    """Write speaker_map to transcript.json (additive — does not modify segments)."""
-    with open(transcript_json_path) as f:
-        data = json.load(f)
+def write_speaker_map(
+    transcript_json_path: str,
+    speaker_map: dict,
+    transcript_data: dict | None = None,
+) -> None:
+    """Write speaker_map to transcript.json (additive, does not modify segments).
 
-    data["speaker_map"] = speaker_map
+    Thread-safety contract:
+
+    - Background-thread callers MUST pass ``transcript_data`` as a pre-parsed
+      dict. ``json.load`` on a worker thread can interleave with CPython's
+      garbage collector and trigger a Windows fatal access violation (status
+      0x80000003). The same pattern caused the build_meetings menu crashes
+      fixed in commit 4f3b307. Both the post-processing pipeline
+      (meeting_job.step_speaker_id) and the manual recovery flow
+      (__main__._recover_meeting_speakers) load the transcript on entry and
+      pass the dict through to satisfy this contract.
+    - The disk-read fallback below is for genuine main-thread or
+      single-threaded callers that do not already have the dict in memory.
+      Do NOT rely on the fallback from a worker thread.
+    """
+    if transcript_data is None:
+        # Disk-read path. Only safe to call from the main thread.
+        with open(transcript_json_path) as f:
+            transcript_data = json.load(f)
+
+    transcript_data["speaker_map"] = speaker_map
 
     with open(transcript_json_path, "w") as f:
-        json.dump(data, f, indent=2)
+        json.dump(transcript_data, f, indent=2, default=str)
 
     logger.info(f"Speaker map written: {speaker_map}")
 

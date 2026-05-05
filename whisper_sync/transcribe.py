@@ -628,5 +628,12 @@ def stage_finalize(ctx: dict, result: dict, diarize_segments=None) -> dict:
             }
             for seg in result.get("segments", [])
         ]
+        # Pass the full parsed transcript dict back to the calling process so
+        # downstream steps (notably write_speaker_map) can mutate it in memory
+        # rather than re-reading transcript.json on a background thread, which
+        # has caused recurring Windows fatal access violations (0x80000003)
+        # when CPython's GC interleaves with json.load. See the matching note
+        # in speakers.write_speaker_map and the prior fix in commit 4f3b307.
+        output["transcript_data"] = result
 
     return output

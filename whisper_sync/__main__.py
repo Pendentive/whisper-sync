@@ -895,6 +895,21 @@ class WhisperSync:
 
         def _run():
             try:
+                # Load transcript.json ONCE at thread entry, before any other
+                # allocations or GC pressure. write_speaker_map requires a
+                # pre-parsed dict on background threads to avoid the Windows
+                # json.load / GC interleave crash (0x80000003). See
+                # speakers.write_speaker_map docstring for the full rationale.
+                transcript_data = None
+                try:
+                    with open(json_path) as _f:
+                        transcript_data = _json.load(_f)
+                except Exception as e:
+                    logger.warning(
+                        f"Recovery: could not pre-load transcript.json for {meeting_dir.name}: {e}"
+                    )
+                    return
+
                 # Immediate feedback
                 try:
                     from .notifications import notify
@@ -931,8 +946,9 @@ class WhisperSync:
                     logger.info("Recovery: speaker identification skipped by user")
                     return
 
-                # Write speaker map
-                write_speaker_map(str(json_path), confirmed_map)
+                # Write speaker map. Pass the pre-parsed dict so write_speaker_map
+                # does not perform json.load on this background thread.
+                write_speaker_map(str(json_path), confirmed_map, transcript_data=transcript_data)
                 update_config(cfg_path, confirmed_map, id_result.get("config_updates"))
                 logger.info(f"Recovery: speakers confirmed for {meeting_dir.name}: {confirmed_map}")
 
