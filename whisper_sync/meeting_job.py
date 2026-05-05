@@ -171,73 +171,163 @@ class MeetingJob:
 
         If Claude times out or fails, still shows the dialog with empty names
         so the user can manually enter speaker names.
-        """
-        from .speakers import identify_speakers, write_speaker_map, update_config, get_config_path, build_manual_stub
 
+        FAILSAFE: Any failure in this step (Claude error, tkinter heap
+        corruption, dialog crash, user skip, unexpected exception) results
+        in placeholder speaker assignment so subsequent steps (flatten,
+        minutes, rename, index, notify, complete) still run. The user can
+        re-edit speakers later via the existing Meetings tray menu recovery
+        flow (see __main__.py recovery handlers).
+        """
         json_path = self.transcript_result.get(
             "json_path", str(self.meeting_dir / "transcript.json")
-        )
+        ) if self.transcript_result else str(self.meeting_dir / "transcript.json")
 
-        id_result = None
-        if self.llm_ok:
-            try:
-                cfg_path = get_config_path()
-                id_result = identify_speakers(json_path, cfg_path, self.folder_name)
-            except Exception as e:
-                logger.warning("Speaker identification failed (non-fatal): %s", e)
+        # Imports are inside the try/except so an import-time failure in
+        # .speakers (or its transitive imports) also triggers the failsafe
+        # path rather than aborting the pipeline before the catch-all.
+        write_speaker_map = None
+        try:
+            from .speakers import (
+                identify_speakers, write_speaker_map, update_config,
+                get_config_path, build_manual_stub,
+            )
 
-        if not id_result or not id_result.get("speaker_map"):
-            # Tailor reasoning and notification based on cause
+            id_result = None
             if self.llm_ok:
-                reason = "Auto-identification failed - enter name manually"
-                toast_title = "Speaker ID Failed"
-                toast_body = "Automatic speaker identification failed; enter names manually in the dialog."
-            else:
-                reason = "Auto-identification unavailable (Claude CLI not available) - enter name manually"
-                toast_title = "Speaker ID Unavailable"
-                toast_body = "Speaker identification requires Claude CLI, which is not available. Enter speaker names manually in the dialog."
-
-            id_result = build_manual_stub(json_path, reason)
-            if id_result:
                 try:
-                    from .notifications import notify
-                    notify(toast_title, toast_body)
-                except Exception:
-                    pass
-                logger.warning("Speaker ID not applied, showing manual entry dialog")
-
-        if id_result and id_result.get("speaker_map"):
-            try:
-                self.app._current_meeting_json_path = json_path
-                confirmation = self.app._ask_speaker_confirmation(id_result)
-                if confirmation:
-                    if isinstance(confirmation, tuple):
-                        confirmed_map, boundaries = confirmation
-                    else:
-                        confirmed_map = confirmation
-                        boundaries = None
-
-                    write_speaker_map(json_path, confirmed_map)
                     cfg_path = get_config_path()
-                    # config_updates from initial (light) identification.
-                    # Deep mode config_updates are applied via the Meetings recovery flow.
-                    update_config(
-                        cfg_path, confirmed_map, id_result.get("config_updates")
-                    )
-                    logger.info("Speakers confirmed: %s", confirmed_map)
-                    self.speakers_confirmed = confirmed_map
+                    id_result = identify_speakers(json_path, cfg_path, self.folder_name)
+                except Exception as e:
+                    logger.warning("Speaker identification failed (non-fatal): %s", e)
 
-                    if boundaries:
-                        logger.info(f"Meeting boundaries detected: {boundaries}")
-                        self._detected_boundaries = boundaries
-                        # Boundaries are informational - user can split via Meetings tray menu.
-                        # Automatic splitting will be added in a future update.
+            if not id_result or not id_result.get("speaker_map"):
+                # Tailor reasoning and notification based on cause
+                if self.llm_ok:
+                    reason = "Auto-identification failed - enter name manually"
+                    toast_title = "Speaker ID Failed"
+                    toast_body = "Automatic speaker identification failed; enter names manually in the dialog."
                 else:
-                    logger.info("Speaker identification skipped by user")
-            except Exception as e:
-                logger.warning("Speaker confirmation dialog failed: %s", e)
-        else:
-            logger.info("No speakers found in transcript")
+                    reason = "Auto-identification unavailable (Claude CLI not available) - enter name manually"
+                    toast_title = "Speaker ID Unavailable"
+                    toast_body = "Speaker identification requires Claude CLI, which is not available. Enter speaker names manually in the dialog."
+
+                id_result = build_manual_stub(json_path, reason)
+                if id_result:
+                    try:
+                        from .notifications import notify
+                        notify(toast_title, toast_body)
+                    except Exception:
+                        pass
+                    logger.warning("Speaker ID not applied, showing manual entry dialog")
+
+            if id_result and id_result.get("speaker_map"):
+                try:
+                    self.app._current_meeting_json_path = json_path
+                    confirmation = self.app._ask_speaker_confirmation(id_result)
+                    if confirmation:
+                        if isinstance(confirmation, tuple):
+                            confirmed_map, boundaries = confirmation
+                        else:
+                            confirmed_map = confirmation
+                            boundaries = None
+
+                        write_speaker_map(json_path, confirmed_map)
+                        cfg_path = get_config_path()
+                        # config_updates from initial (light) identification.
+                        # Deep mode config_updates are applied via the Meetings recovery flow.
+                        update_config(
+                            cfg_path, confirmed_map, id_result.get("config_updates")
+                        )
+                        logger.info("Speakers confirmed: %s", confirmed_map)
+                        self.speakers_confirmed = confirmed_map
+
+                        if boundaries:
+                            logger.info(f"Meeting boundaries detected: {boundaries}")
+                            self._detected_boundaries = boundaries
+                            # Boundaries are informational - user can split via Meetings tray menu.
+                            # Automatic splitting will be added in a future update.
+                    else:
+                        logger.info("Speaker identification skipped by user")
+                except Exception as e:
+                    logger.warning("Speaker confirmation dialog failed: %s", e)
+            else:
+                logger.info("No speakers found in transcript")
+        except Exception as e:
+            # Top-level catch: never let speaker_id failures break the
+            # pipeline. tkinter heap corruption (speakers.py:541) and other
+            # crashes have prevented steps 3-8 from running, leaving meetings
+            # without minutes.md. Fail open: log, apply placeholders, move on.
+            logger.warning(
+                "Speaker ID failed/skipped - using placeholders, edit later via Meetings tray menu: %s",
+                e,
+            )
+
+        # Failsafe: ensure placeholder speakers are assigned if confirmation
+        # did not complete. This guarantees later steps have something to
+        # work with and that transcript.json has a speaker_map written so
+        # downstream consumers (flatten, minutes) behave consistently.
+        if not self.speakers_confirmed:
+            placeholder_map = self._build_placeholder_speaker_map(json_path)
+            if placeholder_map:
+                # Resolve write_speaker_map lazily here too in case the
+                # earlier import inside the try block failed.
+                _write_speaker_map = write_speaker_map
+                if _write_speaker_map is None:
+                    try:
+                        from .speakers import write_speaker_map as _wsm
+                        _write_speaker_map = _wsm
+                    except Exception as e:
+                        logger.warning(
+                            "Could not import write_speaker_map for placeholder write: %s",
+                            e,
+                        )
+                if _write_speaker_map is None:
+                    logger.warning(
+                        "Placeholder speakers NOT applied: speakers module unavailable. "
+                        "Downstream steps will see speakers_confirmed unset."
+                    )
+                else:
+                    try:
+                        _write_speaker_map(json_path, placeholder_map)
+                    except Exception as e:
+                        logger.warning(
+                            "Could not write placeholder speaker map (leaving speakers_confirmed unset): %s",
+                            e,
+                        )
+                    else:
+                        self.speakers_confirmed = placeholder_map
+                        logger.warning(
+                            "Placeholder speakers applied: %s. Re-edit via Meetings tray menu recovery flow.",
+                            placeholder_map,
+                        )
+
+    def _build_placeholder_speaker_map(self, json_path: str) -> dict[str, str]:
+        """Read SPEAKER_XX labels from transcript and produce a placeholder map.
+
+        Tries build_manual_stub first (preferred path). Falls back to a
+        minimal hard-coded map if even that fails (e.g., transcript.json
+        missing or unreadable). Never raises.
+        """
+        try:
+            from .speakers import build_manual_stub
+            stub = build_manual_stub(
+                json_path,
+                "Auto-applied placeholder - edit via Meetings tray menu",
+            )
+            if stub and stub.get("speaker_map"):
+                # Convert empty-name stub to "Speaker N" placeholders so
+                # downstream rendering has readable labels.
+                spk_map = stub["speaker_map"]
+                return {
+                    spk: f"Speaker {i + 1}"
+                    for i, spk in enumerate(sorted(spk_map.keys()))
+                }
+        except Exception as e:
+            logger.warning("build_manual_stub failed for placeholder map: %s", e)
+
+        # Minimal fallback if transcript could not be read at all.
+        return {"SPEAKER_00": "Speaker 1", "SPEAKER_01": "Speaker 2"}
 
     def step_flatten(self):
         """Flatten transcript JSON to readable text."""

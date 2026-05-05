@@ -5,12 +5,22 @@ implementations touch the worker subprocess / filesystem / state manager
 and are out of scope.
 """
 
+import sys
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 class _StubApp:
     """Minimal stand-in for the WhisperSync application object."""
+
+    def __init__(self):
+        self._current_meeting_json_path = None
+
+    def _ask_speaker_confirmation(self, id_result):
+        # Default: skip confirmation (user clicked cancel).
+        return None
 
 
 def _make_job(steps):
@@ -65,6 +75,145 @@ class ExecuteNextStepTests(unittest.TestCase):
     def test_returns_false_when_complete(self):
         job = _make_job([lambda: None])
         self.assertFalse(job.execute_next_step())
+
+
+def _make_speaker_id_job(app=None):
+    """Build a MeetingJob suitable for exercising step_speaker_id.
+
+    Sets transcript_result so step_speaker_id has a json_path and llm_ok=True
+    so identify_speakers gets called.
+    """
+    from whisper_sync.meeting_job import MeetingJob
+
+    job = MeetingJob(
+        app=app or _StubApp(),
+        wav_path=Path("/tmp/x.wav"),
+        meeting_dir=Path("/tmp/x"),
+        name="speaker-id-test",
+        summarize=False,
+        date_time_str="0101_0000",
+        week_dir="01-w1",
+        folder_name="0101_0000_speaker-id-test",
+    )
+    job.transcript_result = {"json_path": "/tmp/x/transcript.json"}
+    job.llm_ok = True
+    return job
+
+
+def _install_fake_speakers_module(
+    identify_side_effect=None,
+    build_stub_returns=None,
+    write_side_effect=None,
+):
+    """Install a fake whisper_sync.speakers module and return the writes list.
+
+    Returns a dict with 'writes' (list of (path, map) tuples for successful
+    write_speaker_map calls) and the patcher context manager.
+    """
+    fake = types.ModuleType("whisper_sync.speakers")
+    writes = []
+
+    def _identify_speakers(json_path, cfg_path, folder_name):
+        if identify_side_effect is not None:
+            raise identify_side_effect
+        return {"speaker_map": {"SPEAKER_00": "Alice"}}
+
+    def _write_speaker_map(json_path, speaker_map):
+        if write_side_effect is not None:
+            raise write_side_effect
+        writes.append((json_path, dict(speaker_map)))
+
+    def _update_config(cfg_path, speaker_map, config_updates=None):
+        return None
+
+    def _get_config_path():
+        return Path("/tmp/cfg.json")
+
+    def _build_manual_stub(json_path, reason):
+        if build_stub_returns is not None:
+            return build_stub_returns
+        return {"speaker_map": {"SPEAKER_00": "", "SPEAKER_01": ""}}
+
+    fake.identify_speakers = _identify_speakers
+    fake.write_speaker_map = _write_speaker_map
+    fake.update_config = _update_config
+    fake.get_config_path = _get_config_path
+    fake.build_manual_stub = _build_manual_stub
+
+    return fake, writes
+
+
+class StepSpeakerIdFailsafeTests(unittest.TestCase):
+    """Regression coverage for the step_speaker_id failsafe path.
+
+    These confirm that the step does not propagate exceptions from the
+    speaker identification or confirmation dialog, and that placeholders
+    are applied (and persisted via write_speaker_map) so downstream steps
+    have a usable speaker map.
+    """
+
+    def test_step_speaker_id_does_not_raise_when_identify_fails(self):
+        # identify_speakers raises - failsafe should kick in, dialog is
+        # bypassed (build_manual_stub provides id_result), confirmation
+        # returns None, placeholder map is written.
+        fake, writes = _install_fake_speakers_module(
+            identify_side_effect=RuntimeError("claude exploded"),
+        )
+        with mock.patch.dict(sys.modules, {"whisper_sync.speakers": fake}):
+            job = _make_speaker_id_job()
+            # Should NOT raise.
+            job.step_speaker_id()
+
+        # Placeholder map should be applied and persisted.
+        self.assertIsNotNone(
+            job.speakers_confirmed,
+            "speakers_confirmed should be set to a placeholder map",
+        )
+        self.assertIsInstance(job.speakers_confirmed, dict)
+        self.assertTrue(len(job.speakers_confirmed) >= 1)
+        # The placeholder write should have hit write_speaker_map at least once.
+        self.assertTrue(
+            any(w[1] == job.speakers_confirmed for w in writes),
+            f"placeholder map should have been written; writes={writes}",
+        )
+
+    def test_step_speaker_id_does_not_raise_when_dialog_fails(self):
+        # identify_speakers succeeds, but the confirmation dialog raises.
+        # The step must still complete; placeholder map should be applied
+        # since speakers_confirmed never got set by the confirmation path.
+        class _BoomApp(_StubApp):
+            def _ask_speaker_confirmation(self, id_result):
+                raise RuntimeError("tkinter heap corruption")
+
+        fake, writes = _install_fake_speakers_module()
+        with mock.patch.dict(sys.modules, {"whisper_sync.speakers": fake}):
+            job = _make_speaker_id_job(app=_BoomApp())
+            # Should NOT raise.
+            job.step_speaker_id()
+
+        self.assertIsNotNone(
+            job.speakers_confirmed,
+            "speakers_confirmed should be set to a placeholder map after dialog failure",
+        )
+        self.assertIsInstance(job.speakers_confirmed, dict)
+
+    def test_step_speaker_id_leaves_speakers_unset_when_write_fails(self):
+        # If even the placeholder write fails, speakers_confirmed should
+        # remain None so downstream steps see the same state as before
+        # the failsafe existed (rather than logs/memory claiming a map
+        # exists when transcript.json was never updated).
+        fake, _writes = _install_fake_speakers_module(
+            identify_side_effect=RuntimeError("claude exploded"),
+            write_side_effect=OSError("disk full"),
+        )
+        with mock.patch.dict(sys.modules, {"whisper_sync.speakers": fake}):
+            job = _make_speaker_id_job()
+            job.step_speaker_id()
+
+        self.assertIsNone(
+            job.speakers_confirmed,
+            "speakers_confirmed must remain unset when write_speaker_map fails",
+        )
 
 
 if __name__ == "__main__":
