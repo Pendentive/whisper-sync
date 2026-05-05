@@ -189,8 +189,7 @@ All settings via right-click tray icon. Key options: dictation/meeting hotkeys, 
 
 If a meeting fails mid-pipeline (for example the speaker confirmation dialog crashes, or minutes generation errors), the audio and `transcript.json` are preserved. To finish processing without re-recording:
 
-- **From the tray**: open the **Meetings** submenu and click the meeting. This re-runs speaker identification, regenerates `transcript-readable.txt`, and regenerates `minutes.md`.
-- **CLI re-transcribe** (full re-transcription with forced Tier 2): `python retranscribe_tier2.py <recording.wav>` produces a fresh `transcript-tier2.json` next to the original.
+- **From the tray**: open the **Meetings** submenu and click the meeting. This re-runs speaker identification and regenerates `transcript-readable.txt`. `minutes.md` is regenerated only when the Claude CLI is installed and available; without it the recovery flow stops after the speaker_map and readable transcript are written.
 - **Detailed recovery options** (manual REPL recovery, pipeline crash semantics, step-by-step instructions): see [docs/TECHNICAL.md](docs/TECHNICAL.md#recovery-and-backfill).
 
 ---

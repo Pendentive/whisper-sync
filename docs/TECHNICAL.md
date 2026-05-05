@@ -380,7 +380,7 @@ The meeting post-processing pipeline (`whisper_sync/meeting_job.py`) runs 8 step
 
 If any step raises, subsequent steps do not run for that job. **`transcript.json` is always written by step 1** inside the worker subprocess, so audio is never lost: the WAV stays on disk and the JSON exists from the moment transcription returns. Each step start and end is logged at INFO (`step start: <name> job=<label>` / `step done: <name> job=<label> elapsed=<s>`), and a failure logs `step failed: ...` with a full traceback. Pinning which step crashed is straightforward from `whisper_sync/logs/app/whisper-sync-YYYY-MM-DD.log`.
 
-Common crash points: step 2 (tkinter speaker dialog) and step 4 (Claude CLI invocation for minutes generation).
+The historical crash pattern was specifically step 2 (`step_speaker_id`), where tkinter heap corruption could take down the dialog (fixed in PR #129). Other steps fail less catastrophically: `step_minutes` is wrapped in a broad try/except and only logs failures (the meeting is still marked transcribed), and `step_transcribe` failures surface from the worker subprocess with a clean error rather than a crash.
 
 ### Tray Menu Recovery Flow
 
@@ -393,34 +393,14 @@ The tray's **Meetings** submenu is the user-facing recovery entry point.
   2. Re-opens the tkinter speaker confirmation dialog so the user can edit names.
   3. Writes the confirmed `speaker_map` back to `transcript.json` via `speakers.write_speaker_map()`.
   4. Re-runs `flatten.flatten()` to regenerate `transcript-readable.txt` with named speakers.
-  5. Calls `_generate_minutes()` to regenerate `minutes.md` from the updated readable transcript.
+  5. If the Claude CLI is installed and available (gated by `_is_claude_cli_available()`), calls `_generate_minutes()` to regenerate `minutes.md` from the updated readable transcript. When the CLI is missing, the recovery flow stops after step 4 and the meeting status remains `Transcribed` rather than `Complete`.
   6. Refreshes the tray menu so the new status appears.
 
 A guard set (`_recovering_meetings`) prevents duplicate clicks on the same meeting from launching parallel recovery threads.
 
-### `retranscribe_tier2.py` CLI
+### Manual Recovery (When the Tray Flow Is Unavailable)
 
-`retranscribe_tier2.py` (repo root) re-transcribes an existing `recording.wav` using forced **Tier 2** (RMS-balanced mono mix + PyAnnote diarization). Use this when:
-
-- The original transcription was poor quality (mis-attributed speakers, garbled segments).
-- The original ran on a tier that produced low-confidence output and you want to force the mono+PyAnnote path.
-- You want to compare tier outputs side by side (the script writes to a separate file so the original `transcript.json` is untouched).
-
-Usage:
-
-```powershell
-python retranscribe_tier2.py path\to\recording.wav
-# or with explicit output path:
-python retranscribe_tier2.py path\to\recording.wav --output path\to\transcript-tier2.json
-```
-
-Default output is `transcript-tier2.json` next to the input. The script runs the 5 stages: balanced mono mix, model load, transcribe, align, PyAnnote diarize. It prints a per-speaker segment/word summary on completion.
-
-The original `transcript.json` is **not** overwritten. To use the Tier 2 output as the new ground truth, replace `transcript.json` with `transcript-tier2.json` manually, then trigger the tray menu recovery flow above to regenerate flatten output and minutes.
-
-### Manual Recovery (When Both Above Fail)
-
-If the tray menu is unavailable (app not running) and the CLI is not appropriate (transcript itself is fine, only post-processing failed), call the same modules directly from a Python REPL:
+If the tray menu is unavailable (app not running) or you want to fix things by hand, call the same modules directly from a Python REPL:
 
 ```powershell
 .\whisper-env\Scripts\python.exe
