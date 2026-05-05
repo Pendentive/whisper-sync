@@ -179,16 +179,20 @@ class MeetingJob:
         re-edit speakers later via the existing Meetings tray menu recovery
         flow (see __main__.py recovery handlers).
         """
-        from .speakers import (
-            identify_speakers, write_speaker_map, update_config,
-            get_config_path, build_manual_stub,
-        )
-
         json_path = self.transcript_result.get(
             "json_path", str(self.meeting_dir / "transcript.json")
         ) if self.transcript_result else str(self.meeting_dir / "transcript.json")
 
+        # Imports are inside the try/except so an import-time failure in
+        # .speakers (or its transitive imports) also triggers the failsafe
+        # path rather than aborting the pipeline before the catch-all.
+        write_speaker_map = None
         try:
+            from .speakers import (
+                identify_speakers, write_speaker_map, update_config,
+                get_config_path, build_manual_stub,
+            )
+
             id_result = None
             if self.llm_ok:
                 try:
@@ -266,17 +270,39 @@ class MeetingJob:
         if not self.speakers_confirmed:
             placeholder_map = self._build_placeholder_speaker_map(json_path)
             if placeholder_map:
-                try:
-                    write_speaker_map(json_path, placeholder_map)
-                except Exception as e:
-                    logger.warning("Could not write placeholder speaker map: %s", e)
-                self.speakers_confirmed = placeholder_map
-                logger.warning(
-                    "Placeholder speakers applied: %s. Re-edit via Meetings tray menu recovery flow.",
-                    placeholder_map,
-                )
+                # Resolve write_speaker_map lazily here too in case the
+                # earlier import inside the try block failed.
+                _write_speaker_map = write_speaker_map
+                if _write_speaker_map is None:
+                    try:
+                        from .speakers import write_speaker_map as _wsm
+                        _write_speaker_map = _wsm
+                    except Exception as e:
+                        logger.warning(
+                            "Could not import write_speaker_map for placeholder write: %s",
+                            e,
+                        )
+                if _write_speaker_map is None:
+                    logger.warning(
+                        "Placeholder speakers NOT applied: speakers module unavailable. "
+                        "Downstream steps will see speakers_confirmed unset."
+                    )
+                else:
+                    try:
+                        _write_speaker_map(json_path, placeholder_map)
+                    except Exception as e:
+                        logger.warning(
+                            "Could not write placeholder speaker map (leaving speakers_confirmed unset): %s",
+                            e,
+                        )
+                    else:
+                        self.speakers_confirmed = placeholder_map
+                        logger.warning(
+                            "Placeholder speakers applied: %s. Re-edit via Meetings tray menu recovery flow.",
+                            placeholder_map,
+                        )
 
-    def _build_placeholder_speaker_map(self, json_path: str) -> dict | None:
+    def _build_placeholder_speaker_map(self, json_path: str) -> dict[str, str]:
         """Read SPEAKER_XX labels from transcript and produce a placeholder map.
 
         Tries build_manual_stub first (preferred path). Falls back to a
