@@ -9,6 +9,7 @@ Handles:
 import json
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from .logger import logger
@@ -275,53 +276,70 @@ def identify_speakers(
     if readable_text:
         full_prompt += f"\n\n---\n\nFull readable transcript (for boundary detection):\n{readable_text}"
 
-    max_attempts = 2
-    timeout_s = 90
-
-    for attempt in range(max_attempts):
-        try:
-            result = subprocess.run(
-                ["claude", "-p", "--model", "sonnet"],
-                input=full_prompt,
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
-                cwd=str(Path(__file__).parent.parent.parent),
+    # Empirically, claude -p --model sonnet on Windows takes 100-160s for a
+    # ~14K-char prompt (model latency, not MCP loading; --strict-mcp-config
+    # made no difference). The previous 90s/2-attempt setup never succeeded
+    # under those conditions and wasted 180s on every meeting before falling
+    # back to manual entry. One 240s attempt is a strict improvement: typical
+    # case auto-fills in ~2 min, worst case bails after 4 min.
+    timeout_s = 240
+    started = time.monotonic()
+    try:
+        result = subprocess.run(
+            ["claude", "-p", "--model", "sonnet"],
+            input=full_prompt,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            cwd=str(Path(__file__).parent.parent.parent),
+        )
+        elapsed = time.monotonic() - started
+        if result.returncode != 0:
+            logger.warning(
+                "Speaker identification CLI failed (rc=%s, elapsed=%.1fs)",
+                result.returncode, elapsed,
             )
-            if result.returncode != 0:
-                logger.warning(f"Speaker identification CLI failed: {result.returncode}")
-                if result.stderr:
-                    logger.debug(f"Claude CLI stderr (truncated): {result.stderr[:500]}")
-                return None
+            if result.stderr:
+                logger.debug(f"Claude CLI stderr (truncated): {result.stderr[:500]}")
+            return None
 
-            # Robust JSON extraction: find first { to last }
-            response = result.stdout.strip()
-            first_brace = response.find("{")
-            last_brace = response.rfind("}")
-            if first_brace == -1 or last_brace == -1 or last_brace <= first_brace:
-                logger.warning("Speaker identification response contains no valid JSON object")
-                logger.debug(f"Raw response: {response[:500]}")
-                return None
+        # Robust JSON extraction: find first { to last }
+        response = result.stdout.strip()
+        first_brace = response.find("{")
+        last_brace = response.rfind("}")
+        if first_brace == -1 or last_brace == -1 or last_brace <= first_brace:
+            logger.warning(
+                "Speaker identification response contains no valid JSON object (elapsed=%.1fs)",
+                elapsed,
+            )
+            logger.debug(f"Raw response: {response[:500]}")
+            return None
 
-            json_str = response[first_brace:last_brace + 1]
-            return json.loads(json_str)
+        json_str = response[first_brace:last_brace + 1]
+        parsed = json.loads(json_str)
+        logger.info(
+            "Speaker identification succeeded (elapsed=%.1fs, mapped=%d)",
+            elapsed, len(parsed.get("speaker_map", {})),
+        )
+        return parsed
 
-        except json.JSONDecodeError as e:
-            logger.warning(f"Speaker identification returned invalid JSON: {e}")
-            logger.debug(f"Raw response: {result.stdout[:500]}")
-            return None
-        except FileNotFoundError:
-            logger.warning("Claude CLI not found - speaker identification skipped")
-            return None
-        except subprocess.TimeoutExpired:
-            if attempt < max_attempts - 1:
-                logger.warning(f"Speaker identification timed out ({timeout_s}s), retrying...")
-                continue
-            logger.warning(f"Speaker identification timed out after {max_attempts} attempts ({timeout_s}s each)")
-            return None
-        except Exception as e:
-            logger.warning(f"Speaker identification failed: {e}")
-            return None
+    except json.JSONDecodeError as e:
+        logger.warning(f"Speaker identification returned invalid JSON: {e}")
+        logger.debug(f"Raw response: {result.stdout[:500]}")
+        return None
+    except FileNotFoundError:
+        logger.warning("Claude CLI not found - speaker identification skipped")
+        return None
+    except subprocess.TimeoutExpired:
+        elapsed = time.monotonic() - started
+        logger.warning(
+            "Speaker identification timed out after %.1fs (limit=%ss)",
+            elapsed, timeout_s,
+        )
+        return None
+    except Exception as e:
+        logger.warning(f"Speaker identification failed: {e}")
+        return None
 
 
 def opus_deep_identify(
