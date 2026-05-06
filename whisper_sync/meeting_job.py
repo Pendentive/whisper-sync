@@ -247,11 +247,10 @@ class MeetingJob:
                             confirmed_map,
                             transcript_data=self.transcript_data,
                         )
-                        # Release the large transcript dict for GC. After
-                        # write_speaker_map returns, no other step in the job
-                        # reads self.transcript_data, so keeping it alive only
-                        # adds GC pressure on the post-processing thread.
-                        self.transcript_data = None
+                        # NOTE: do not release self.transcript_data here.
+                        # step_flatten and step_minutes also need it to avoid
+                        # background-thread json.load (0x80000003 crash). The
+                        # dict is released in step_complete.
                         cfg_path = get_config_path()
                         # config_updates from initial (light) identification.
                         # Deep mode config_updates are applied via the Meetings recovery flow.
@@ -324,11 +323,9 @@ class MeetingJob:
                             "Placeholder speakers applied: %s. Re-edit via Meetings tray menu recovery flow.",
                             placeholder_map,
                         )
-                    finally:
-                        # Release the transcript dict regardless of success.
-                        # Downstream steps do not consume self.transcript_data;
-                        # holding it just inflates the post-processing thread.
-                        self.transcript_data = None
+                    # NOTE: do not release self.transcript_data here.
+                    # step_flatten and step_minutes still need it. The dict
+                    # is released in step_complete.
 
     def _build_placeholder_speaker_map(self, json_path: str) -> dict[str, str]:
         """Read SPEAKER_XX labels from transcript and produce a placeholder map.
@@ -358,13 +355,20 @@ class MeetingJob:
         return {"SPEAKER_00": "Speaker 1", "SPEAKER_01": "Speaker 2"}
 
     def step_flatten(self):
-        """Flatten transcript JSON to readable text."""
+        """Flatten transcript JSON to readable text.
+
+        Passes the in-memory transcript dict to ``flatten`` so it does not
+        re-read transcript.json on this background thread (avoids the
+        0x80000003 crash where CPython GC interleaves with json.load).
+        """
         from .flatten import flatten as flatten_transcript
 
         try:
             json_path = self.transcript_result.get("json_path") if self.transcript_result else None
             if json_path:
-                readable_path = flatten_transcript(json_path)
+                readable_path = flatten_transcript(
+                    json_path, transcript_data=self.transcript_data
+                )
                 if readable_path:
                     logger.info("Flattened transcript: %s", readable_path)
         except Exception as e:
@@ -392,8 +396,14 @@ class MeetingJob:
             readable_file = self.meeting_dir / "transcript-readable.txt"
             minutes_file = self.meeting_dir / "minutes.md"
             if readable_file.exists() and not minutes_file.exists():
+                # Pass in-memory transcript dict to avoid background-thread
+                # json.load (0x80000003 crash). See speakers.write_speaker_map
+                # for the same rationale.
                 self.app._generate_minutes(
-                    self.meeting_dir, readable_file, minutes_file
+                    self.meeting_dir,
+                    readable_file,
+                    minutes_file,
+                    transcript_data=self.transcript_data,
                 )
         except Exception as e:
             logger.warning("Auto-minutes failed (non-fatal): %s", e)
@@ -501,3 +511,8 @@ class MeetingJob:
                 MEETING_COMPLETED, meeting_transcribing=False, mode="done"
             )
             self.app._schedule_idle(3, blink=True)
+
+        # Release the in-memory transcript dict now that all stages have run.
+        # It was retained across speaker_id, flatten, and minutes to avoid
+        # background-thread json.load (the 0x80000003 crash mode).
+        self.transcript_data = None

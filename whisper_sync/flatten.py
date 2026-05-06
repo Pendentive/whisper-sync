@@ -19,14 +19,24 @@ from pathlib import Path
 PAUSE_THRESHOLD = 2.0
 
 
-def flatten(json_path: str) -> str:
+def flatten(json_path: str, transcript_data: dict | None = None) -> str:
     """Flatten transcript JSON into readable speaker-attributed text.
 
     Returns the output file path.
+
+    When ``transcript_data`` is provided, the parsed dict is used directly
+    and ``json.load`` is skipped. This avoids a Windows fatal exception
+    (``0x80000003``) that fires when ``json.load`` runs on a background
+    thread and CPython's GC interleaves with the C-level decoder. The
+    post-processing pipeline thread keeps the dict in memory across stages
+    for exactly this reason.
     """
     path = Path(json_path)
-    with open(path) as f:
-        data = json.load(f)
+    if transcript_data is not None:
+        data = transcript_data
+    else:
+        with open(path) as f:
+            data = json.load(f)
 
     speaker_map = data.get("speaker_map", {})
     segments = data.get("segments", [])
