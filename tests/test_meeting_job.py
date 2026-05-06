@@ -197,10 +197,11 @@ class StepSpeakerIdFailsafeTests(unittest.TestCase):
         )
         self.assertIsInstance(job.speakers_confirmed, dict)
 
-    def test_step_speaker_id_clears_transcript_data_on_confirmed_path(self):
-        # Regression for Copilot review on PR #131: the large transcript dict
-        # held on the post-processing thread must be released for GC after
-        # write_speaker_map. Confirmed-write path.
+    def test_step_speaker_id_retains_transcript_data_for_downstream_steps(self):
+        # Regression: step_flatten and step_minutes must reuse the in-memory
+        # transcript dict to avoid background-thread json.load (0x80000003
+        # crash). Therefore step_speaker_id must NOT release the dict.
+        # Confirmed-write path.
         class _AcceptApp(_StubApp):
             def _ask_speaker_confirmation(self, id_result):
                 return {"SPEAKER_00": "Alice"}
@@ -208,32 +209,34 @@ class StepSpeakerIdFailsafeTests(unittest.TestCase):
         fake, writes = _install_fake_speakers_module()
         with mock.patch.dict(sys.modules, {"whisper_sync.speakers": fake}):
             job = _make_speaker_id_job(app=_AcceptApp())
-            job.transcript_data = {"segments": [{"speaker": "SPEAKER_00"}]}
+            tdata = {"segments": [{"speaker": "SPEAKER_00"}]}
+            job.transcript_data = tdata
             job.step_speaker_id()
 
         self.assertEqual(
             job.speakers_confirmed, {"SPEAKER_00": "Alice"},
             "confirmed map should be applied",
         )
-        self.assertIsNone(
-            job.transcript_data,
-            "transcript_data should be cleared after confirmed write",
+        self.assertIs(
+            job.transcript_data, tdata,
+            "transcript_data must persist past speaker_id for flatten/minutes",
         )
 
-    def test_step_speaker_id_clears_transcript_data_on_placeholder_path(self):
+    def test_step_speaker_id_retains_transcript_data_on_placeholder_path(self):
         # Same regression, placeholder-write path (dialog skipped).
         fake, _writes = _install_fake_speakers_module(
             identify_side_effect=RuntimeError("claude exploded"),
         )
         with mock.patch.dict(sys.modules, {"whisper_sync.speakers": fake}):
             job = _make_speaker_id_job()
-            job.transcript_data = {"segments": [{"speaker": "SPEAKER_00"}]}
+            tdata = {"segments": [{"speaker": "SPEAKER_00"}]}
+            job.transcript_data = tdata
             job.step_speaker_id()
 
         self.assertIsNotNone(job.speakers_confirmed)
-        self.assertIsNone(
-            job.transcript_data,
-            "transcript_data should be cleared after placeholder write",
+        self.assertIs(
+            job.transcript_data, tdata,
+            "transcript_data must persist past placeholder write",
         )
 
     def test_step_speaker_id_leaves_speakers_unset_when_write_fails(self):
@@ -252,6 +255,69 @@ class StepSpeakerIdFailsafeTests(unittest.TestCase):
         self.assertIsNone(
             job.speakers_confirmed,
             "speakers_confirmed must remain unset when write_speaker_map fails",
+        )
+
+
+class StepFlattenAndCompleteTests(unittest.TestCase):
+    """Regression coverage: step_flatten must pass the in-memory transcript
+    dict through to ``flatten`` (avoids 0x80000003), and step_complete must
+    release the dict at the end of the pipeline.
+    """
+
+    def test_step_flatten_passes_transcript_data(self):
+        fake = types.ModuleType("whisper_sync.flatten")
+        captured = {}
+
+        def _flatten(json_path, transcript_data=None):
+            captured["json_path"] = json_path
+            captured["transcript_data"] = transcript_data
+            return "/tmp/x/transcript-readable.txt"
+
+        fake.flatten = _flatten
+
+        with mock.patch.dict(sys.modules, {"whisper_sync.flatten": fake}):
+            job = _make_speaker_id_job()
+            tdata = {"segments": [{"speaker": "SPEAKER_00"}]}
+            job.transcript_data = tdata
+            job.step_flatten()
+
+        self.assertEqual(captured["json_path"], "/tmp/x/transcript.json")
+        self.assertIs(
+            captured["transcript_data"], tdata,
+            "step_flatten must forward in-memory transcript dict to flatten",
+        )
+
+    def test_step_complete_releases_transcript_data(self):
+        # Build a minimal stub app with the surface step_complete needs.
+        class _CompleteApp(_StubApp):
+            def __init__(self):
+                super().__init__()
+                self.recorder = types.SimpleNamespace(is_recording=False)
+                self.state = types.SimpleNamespace(
+                    current=types.SimpleNamespace(mode="meeting"),
+                    emit=lambda *a, **kw: None,
+                )
+
+            def _schedule_idle(self, *a, **kw):
+                return None
+
+        from whisper_sync.meeting_job import MeetingJob
+
+        job = MeetingJob(
+            app=_CompleteApp(),
+            wav_path=Path("/tmp/x.wav"),
+            meeting_dir=Path("/tmp/x"),
+            name="complete-test",
+            summarize=False,
+            date_time_str="0101_0000",
+            week_dir="01-w1",
+            folder_name="0101_0000_complete-test",
+        )
+        job.transcript_data = {"segments": []}
+        job.step_complete()
+        self.assertIsNone(
+            job.transcript_data,
+            "step_complete must release transcript_data so the dict can be GC'd",
         )
 
 

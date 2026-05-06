@@ -2069,8 +2069,21 @@ class WhisperSync:
             p = get_install_root() / p
         return p
 
-    def _generate_minutes(self, meeting_dir: Path, readable_file: Path, minutes_file: Path):
-        """Generate minutes.md via Claude CLI (claude -p) using the shared prompt template."""
+    def _generate_minutes(
+        self,
+        meeting_dir: Path,
+        readable_file: Path,
+        minutes_file: Path,
+        transcript_data: dict | None = None,
+    ):
+        """Generate minutes.md via Claude CLI (claude -p) using the shared prompt template.
+
+        When ``transcript_data`` is provided, the parsed dict is used for the
+        speaker_map lookup and ``json.load`` is skipped. This avoids a Windows
+        fatal exception (``0x80000003``) that fires when ``json.load`` runs on
+        a background thread (the post-processing pipeline thread) and CPython's
+        GC interleaves with the C-level decoder.
+        """
         import json
         import subprocess as _sp
 
@@ -2082,28 +2095,36 @@ class WhisperSync:
         prompt_text = prompt_file.read_text(encoding="utf-8")
         transcript_text = readable_file.read_text(encoding="utf-8")
 
-        # Build speaker context from transcript.json speaker_map + config roles
+        # Build speaker context from transcript.json speaker_map + config roles.
+        # Use the in-memory dict when supplied; otherwise fall back to a disk
+        # read (e.g., when called from the recovery flow on a fresh thread).
         speaker_context = ""
         try:
-            json_path = meeting_dir / "transcript.json"
-            if json_path.exists():
-                with open(json_path) as f:
-                    tdata = json.load(f)
+            if transcript_data is not None:
+                tdata = transcript_data
                 smap = tdata.get("speaker_map", {})
-                if smap:
-                    cfg_path = Path(get_config_path())
-                    roles = {}
-                    if cfg_path.exists():
-                        for line in cfg_path.read_text(encoding="utf-8").splitlines():
-                            if line.startswith("| ") and " | " in line and "ID" not in line and "---" not in line:
-                                parts = [p.strip() for p in line.split("|") if p.strip()]
-                                if len(parts) >= 3:
-                                    roles[parts[1].lower()] = parts[2]
-                    ctx_lines = []
-                    for spk_id, name in smap.items():
-                        role = roles.get(name.lower(), "")
-                        ctx_lines.append(f"  {spk_id} = {name}" + (f" ({role})" if role else ""))
-                    speaker_context = "\n".join(ctx_lines)
+            else:
+                json_path = meeting_dir / "transcript.json"
+                if json_path.exists():
+                    with open(json_path) as f:
+                        tdata = json.load(f)
+                    smap = tdata.get("speaker_map", {})
+                else:
+                    smap = {}
+            if smap:
+                cfg_path = Path(get_config_path())
+                roles = {}
+                if cfg_path.exists():
+                    for line in cfg_path.read_text(encoding="utf-8").splitlines():
+                        if line.startswith("| ") and " | " in line and "ID" not in line and "---" not in line:
+                            parts = [p.strip() for p in line.split("|") if p.strip()]
+                            if len(parts) >= 3:
+                                roles[parts[1].lower()] = parts[2]
+                ctx_lines = []
+                for spk_id, name in smap.items():
+                    role = roles.get(name.lower(), "")
+                    ctx_lines.append(f"  {spk_id} = {name}" + (f" ({role})" if role else ""))
+                speaker_context = "\n".join(ctx_lines)
         except Exception:
             pass
 
