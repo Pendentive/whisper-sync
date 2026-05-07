@@ -3620,9 +3620,23 @@ class WhisperSync:
         # Periodic flush for persistent weekly stats
         self._stats_flush_stop = threading.Event()
         def _stats_flush_loop():
+            import gc
             while not self._stats_flush_stop.wait(weekly_stats._flush_interval):
                 try:
                     weekly_stats.flush()
+                except Exception:
+                    pass
+                # Cycle GC is disabled process-wide (see main()). The
+                # post-process worker covers meeting paths; this catches
+                # dictation-only sessions where _post_process_worker never
+                # ticks. Pure-Python flush above ran without any C call in
+                # flight, so this is a safe checkpoint.
+                try:
+                    collected = gc.collect()
+                    if collected:
+                        logger.debug(
+                            "stats-flush gc.collect freed %d cycles", collected
+                        )
                 except Exception:
                     pass
         threading.Thread(target=_stats_flush_loop, daemon=True).start()
