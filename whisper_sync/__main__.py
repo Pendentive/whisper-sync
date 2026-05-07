@@ -1965,6 +1965,8 @@ class WhisperSync:
 
         Recording start/stop is NEVER touched here.
         """
+        import gc
+
         while True:
             job = self._post_queue.get()
             if job is None:
@@ -1976,6 +1978,17 @@ class WhisperSync:
                 logger.error(f"Post-processing failed for {job.name}: {e}", exc_info=True)
             finally:
                 self._post_queue.task_done()
+                # Cycle GC is disabled process-wide (see main()) to prevent
+                # GC interleaving with native C calls (multiprocessing,
+                # pystray, json.load) on this background thread. Run an
+                # explicit collection here at a safe checkpoint: the job is
+                # done, no native call is in flight, and the next get() will
+                # block until another meeting arrives.
+                collected = gc.collect()
+                if collected:
+                    logger.debug(
+                        "post-process gc.collect freed %d cycles", collected
+                    )
 
     def _run_meeting_job(self, job: MeetingJob):
         """Execute all steps of a MeetingJob with error recovery.
@@ -3639,6 +3652,22 @@ def main():
     # Install faulthandler FIRST so native segfaults are persisted. The
     # helper retains the file handle module-scope so it cannot be GC'd.
     install_faulthandler(get_log_path())
+
+    # Disable the CPython cycle collector process-wide. Refcounting still
+    # cleans up ~99% of objects; only true reference cycles need this. The
+    # cycle collector is what causes the recurring 0x80000003 / STATUS_BREAKPOINT
+    # crashes: it can fire on ANY background thread mid-allocation inside a
+    # native C extension, corrupting the heap. We've already had to patch
+    # json.load (PR #131, #132) one site at a time as crashes landed in:
+    #   - speakers.write_speaker_map (json.load)
+    #   - flatten/_generate_minutes (json.load)
+    #   - worker_manager._wait_response (multiprocessing.Queue.get)
+    #   - pystray._build_menu (pystray MenuItem __init__)
+    # The pattern is general, not call-specific. Disable auto-GC and run
+    # gc.collect() at safe checkpoints (between meetings, on idle) instead.
+    import gc
+    gc.disable()
+    logger.info("Cycle GC disabled; explicit gc.collect() at safe checkpoints")
 
     heartbeat = Heartbeat(logger, interval=60.0)
     try:
