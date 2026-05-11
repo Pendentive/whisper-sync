@@ -3622,10 +3622,10 @@ class WhisperSync:
                 # and crashes (0x80000003) when any other thread is mid
                 # native C call (e.g., subprocess.communicate waiting for
                 # Claude CLI for ~2 min per meeting). PR #134 added a
-                # gc.collect() here and shipped this regression; today's
-                # crashes (both at line 3635 in this loop) prove it. Cycle
-                # objects now leak slowly; refcount cleanup still works
-                # for ~99% of allocations. Accept the leak.
+                # gc.collect() here and shipped this regression; the
+                # crashes both pointed at the gc.collect() inside this
+                # loop. Cycle objects now leak slowly; refcount cleanup
+                # still works for ~99% of allocations. Accept the leak.
         threading.Thread(target=_stats_flush_loop, daemon=True).start()
 
         try:
