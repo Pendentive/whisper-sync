@@ -53,6 +53,15 @@ def get_default_devices(api_filter: str | None = "WASAPI") -> dict:
     return {"input": defaults[0], "output": defaults[1]}
 
 
+# Cache of (device_key, target_samplerate, target_dtype, channels) -> (effective_rate, effective_dtype)
+# Lets us skip the probe-and-fail sequence on subsequent opens for the same
+# device that already rejected the target rate once. On Windows this avoids
+# logging "mic open attempt failed (rate=16000 ...)" + "16000 Hz float32 rejected"
+# on every dictation/meeting start.
+_MIC_FORMAT_CACHE: dict[tuple, tuple[int, str]] = {}
+_MIC_FORMAT_CACHE_LOCK = threading.Lock()
+
+
 def _open_input_stream(*, device, target_samplerate: int, channels: int,
                        dtype: str, callback):
     """Open ``sd.InputStream`` with a fallback ladder for format rejections.
@@ -73,10 +82,48 @@ def _open_input_stream(*, device, target_samplerate: int, channels: int,
     the target.
 
     Reraises the last ``PortAudioError`` if every attempt fails.
+
+    A successful (rate, dtype) combination is cached per device so future
+    opens skip the probe and avoid logging the same fallback every session.
+    The cache key includes the resolved device name (not the raw ``device``
+    arg) so that ``device=None`` callers don't get a stale entry if the OS
+    default input device changes between calls.
     """
+    # Resolve a stable device identity for the cache key. When the caller
+    # passes device=None, sd.query_devices(None) returns info about the
+    # current default device; including its name in the key means the
+    # cache automatically invalidates when the user swaps default mic.
+    try:
+        device_info = sd.query_devices(device)
+        device_name = device_info.get("name", "")
+    except Exception:
+        device_info = None
+        device_name = ""
+    cache_key = (device_name, target_samplerate, dtype, channels)
+    with _MIC_FORMAT_CACHE_LOCK:
+        cached = _MIC_FORMAT_CACHE.get(cache_key)
+
+    if cached is not None:
+        cached_rate, cached_dtype = cached
+        try:
+            stream = sd.InputStream(
+                samplerate=cached_rate,
+                channels=channels,
+                dtype=cached_dtype,
+                device=device,
+                callback=callback,
+            )
+            return stream, cached_rate
+        except sd.PortAudioError:
+            # Device state changed; fall through to full probe.
+            with _MIC_FORMAT_CACHE_LOCK:
+                _MIC_FORMAT_CACHE.pop(cache_key, None)
+
     attempts = [(target_samplerate, dtype)]
     try:
-        native = int(sd.query_devices(device)["default_samplerate"])
+        # Reuse the device_info we already queried above, if available.
+        info = device_info if device_info is not None else sd.query_devices(device)
+        native = int(info["default_samplerate"])
     except Exception:
         native = None
     if native and native != target_samplerate:
@@ -95,11 +142,18 @@ def _open_input_stream(*, device, target_samplerate: int, channels: int,
                 device=device,
                 callback=callback,
             )
-            if rate != target_samplerate or this_dtype != dtype:
-                logger.warning(
-                    "mic: requested %d Hz %s rejected; using %d Hz %s",
+            fell_back = (rate != target_samplerate or this_dtype != dtype)
+            if fell_back:
+                # Only log the fallback the FIRST time we discover it; cache
+                # hits below skip this branch. Use INFO not WARNING because
+                # the fallback succeeds and downstream code resamples.
+                logger.info(
+                    "mic: %d Hz %s rejected; using %d Hz %s "
+                    "(caching for this device)",
                     target_samplerate, dtype, rate, this_dtype,
                 )
+            with _MIC_FORMAT_CACHE_LOCK:
+                _MIC_FORMAT_CACHE[cache_key] = (rate, this_dtype)
             return stream, rate
         except sd.PortAudioError as e:
             last_err = e
