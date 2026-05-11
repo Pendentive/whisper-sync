@@ -1965,8 +1965,6 @@ class WhisperSync:
 
         Recording start/stop is NEVER touched here.
         """
-        import gc
-
         while True:
             job = self._post_queue.get()
             if job is None:
@@ -1978,17 +1976,12 @@ class WhisperSync:
                 logger.error(f"Post-processing failed for {job.name}: {e}", exc_info=True)
             finally:
                 self._post_queue.task_done()
-                # Cycle GC is disabled process-wide (see main()) to prevent
-                # GC interleaving with native C calls (multiprocessing,
-                # pystray, json.load) on this background thread. Run an
-                # explicit collection here at a safe checkpoint: the job is
-                # done, no native call is in flight, and the next get() will
-                # block until another meeting arrives.
-                collected = gc.collect()
-                if collected:
-                    logger.debug(
-                        "post-process gc.collect freed %d cycles", collected
-                    )
+                # NOTE: do NOT call gc.collect() here. The cycle collector
+                # is process-wide and runs on the calling thread's stack;
+                # it can race with native C calls in any OTHER thread
+                # (subprocess.communicate for Claude CLI, multiprocessing
+                # queue feeders, pystray menu build) and crash with
+                # 0x80000003. See PR #134 which introduced this regression.
 
     def _run_meeting_job(self, job: MeetingJob):
         """Execute all steps of a MeetingJob with error recovery.
@@ -3620,25 +3613,19 @@ class WhisperSync:
         # Periodic flush for persistent weekly stats
         self._stats_flush_stop = threading.Event()
         def _stats_flush_loop():
-            import gc
             while not self._stats_flush_stop.wait(weekly_stats._flush_interval):
                 try:
                     weekly_stats.flush()
                 except Exception:
                     pass
-                # Cycle GC is disabled process-wide (see main()). The
-                # post-process worker covers meeting paths; this catches
-                # dictation-only sessions where _post_process_worker never
-                # ticks. Pure-Python flush above ran without any C call in
-                # flight, so this is a safe checkpoint.
-                try:
-                    collected = gc.collect()
-                    if collected:
-                        logger.debug(
-                            "stats-flush gc.collect freed %d cycles", collected
-                        )
-                except Exception:
-                    pass
+                # NOTE: do NOT call gc.collect() here. It is process-wide
+                # and crashes (0x80000003) when any other thread is mid
+                # native C call (e.g., subprocess.communicate waiting for
+                # Claude CLI for ~2 min per meeting). PR #134 added a
+                # gc.collect() here and shipped this regression; today's
+                # crashes (both at line 3635 in this loop) prove it. Cycle
+                # objects now leak slowly; refcount cleanup still works
+                # for ~99% of allocations. Accept the leak.
         threading.Thread(target=_stats_flush_loop, daemon=True).start()
 
         try:
