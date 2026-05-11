@@ -53,6 +53,15 @@ def get_default_devices(api_filter: str | None = "WASAPI") -> dict:
     return {"input": defaults[0], "output": defaults[1]}
 
 
+# Cache of (device_key, target_samplerate, target_dtype, channels) -> (effective_rate, effective_dtype)
+# Lets us skip the probe-and-fail sequence on subsequent opens for the same
+# device that already rejected the target rate once. On Windows this avoids
+# logging "mic open attempt failed (rate=16000 ...)" + "16000 Hz float32 rejected"
+# on every dictation/meeting start.
+_MIC_FORMAT_CACHE: dict[tuple, tuple[int, str]] = {}
+_MIC_FORMAT_CACHE_LOCK = threading.Lock()
+
+
 def _open_input_stream(*, device, target_samplerate: int, channels: int,
                        dtype: str, callback):
     """Open ``sd.InputStream`` with a fallback ladder for format rejections.
@@ -73,7 +82,30 @@ def _open_input_stream(*, device, target_samplerate: int, channels: int,
     the target.
 
     Reraises the last ``PortAudioError`` if every attempt fails.
+
+    A successful (rate, dtype) combination is cached per device so future
+    opens skip the probe and avoid logging the same fallback every session.
     """
+    cache_key = (device, target_samplerate, dtype, channels)
+    with _MIC_FORMAT_CACHE_LOCK:
+        cached = _MIC_FORMAT_CACHE.get(cache_key)
+
+    if cached is not None:
+        cached_rate, cached_dtype = cached
+        try:
+            stream = sd.InputStream(
+                samplerate=cached_rate,
+                channels=channels,
+                dtype=cached_dtype,
+                device=device,
+                callback=callback,
+            )
+            return stream, cached_rate
+        except sd.PortAudioError:
+            # Device state changed; fall through to full probe.
+            with _MIC_FORMAT_CACHE_LOCK:
+                _MIC_FORMAT_CACHE.pop(cache_key, None)
+
     attempts = [(target_samplerate, dtype)]
     try:
         native = int(sd.query_devices(device)["default_samplerate"])
@@ -95,11 +127,18 @@ def _open_input_stream(*, device, target_samplerate: int, channels: int,
                 device=device,
                 callback=callback,
             )
-            if rate != target_samplerate or this_dtype != dtype:
-                logger.warning(
-                    "mic: requested %d Hz %s rejected; using %d Hz %s",
+            fell_back = (rate != target_samplerate or this_dtype != dtype)
+            if fell_back:
+                # Only log the fallback the FIRST time we discover it; cache
+                # hits below skip this branch. Use INFO not WARNING because
+                # the fallback succeeds and downstream code resamples.
+                logger.info(
+                    "mic: %d Hz %s rejected; using %d Hz %s "
+                    "(caching for this device)",
                     target_samplerate, dtype, rate, this_dtype,
                 )
+            with _MIC_FORMAT_CACHE_LOCK:
+                _MIC_FORMAT_CACHE[cache_key] = (rate, this_dtype)
             return stream, rate
         except sd.PortAudioError as e:
             last_err = e

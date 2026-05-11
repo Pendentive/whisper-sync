@@ -47,6 +47,10 @@ class OpenInputStreamLadderTests(unittest.TestCase):
 
     def setUp(self):
         self._install_fake_sd()
+        # Clear the per-device cache so prior test state doesn't bleed in.
+        from whisper_sync import capture
+        with capture._MIC_FORMAT_CACHE_LOCK:
+            capture._MIC_FORMAT_CACHE.clear()
 
     def test_first_attempt_succeeds_returns_requested_rate(self):
         self._responder = lambda kwargs: mock.Mock(name="stream")
@@ -115,6 +119,82 @@ class OpenInputStreamLadderTests(unittest.TestCase):
             _open_input_stream(
                 device=7, target_samplerate=16000, channels=1,
                 dtype="float32", callback=lambda *_: None,
+            )
+
+    def test_cache_skips_probe_on_second_open(self):
+        # First call: 16000 fails, 48000 succeeds -> cache (48000, float32)
+        # for this device. Second call MUST hit the cache and open at 48000
+        # directly with NO probe of 16000.
+        responses = [
+            _FakePortAudioError("16k rejected"),
+            mock.Mock(name="stream-1"),
+            mock.Mock(name="stream-2"),
+        ]
+
+        def _responder(kwargs):
+            r = responses.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        self._responder = _responder
+        from whisper_sync.capture import _open_input_stream
+
+        # First open: probes both rates.
+        _open_input_stream(
+            device=7, target_samplerate=16000, channels=1,
+            dtype="float32", callback=lambda *_: None,
+        )
+        first_calls = list(self.calls)
+        self.assertEqual(len(first_calls), 2)
+
+        # Second open: cache hit, single attempt at 48000.
+        _open_input_stream(
+            device=7, target_samplerate=16000, channels=1,
+            dtype="float32", callback=lambda *_: None,
+        )
+        cache_calls = self.calls[len(first_calls):]
+        self.assertEqual(
+            len(cache_calls), 1,
+            "second open should skip the probe and only call InputStream once",
+        )
+        self.assertEqual(cache_calls[0]["samplerate"], 48000)
+        self.assertEqual(cache_calls[0]["dtype"], "float32")
+
+    def test_cache_evicts_and_reprobes_when_cached_format_fails(self):
+        # Prime cache with a known-good (48000, float32) for device 7.
+        from whisper_sync import capture
+        from whisper_sync.capture import _open_input_stream, _MIC_FORMAT_CACHE
+        cache_key = (7, 16000, "float32", 1)
+        with capture._MIC_FORMAT_CACHE_LOCK:
+            _MIC_FORMAT_CACHE[cache_key] = (48000, "float32")
+
+        # Now simulate the device suddenly rejecting the cached format.
+        # The helper must evict the stale cache entry and re-probe.
+        responses = [
+            _FakePortAudioError("cached rate now rejected"),  # cached attempt
+            _FakePortAudioError("16k still rejected"),         # probe 16k
+            mock.Mock(name="recovered-stream"),                # probe 48k succeeds
+        ]
+
+        def _responder(kwargs):
+            r = responses.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        self._responder = _responder
+        stream, rate = _open_input_stream(
+            device=7, target_samplerate=16000, channels=1,
+            dtype="float32", callback=lambda *_: None,
+        )
+        self.assertIsNotNone(stream)
+        self.assertEqual(rate, 48000)
+        # Cache should have been re-populated with the now-working entry.
+        with capture._MIC_FORMAT_CACHE_LOCK:
+            self.assertEqual(
+                _MIC_FORMAT_CACHE.get(cache_key), (48000, "float32"),
+                "cache should refresh after eviction",
             )
 
 
