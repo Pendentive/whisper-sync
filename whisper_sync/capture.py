@@ -85,8 +85,21 @@ def _open_input_stream(*, device, target_samplerate: int, channels: int,
 
     A successful (rate, dtype) combination is cached per device so future
     opens skip the probe and avoid logging the same fallback every session.
+    The cache key includes the resolved device name (not the raw ``device``
+    arg) so that ``device=None`` callers don't get a stale entry if the OS
+    default input device changes between calls.
     """
-    cache_key = (device, target_samplerate, dtype, channels)
+    # Resolve a stable device identity for the cache key. When the caller
+    # passes device=None, sd.query_devices(None) returns info about the
+    # current default device; including its name in the key means the
+    # cache automatically invalidates when the user swaps default mic.
+    try:
+        device_info = sd.query_devices(device)
+        device_name = device_info.get("name", "")
+    except Exception:
+        device_info = None
+        device_name = ""
+    cache_key = (device_name, target_samplerate, dtype, channels)
     with _MIC_FORMAT_CACHE_LOCK:
         cached = _MIC_FORMAT_CACHE.get(cache_key)
 
@@ -108,7 +121,9 @@ def _open_input_stream(*, device, target_samplerate: int, channels: int,
 
     attempts = [(target_samplerate, dtype)]
     try:
-        native = int(sd.query_devices(device)["default_samplerate"])
+        # Reuse the device_info we already queried above, if available.
+        info = device_info if device_info is not None else sd.query_devices(device)
+        native = int(info["default_samplerate"])
     except Exception:
         native = None
     if native and native != target_samplerate:

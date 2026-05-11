@@ -38,7 +38,12 @@ class OpenInputStreamLadderTests(unittest.TestCase):
             return self._responder(kwargs)
 
         fake.InputStream = _fake_input_stream
-        fake.query_devices = lambda device: {"default_samplerate": 48000.0}
+        # Return a stable device name keyed off the requested device id, so
+        # the per-device cache key is deterministic across test calls.
+        fake.query_devices = lambda device: {
+            "default_samplerate": 48000.0,
+            "name": f"FakeMic-{device}",
+        }
 
         from whisper_sync import capture
         self._orig_sd = capture.sd
@@ -121,6 +126,46 @@ class OpenInputStreamLadderTests(unittest.TestCase):
                 dtype="float32", callback=lambda *_: None,
             )
 
+    def test_cache_keyed_by_device_name_not_raw_arg(self):
+        # device=None and device=7 must produce DIFFERENT cache entries
+        # even though both could resolve to "the default mic" at different
+        # times. The fake query_devices returns "FakeMic-None" for None
+        # and "FakeMic-7" for 7, so the keys differ.
+        from whisper_sync import capture
+        from whisper_sync.capture import _open_input_stream, _MIC_FORMAT_CACHE
+
+        responses = [
+            _FakePortAudioError("16k rejected"),
+            mock.Mock(name="stream-A"),  # device=None succeeds at 48k
+            _FakePortAudioError("16k rejected again"),
+            mock.Mock(name="stream-B"),  # device=7 succeeds at 48k
+        ]
+
+        def _responder(kwargs):
+            r = responses.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        self._responder = _responder
+
+        _open_input_stream(
+            device=None, target_samplerate=16000, channels=1,
+            dtype="float32", callback=lambda *_: None,
+        )
+        _open_input_stream(
+            device=7, target_samplerate=16000, channels=1,
+            dtype="float32", callback=lambda *_: None,
+        )
+
+        with capture._MIC_FORMAT_CACHE_LOCK:
+            keys = list(_MIC_FORMAT_CACHE.keys())
+        device_names = sorted(k[0] for k in keys)
+        self.assertEqual(
+            device_names, ["FakeMic-7", "FakeMic-None"],
+            "cache must be keyed by resolved device name, not raw device arg",
+        )
+
     def test_cache_skips_probe_on_second_open(self):
         # First call: 16000 fails, 48000 succeeds -> cache (48000, float32)
         # for this device. Second call MUST hit the cache and open at 48000
@@ -162,10 +207,13 @@ class OpenInputStreamLadderTests(unittest.TestCase):
         self.assertEqual(cache_calls[0]["dtype"], "float32")
 
     def test_cache_evicts_and_reprobes_when_cached_format_fails(self):
-        # Prime cache with a known-good (48000, float32) for device 7.
+        # Prime cache with a known-good (48000, float32) for device 7. The
+        # cache key uses the resolved device NAME (from sd.query_devices),
+        # not the raw device id, so changing the OS default mic invalidates
+        # the entry automatically.
         from whisper_sync import capture
         from whisper_sync.capture import _open_input_stream, _MIC_FORMAT_CACHE
-        cache_key = (7, 16000, "float32", 1)
+        cache_key = ("FakeMic-7", 16000, "float32", 1)
         with capture._MIC_FORMAT_CACHE_LOCK:
             _MIC_FORMAT_CACHE[cache_key] = (48000, "float32")
 
