@@ -125,40 +125,88 @@ class StateManager:
         follow-up state change, prefer scheduling it on a background thread.
         """
         with self._lock:
-            old = replace(self._state)
-            # Warn on unknown state fields (catches typos at call sites)
-            unknown_keys = [k for k in state_changes if not hasattr(self._state, k)]
-            if unknown_keys:
-                _logger.warning(
-                    "StateManager.emit received unknown state field(s): %s",
-                    ", ".join(sorted(unknown_keys)),
-                )
-            for k, v in state_changes.items():
-                if hasattr(self._state, k):
-                    setattr(self._state, k, v)
-            event = StateEvent(
-                type=event_type,
-                timestamp=time.time(),
-                old_state=old,
-                new_state=replace(self._state),
-                data=dict(data) if data is not None else {},
+            event, typed_cbs, global_cbs = self._apply_locked(
+                event_type, data, state_changes
             )
-            self._event_log.append(event)
-            # Snapshot listener lists under lock to avoid racey iteration
-            typed_cbs = list(self._typed_listeners.get(event_type, []))
-            global_cbs = list(self._global_listeners)
+        self._notify(event, typed_cbs, global_cbs)
 
-        # Notify outside lock
+    def try_transition(self, allowed_from, event_type: str, *,
+                       data: dict | None = None, **state_changes) -> bool:
+        """Atomically transition mode IF the current mode allows it.
+
+        The historical race: hotkey handlers read ``state.current.mode``,
+        branched, and then emitted a transition - but worker threads
+        completing in between could change mode, so two starts could both
+        pass the same check (e.g. a dictation hotkey double-fire racing a
+        transcription completion). This method makes check-and-set one
+        atomic step under the state lock.
+
+        Args:
+            allowed_from: iterable of modes (including ``None``) from which
+                this transition may proceed.
+            event_type: event to emit when the transition is taken.
+            state_changes: state fields to set, exactly as in ``emit``
+                (must include the new ``mode`` if the mode is changing).
+
+        Returns:
+            True if the transition was applied (listeners notified),
+            False if the current mode was not in ``allowed_from``
+            (state untouched, nothing emitted).
+        """
+        allowed = tuple(allowed_from)
+        with self._lock:
+            if self._state.mode not in allowed:
+                _logger.debug(
+                    "try_transition rejected: mode=%r not in %r (event=%s)",
+                    self._state.mode, allowed, event_type,
+                )
+                return False
+            event, typed_cbs, global_cbs = self._apply_locked(
+                event_type, data, state_changes
+            )
+        self._notify(event, typed_cbs, global_cbs)
+        return True
+
+    def _apply_locked(self, event_type: str, data: dict | None,
+                      state_changes: dict):
+        """Apply state changes and build the event. Caller holds the lock."""
+        old = replace(self._state)
+        # Warn on unknown state fields (catches typos at call sites)
+        unknown_keys = [k for k in state_changes if not hasattr(self._state, k)]
+        if unknown_keys:
+            _logger.warning(
+                "StateManager received unknown state field(s) for %s: %s",
+                event_type, ", ".join(sorted(unknown_keys)),
+            )
+        for k, v in state_changes.items():
+            if hasattr(self._state, k):
+                setattr(self._state, k, v)
+        event = StateEvent(
+            type=event_type,
+            timestamp=time.time(),
+            old_state=old,
+            new_state=replace(self._state),
+            data=dict(data) if data is not None else {},
+        )
+        self._event_log.append(event)
+        # Snapshot listener lists under lock to avoid racey iteration
+        typed_cbs = list(self._typed_listeners.get(event_type, []))
+        global_cbs = list(self._global_listeners)
+        return event, typed_cbs, global_cbs
+
+    @staticmethod
+    def _notify(event, typed_cbs, global_cbs):
+        """Call listeners outside the lock."""
         for cb in typed_cbs:
             try:
                 cb(event)
             except Exception:
-                _logger.exception("Typed listener error for %s", event_type)
+                _logger.exception("Typed listener error for %s", event.type)
         for cb in global_cbs:
             try:
                 cb(event)
             except Exception:
-                _logger.exception("Global listener error for %s", event_type)
+                _logger.exception("Global listener error for %s", event.type)
 
     def on(self, event_type: str, callback: Callable[[StateEvent], None]):
         """Subscribe to a specific event type. Thread-safe."""

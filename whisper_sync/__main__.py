@@ -161,17 +161,17 @@ class WhisperSync:
         self._dialog_dispatcher = DialogDispatcher()
         self._dialog_dispatcher.start()
         self._cpu_name = _get_cpu_name()
-        # Session stats
-        self._stats = {
-            "dictations": 0,
-            "meetings": 0,
-            "feature_suggestions": 0,
-            "total_dictation_chars": 0,
-            "total_dictation_time": 0.0,
-            "total_meeting_seconds": 0,
-            "total_meeting_words": 0,
-            "session_start": datetime.now(),
-        }
+        # Session stats: lock-guarded; mutated from dictation/overlay/meeting
+        # worker threads concurrently (see session_stats.py).
+        from .session_stats import SessionStats
+        self._stats = SessionStats()
+        # _dictation_history is appended from dictation AND overlay worker
+        # threads and read by menu builds; guard every access.
+        self._dictation_history_lock = threading.Lock()
+        # Flash gate: lock-guarded check-and-set (Event.is_set()+set() alone
+        # is not atomic; two hotkey threads could both observe False).
+        self._flash_lock = threading.Lock()
+        self._flash_active = threading.Event()
 
     @staticmethod
     def _migrate_data():
@@ -235,17 +235,19 @@ class WhisperSync:
 
     def _yellow_flash(self):
         """Universal loading/queuing signal: two quick yellow flashes (150ms on/off/on)."""
-        if getattr(self, '_flashing', False):
-            return
-        self._flashing = True
+        # Lock-guarded check-and-set: the old getattr-default pattern (and
+        # a bare Event is_set/set pair) raced concurrent hotkey threads -
+        # both could observe "not flashing" and both start animations.
+        with self._flash_lock:
+            if self._flash_active.is_set():
+                return
+            self._flash_active.set()
         animator = IconAnimator(self.tray, lock=self._tray_lock)
         animator.flash(count=2, interval_ms=150)
-        # Reset flag after animation completes (~600ms)
-        import time
-        def _reset():
-            time.sleep(0.7)
-            self._flashing = False
-        threading.Thread(target=_reset, daemon=True).start()
+        # Reset after the animation completes (~600ms) on the shared
+        # scheduler instead of spawning a sleep thread per flash.
+        from .scheduler import scheduler
+        scheduler.call_later(0.7, self._flash_active.clear, label="flash-reset")
 
     # --- Click dispatch ---
 
@@ -408,7 +410,17 @@ class WhisperSync:
             self._feature_suggest_active = False
             self._yellow_flash()
             return
-        self.state.emit(DICTATION_STARTED, mode="dictation")
+        # Atomic claim: only start if mode is still startable. A worker
+        # completion (or a double-fired hotkey on another thread) changing
+        # mode between the toggle's check and this start is rejected here
+        # instead of producing two concurrent recording sessions.
+        if not self.state.try_transition(
+            (None, "transcribing", "done", "error"),
+            DICTATION_STARTED, mode="dictation",
+        ):
+            logger.debug("dictation start rejected: mode changed concurrently")
+            self._feature_suggest_active = False
+            return
         mic = self.cfg.get("mic_device")
         if self.cfg.get("use_system_devices", True):
             # Explicitly use the WASAPI default instead of falling through
@@ -564,7 +576,7 @@ class WhisperSync:
                         entry_id = feature_log.append_raw(text, t2 - t0)
                         logger.info(f"Feature suggestion saved: {char_count} chars in {t2 - t0:.2f}s")
                         notify("Feature saved", f"Suggestion recorded ({char_count} chars)")
-                        self._stats["feature_suggestions"] += 1
+                        self._stats.record_feature_suggestion()
                         weekly_stats.record_feature_suggestion()
                         # Format asynchronously via Claude CLI
                         threading.Thread(
@@ -584,20 +596,19 @@ class WhisperSync:
                     effective_model = self.cfg.get("backup_model", "base") if used_backup else dictation_model
                     logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={effective_model}{' (backup)' if used_backup else ''}")
                     # Update session stats
-                    self._stats["dictations"] += 1
-                    self._stats["total_dictation_chars"] += char_count
-                    self._stats["total_dictation_time"] += t2 - t0
+                    self._stats.record_dictation(char_count, t2 - t0)
                     weekly_stats.record_dictation(char_count, t2 - t0)
                     incognito = self.cfg.get("incognito", False)
                     if text and not incognito:
                         dictation_log.append(text, t2 - t0, model=effective_model)
-                        self._dictation_history.append({
-                            "text": text,
-                            "timestamp": datetime.now().strftime("%H:%M"),
-                            "chars": len(text),
-                        })
-                        if len(self._dictation_history) > 10:
-                            self._dictation_history = self._dictation_history[-10:]
+                        with self._dictation_history_lock:
+                            self._dictation_history.append({
+                                "text": text,
+                                "timestamp": datetime.now().strftime("%H:%M"),
+                                "chars": len(text),
+                            })
+                            if len(self._dictation_history) > 10:
+                                self._dictation_history = self._dictation_history[-10:]
                         self._refresh_menu()
                 # Success -- remove crash-safety WAV (text is in the log)
                 self.recorder.stop_streaming()  # defensive: ensure writer closed
@@ -704,7 +715,7 @@ class WhisperSync:
                         entry_id = feature_log.append_raw(text, duration)
                         logger.info(f"Feature suggestion (overlay) saved: {char_count} chars in {duration:.2f}s", extra={"secondary": True})
                         notify("Feature saved", f"Suggestion recorded ({char_count} chars)")
-                        self._stats["feature_suggestions"] += 1
+                        self._stats.record_feature_suggestion()
                         weekly_stats.record_feature_suggestion()
                         threading.Thread(
                             target=self._format_feature_async,
@@ -716,21 +727,20 @@ class WhisperSync:
                         paste(text, self.cfg["paste_method"], restore=not self.cfg.get("incognito", False))
 
                     # Update session stats
-                    self._stats["dictations"] += 1
-                    self._stats["total_dictation_chars"] += char_count
-                    self._stats["total_dictation_time"] += duration
+                    self._stats.record_dictation(char_count, duration)
                     weekly_stats.record_dictation(char_count, duration)
 
                     incognito = self.cfg.get("incognito", False)
                     if text and not incognito:
                         dictation_log.append(text, duration, model=backup_model)
-                        self._dictation_history.append({
-                            "text": text,
-                            "timestamp": datetime.now().strftime("%H:%M"),
-                            "chars": len(text),
-                        })
-                        if len(self._dictation_history) > 10:
-                            self._dictation_history = self._dictation_history[-10:]
+                        with self._dictation_history_lock:
+                            self._dictation_history.append({
+                                "text": text,
+                                "timestamp": datetime.now().strftime("%H:%M"),
+                                "chars": len(text),
+                            })
+                            if len(self._dictation_history) > 10:
+                                self._dictation_history = self._dictation_history[-10:]
                         self._refresh_menu()
 
                     delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
@@ -757,21 +767,20 @@ class WhisperSync:
                     logger.info(f"Overlay dictation fallback: {duration:.2f}s, {char_count} chars", extra={"secondary": True})
 
                     # Post-dictation bookkeeping (same as the normal overlay path)
-                    self._stats["dictations"] += 1
-                    self._stats["total_dictation_chars"] += char_count
-                    self._stats["total_dictation_time"] += duration
+                    self._stats.record_dictation(char_count, duration)
                     weekly_stats.record_dictation(char_count, duration)
 
                     incognito = self.cfg.get("incognito", False)
                     if text and not incognito:
                         dictation_log.append(text, duration, model=dictation_model)
-                        self._dictation_history.append({
-                            "text": text,
-                            "timestamp": datetime.now().strftime("%H:%M"),
-                            "chars": len(text),
-                        })
-                        if len(self._dictation_history) > 10:
-                            self._dictation_history = self._dictation_history[-10:]
+                        with self._dictation_history_lock:
+                            self._dictation_history.append({
+                                "text": text,
+                                "timestamp": datetime.now().strftime("%H:%M"),
+                                "chars": len(text),
+                            })
+                            if len(self._dictation_history) > 10:
+                                self._dictation_history = self._dictation_history[-10:]
                         self._refresh_menu()
 
                     delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
@@ -1143,7 +1152,13 @@ class WhisperSync:
                 self._start_meeting()
 
     def _start_meeting(self):
-        self.state.emit(MEETING_STARTED, mode="meeting")
+        # Atomic claim, same rationale as _start_dictation.
+        if not self.state.try_transition(
+            (None, "transcribing", "done", "error"),
+            MEETING_STARTED, mode="meeting",
+        ):
+            logger.debug("meeting start rejected: mode changed concurrently")
+            return
         self._meeting_start_time = datetime.now()
         mic = self.cfg.get("mic_device")
         speaker = self.cfg.get("speaker_device")
@@ -2349,17 +2364,20 @@ class WhisperSync:
 
     def _clear_dictation_history(self):
         """Clear the in-memory dictation history (menu only, logs on disk are preserved)."""
-        self._dictation_history.clear()
+        with self._dictation_history_lock:
+            self._dictation_history.clear()
         self._refresh_menu()
 
     def _build_recent_dictations_menu(self):
         """Build the Recent Dictations submenu items."""
-        if not self._dictation_history:
+        with self._dictation_history_lock:
+            history = list(self._dictation_history)
+        if not history:
             return pystray.Menu(
                 pystray.MenuItem("No dictations yet", None, enabled=False),
             )
         items = []
-        for entry in reversed(self._dictation_history):
+        for entry in reversed(history):
             full_text = entry["text"]
             preview = full_text[:40]
             if len(full_text) > 40:
@@ -3111,7 +3129,7 @@ class WhisperSync:
 
     def _build_session_stats_menu(self):
         """Build weekly stats submenu with today and wk columns."""
-        s = self._stats
+        s = self._stats.snapshot()
         uptime = datetime.now() - s["session_start"]
         hours, remainder = divmod(int(uptime.total_seconds()), 3600)
         minutes = remainder // 60

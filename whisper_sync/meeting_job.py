@@ -163,9 +163,7 @@ class MeetingJob:
         )
 
         # Session stats
-        self.app._stats["meetings"] += 1
-        self.app._stats["total_meeting_seconds"] += int(duration)
-        self.app._stats["total_meeting_words"] += words
+        self.app._stats.record_meeting(int(duration), words)
         weekly_stats.record_meeting(int(duration), words)
 
         # Speaker segment previews
