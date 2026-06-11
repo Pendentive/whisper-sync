@@ -335,3 +335,25 @@ Repo convention: unittest + fake modules in `sys.modules` (see
   numpy. 7 protocol tests (routing, out-of-order, stale-drop, ready,
   startup-error, death-fails-all, timeout-kills). Real-data E2E re-run
   against the new protocol.
+
+- **2026-06-11 (session 2, close-out)**: **#146 (Phase 6)** merged after
+  a second Copilot round caught two real bugs, both fixed + regression
+  tested: (1) a late-exiting old reader could clobber the NEW worker
+  generation's ready state after restart - reader state now lives in a
+  per-spawn _WorkerGeneration bound to each reader thread; (2) a closed
+  response queue raises ValueError, which silently killed the reader and
+  stranded pending waiters - now treated as worker death. 9 protocol
+  tests total; system suite 116 pass; real-data E2E PASS.
+  **#147 (pipeline fix)** merged: auto-merge was permanently blocked by
+  GitHub remapping already-addressed Copilot comments onto each new head
+  commit (commit_id follows the remap, so the sha-match gate re-counted
+  fixed feedback forever). Gate now blocks on Copilot review threads
+  that are unresolved AND not outdated (GraphQL reviewThreads), with an
+  explicit close-out: reply citing the fixing commit, resolve the
+  thread. Also removed review-pr.yml's duplicate legacy auto-merge job
+  (second writer, stale gate, could merge past open feedback). #146 then
+  merged through the normal pipeline - no emergency override.
+  REMAINING: Phase 5b (ConfigStore - in progress: module + 10 tests
+  written, __main__/meeting_job wired; worker spawn pickle boundary
+  pending), Phase 1b (migrate ~20 ephemeral thread spawns onto
+  DICTATION/IO executors + scheduler).
