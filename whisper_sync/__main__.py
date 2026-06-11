@@ -1148,8 +1148,10 @@ class WhisperSync:
     def _is_claude_cli_available(self) -> bool:
         """Check if Claude CLI is available for minutes generation."""
         import subprocess as _sp
+        from .executors import native_call
         try:
-            r = _sp.run(["claude", "--version"], capture_output=True, text=True, timeout=5)
+            with native_call("claude-version"):
+                r = _sp.run(["claude", "--version"], capture_output=True, text=True, timeout=5)
             return r.returncode == 0
         except (FileNotFoundError, _sp.TimeoutExpired):
             return False
@@ -1326,10 +1328,12 @@ class WhisperSync:
         )
 
         try:
-            result = _sp.run(
-                ["claude", "-p", "--model", "haiku"],
-                input=prompt, capture_output=True, text=True, timeout=30,
-            )
+            from .executors import native_call
+            with native_call("claude-name-suggest"):
+                result = _sp.run(
+                    ["claude", "-p", "--model", "haiku"],
+                    input=prompt, capture_output=True, text=True, timeout=30,
+                )
             if result.returncode == 0 and result.stdout.strip():
                 lines = [l.strip().strip("-").strip() for l in result.stdout.strip().splitlines()]
                 # Sanitize and filter
@@ -2150,14 +2154,16 @@ class WhisperSync:
 
         logger.info(f"Generating minutes via Claude CLI for: {meeting_dir.name}")
         try:
-            result = _sp.run(
-                ["claude", "-p", "--model", "sonnet"],
-                input=full_prompt,
-                capture_output=True,
-                text=True,
-                timeout=300,  # 5 minutes max
-                cwd=str(Path(__file__).parent.parent.parent),  # repo root
-            )
+            from .executors import native_call
+            with native_call("claude-minutes"):
+                result = _sp.run(
+                    ["claude", "-p", "--model", "sonnet"],
+                    input=full_prompt,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,  # 5 minutes max
+                    cwd=str(Path(__file__).parent.parent.parent),  # repo root
+                )
             if result.returncode == 0 and result.stdout.strip():
                 minutes_file.write_text(result.stdout, encoding="utf-8")
                 logger.info(f"Minutes saved: {minutes_file}")
@@ -2184,13 +2190,15 @@ class WhisperSync:
 
         logger.info("Formatting feature suggestion via Claude CLI...")
         try:
-            result = _sp.run(
-                ["claude", "-p", "--model", "haiku"],
-                input=prompt_text,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
+            from .executors import native_call
+            with native_call("claude-feature-format"):
+                result = _sp.run(
+                    ["claude", "-p", "--model", "haiku"],
+                    input=prompt_text,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
             if result.returncode == 0 and result.stdout.strip():
                 feature_log.update_consolidated(entry_id, result.stdout.strip())
                 logger.info("Feature suggestion formatted successfully")
@@ -2823,12 +2831,14 @@ class WhisperSync:
         in notifications.py -- this method itself is blocking.
         """
         import subprocess as _sp
+        from .executors import native_call
         try:
-            result = _sp.run(
-                ["gh", "pr", "merge", str(pr_number), "--repo", repo,
-                 "--squash", "--delete-branch"],
-                capture_output=True, text=True, timeout=30,
-            )
+            with native_call("gh-merge"):
+                result = _sp.run(
+                    ["gh", "pr", "merge", str(pr_number), "--repo", repo,
+                     "--squash", "--delete-branch"],
+                    capture_output=True, text=True, timeout=30,
+                )
             if result.returncode == 0:
                 logger.info(f"PR #{pr_number} merged successfully")
                 self._notify("PR merged", f"PR #{pr_number} merged to main")
@@ -3271,71 +3281,14 @@ class WhisperSync:
 
         def _do_update():
             import subprocess as _sp
+            from .executors import native_call
             repo_root = str(get_install_root())
 
+            # One native-call span for the whole git sequence; over-marking
+            # is safe (idle GC just skips a tick), under-marking is not.
             try:
-                notify("Updating WhisperSync...", f"Pulling latest from {branch}")
-
-                # Check for uncommitted changes
-                status = _sp.run(
-                    ["git", "status", "--porcelain"],
-                    cwd=repo_root, capture_output=True, text=True, timeout=10
-                )
-                if status.stdout.strip():
-                    logger.warning(f"Uncommitted changes detected:\n{status.stdout.strip()}")
-
-                # Fetch
-                fetch = _sp.run(
-                    ["git", "fetch", "origin", branch],
-                    cwd=repo_root, capture_output=True, text=True, timeout=30
-                )
-                if fetch.returncode != 0:
-                    logger.error(f"git fetch failed: {fetch.stderr}")
-                    notify("Update failed", "git fetch failed, check console")
-                    return
-
-                # Check if there are updates
-                diff = _sp.run(
-                    ["git", "rev-list", f"HEAD..origin/{branch}", "--count"],
-                    cwd=repo_root, capture_output=True, text=True, timeout=10
-                )
-                count_str = (diff.stdout or "").strip()
-                commit_count = int(count_str) if count_str.isdigit() else 0
-
-                if commit_count == 0:
-                    notify("Already up to date", f"No new changes on {branch}")
-                    return
-
-                # Checkout the target branch if not already on it
-                current = _sp.run(
-                    ["git", "branch", "--show-current"],
-                    cwd=repo_root, capture_output=True, text=True, timeout=10
-                )
-                if current.stdout.strip() != branch:
-                    checkout = _sp.run(
-                        ["git", "checkout", branch],
-                        cwd=repo_root, capture_output=True, text=True, timeout=15
-                    )
-                    if checkout.returncode != 0:
-                        logger.error(f"git checkout {branch} failed: {checkout.stderr}")
-                        notify("Update failed", f"Could not switch to {branch}")
-                        return
-
-                pull = _sp.run(
-                    ["git", "pull", "origin", branch],
-                    cwd=repo_root, capture_output=True, text=True, timeout=60
-                )
-                if pull.returncode != 0:
-                    logger.error(f"git pull failed: {pull.stderr}")
-                    notify("Update failed", "git pull failed, check console")
-                    return
-
-                logger.info(f"Updated from {branch}: {commit_count} new commit(s)")
-                notify("Updated!", f"{commit_count} commit(s) from {branch}. Restarting...")
-
-                import time
-                time.sleep(2)  # Let the notification display
-                self._restart()
+                with native_call("git-update"):
+                    self._run_update_steps(_sp, repo_root, branch)
             except FileNotFoundError:
                 logger.error("git not found on PATH")
                 notify("Update failed", "git not found, check installation")
@@ -3349,6 +3302,71 @@ class WhisperSync:
                 self._updating = False
 
         threading.Thread(target=_do_update, daemon=True).start()
+
+    def _run_update_steps(self, _sp, repo_root: str, branch: str):
+        """Run the git fetch/checkout/pull sequence for self-update."""
+        notify("Updating WhisperSync...", f"Pulling latest from {branch}")
+
+                # Check for uncommitted changes
+        status = _sp.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_root, capture_output=True, text=True, timeout=10
+        )
+        if status.stdout.strip():
+            logger.warning(f"Uncommitted changes detected:\n{status.stdout.strip()}")
+
+        # Fetch
+        fetch = _sp.run(
+            ["git", "fetch", "origin", branch],
+            cwd=repo_root, capture_output=True, text=True, timeout=30
+        )
+        if fetch.returncode != 0:
+            logger.error(f"git fetch failed: {fetch.stderr}")
+            notify("Update failed", "git fetch failed, check console")
+            return
+
+        # Check if there are updates
+        diff = _sp.run(
+            ["git", "rev-list", f"HEAD..origin/{branch}", "--count"],
+            cwd=repo_root, capture_output=True, text=True, timeout=10
+        )
+        count_str = (diff.stdout or "").strip()
+        commit_count = int(count_str) if count_str.isdigit() else 0
+
+        if commit_count == 0:
+            notify("Already up to date", f"No new changes on {branch}")
+            return
+
+        # Checkout the target branch if not already on it
+        current = _sp.run(
+            ["git", "branch", "--show-current"],
+            cwd=repo_root, capture_output=True, text=True, timeout=10
+        )
+        if current.stdout.strip() != branch:
+            checkout = _sp.run(
+                ["git", "checkout", branch],
+                cwd=repo_root, capture_output=True, text=True, timeout=15
+            )
+            if checkout.returncode != 0:
+                logger.error(f"git checkout {branch} failed: {checkout.stderr}")
+                notify("Update failed", f"Could not switch to {branch}")
+                return
+
+        pull = _sp.run(
+            ["git", "pull", "origin", branch],
+            cwd=repo_root, capture_output=True, text=True, timeout=60
+        )
+        if pull.returncode != 0:
+            logger.error(f"git pull failed: {pull.stderr}")
+            notify("Update failed", "git pull failed, check console")
+            return
+
+        logger.info(f"Updated from {branch}: {commit_count} new commit(s)")
+        notify("Updated!", f"{commit_count} commit(s) from {branch}. Restarting...")
+
+        import time
+        time.sleep(2)  # Let the notification display
+        self._restart()
 
     # Empirically chosen delay (seconds) to let pystray menu callbacks
     # return before we call tray.stop(). Without this, WM_QUIT is posted
@@ -3620,13 +3638,32 @@ class WhisperSync:
                     pass
                 # NOTE: do NOT call gc.collect() here. It is process-wide
                 # and crashes (0x80000003) when any other thread is mid
-                # native C call (e.g., subprocess.communicate waiting for
-                # Claude CLI for ~2 min per meeting). PR #134 added a
-                # gc.collect() here and shipped this regression; the
-                # crashes both pointed at the gc.collect() inside this
-                # loop. Cycle objects now leak slowly; refcount cleanup
-                # still works for ~99% of allocations. Accept the leak.
+                # native C call (PR #134 regression, removed in #135).
+                # Cycle collection now happens via IdleCollector below,
+                # which only collects when the app is provably quiescent.
         threading.Thread(target=_stats_flush_loop, daemon=True).start()
+
+        # Provable-idle cycle collection. gc is disabled process-wide (see
+        # main()); without periodic collection, reference cycles leak
+        # permanently (menu rebuilds alone create closure-heavy graphs on
+        # every refresh). The collector only runs when executors are idle,
+        # zero native calls are in flight, the meeting pipeline is empty,
+        # nothing is recording, and mode is terminal — the exact safety
+        # condition the removed #134 checkpoints could not prove.
+        from .idle_gc import IdleCollector
+        self._idle_collector = IdleCollector(
+            is_pipeline_idle=lambda: self._post_queue.unfinished_tasks == 0,
+            is_recording=lambda: (
+                self.recorder.is_recording or self._overlay_recorder is not None
+            ),
+            is_mode_terminal=lambda: (
+                self.state is not None
+                and self.state.current.mode in (None, "done", "error")
+                and not self.state.current.meeting_transcribing
+                and not self.state.current.dictation_overlay
+            ),
+        )
+        self._idle_collector.start()
 
         try:
             self.tray.run()
@@ -3643,6 +3680,13 @@ class WhisperSync:
             self._backup.stop()
             if self._github_poller:
                 self._github_poller.stop()
+            try:
+                if getattr(self, "_idle_collector", None) is not None:
+                    self._idle_collector.stop()
+                from .scheduler import scheduler as _sched
+                _sched.shutdown(timeout=1.0)
+            except Exception:
+                pass
             try:
                 self._dialog_dispatcher.shutdown(timeout=2.0)
             except Exception:
