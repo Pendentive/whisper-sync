@@ -217,3 +217,35 @@ IO = Executor("io")                 # subprocess calls, file ops, recovery
 def all_idle() -> bool:
     """True when every executor is idle and no native call is in flight."""
     return DICTATION.idle() and IO.idle() and native_calls_in_flight() == 0
+
+
+def submit_or_spawn(executor: Executor, label: str, fn: Callable[[], None],
+                    native: bool = False) -> None:
+    """Run ``fn`` on ``executor``, degrading to a one-shot thread if rejected.
+
+    Migration shim for the ephemeral-thread sites (rebuild plan Phase 1b):
+    work must never be silently dropped, so a full queue or a shut-down
+    executor falls back to the old spawn behavior instead of failing.
+    """
+    accepted = (executor.submit_native(label, fn) if native
+                else executor.submit(label, fn))
+    if not accepted:
+        logger.warning(
+            "executor %s rejected %r; falling back to one-shot thread",
+            executor.name, label,
+        )
+
+        def _fallback():
+            # Mirror executor-job semantics: native sections stay visible
+            # to the idle-GC gauge, and exceptions are logged, not lost
+            # to the default thread excepthook.
+            try:
+                if native:
+                    with native_call(label):
+                        fn()
+                else:
+                    fn()
+            except Exception:
+                logger.exception("fallback thread %r raised", label)
+
+        threading.Thread(target=_fallback, daemon=True, name=label).start()

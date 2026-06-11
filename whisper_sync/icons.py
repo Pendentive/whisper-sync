@@ -11,7 +11,8 @@ resolve_icon_key() maps a composite AppState to the correct registry key.
 from __future__ import annotations
 
 import threading
-import time
+
+from .scheduler import scheduler
 from dataclasses import dataclass
 
 from PIL import Image, ImageDraw
@@ -206,24 +207,32 @@ class IconAnimator:
             if title is not None:
                 self._tray.title = title
 
+    def _animate(self, frames: list, interval_s: float):
+        """Step through (icon, title) frames on the scheduler.
+
+        Animations fire on every state change, so they used to spawn a
+        fresh sleeping thread each time (rebuild plan Phase 1b churn).
+        Each frame is now a short scheduler job; cancel() stops the chain
+        at the next frame, matching the old per-iteration check.
+        """
+        def _step(i: int):
+            if self._cancel.is_set() or i >= len(frames):
+                return
+            icon, title = frames[i]
+            self._set_tray(icon=icon, title=title)
+            scheduler.call_later(interval_s, lambda: _step(i + 1),
+                                 label="icon-animation")
+        _step(0)
+
     def flash(self, count: int = 2, interval_ms: int = 150):
         """Yellow double-flash (universal loading/queuing signal)."""
         if self._tray is None:
             return
         self._cancel.clear()
-
-        def _run():
-            original = self._tray.icon
-            flash_img = build_icon(ICON_REGISTRY["flash"])
-            for _ in range(count):
-                if self._cancel.is_set():
-                    break
-                self._set_tray(icon=flash_img)
-                time.sleep(interval_ms / 1000)
-                self._set_tray(icon=original)
-                time.sleep(interval_ms / 1000)
-
-        threading.Thread(target=_run, daemon=True).start()
+        original = self._tray.icon
+        flash_img = build_icon(ICON_REGISTRY["flash"])
+        frames = [(flash_img, None), (original, None)] * count
+        self._animate(frames, interval_ms / 1000)
 
     def flash_between(self, key_a: str, key_b: str,
                       count: int = 2, interval_ms: int = 150):
@@ -231,19 +240,12 @@ class IconAnimator:
         if self._tray is None:
             return
         self._cancel.clear()
-
-        def _run():
-            img_a = build_icon(ICON_REGISTRY[key_a])
-            img_b = build_icon(ICON_REGISTRY[key_b])
-            for _ in range(count):
-                if self._cancel.is_set():
-                    break
-                self._set_tray(icon=img_a, title=f"WhisperSync: {ICON_REGISTRY[key_a].tooltip}")
-                time.sleep(interval_ms / 1000)
-                self._set_tray(icon=img_b, title=f"WhisperSync: {ICON_REGISTRY[key_b].tooltip}")
-                time.sleep(interval_ms / 1000)
-
-        threading.Thread(target=_run, daemon=True).start()
+        frame_a = (build_icon(ICON_REGISTRY[key_a]),
+                   f"WhisperSync: {ICON_REGISTRY[key_a].tooltip}")
+        frame_b = (build_icon(ICON_REGISTRY[key_b]),
+                   f"WhisperSync: {ICON_REGISTRY[key_b].tooltip}")
+        frames = [frame_a, frame_b] * count
+        self._animate(frames, interval_ms / 1000)
 
     def cancel(self):
         """Stop current animation."""

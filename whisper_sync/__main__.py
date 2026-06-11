@@ -35,6 +35,7 @@ import pystray
 
 from . import config
 from .config_store import ConfigStore
+from .executors import DICTATION, IO, submit_or_spawn
 from .capture import AudioRecorder, get_default_devices, get_host_apis, list_devices, save_wav, save_stereo_wav
 from .icons import (idle_icon, build_icon, resolve_icon_key, ICON_REGISTRY,
                      IconAnimator)
@@ -491,9 +492,7 @@ class WhisperSync:
             # toggle acquires the app lock and stops the recorder, so
             # offload it instead of blocking other timer jobs (menu
             # refresh, idle GC).
-            threading.Thread(
-                target=_do_stop, daemon=True, name="dictation-cap-stop"
-            ).start()
+            submit_or_spawn(DICTATION, "dictation-cap-stop", _do_stop)
 
         self._cancel_dictation_cap()
         self._dictation_cap_handle = scheduler.call_later(
@@ -580,11 +579,11 @@ class WhisperSync:
                         self._stats.record_feature_suggestion()
                         weekly_stats.record_feature_suggestion()
                         # Format asynchronously via Claude CLI
-                        threading.Thread(
-                            target=self._format_feature_async,
-                            args=(text, entry_id),
-                            daemon=True,
-                        ).start()
+                        submit_or_spawn(
+                            IO, "feature-format",
+                            lambda t=text, e=entry_id: self._format_feature_async(t, e),
+                            native=True,
+                        )
                 else:
                     # Normal dictation mode: paste + log
                     if text:
@@ -630,7 +629,7 @@ class WhisperSync:
             finally:
                 self._schedule_idle(2)
 
-        threading.Thread(target=_process, daemon=True).start()
+        submit_or_spawn(DICTATION, "dictation-process", _process)
 
     # --- Overlay dictation (dictation during meeting recording/transcription) ---
 
@@ -718,11 +717,11 @@ class WhisperSync:
                         notify("Feature saved", f"Suggestion recorded ({char_count} chars)")
                         self._stats.record_feature_suggestion()
                         weekly_stats.record_feature_suggestion()
-                        threading.Thread(
-                            target=self._format_feature_async,
-                            args=(text, entry_id),
-                            daemon=True,
-                        ).start()
+                        submit_or_spawn(
+                            IO, "feature-format",
+                            lambda t=text, e=entry_id: self._format_feature_async(t, e),
+                            native=True,
+                        )
                 else:
                     if text:
                         paste(text, self.cfg["paste_method"], restore=not self.cfg.get("incognito", False))
@@ -792,7 +791,7 @@ class WhisperSync:
                 except Exception as fallback_err:
                     logger.error(f"Overlay dictation fallback also failed: {fallback_err}", extra={"secondary": True})
 
-        threading.Thread(target=_process_overlay, daemon=True).start()
+        submit_or_spawn(DICTATION, "overlay-process", _process_overlay)
 
     def _recover_dictation(self, wav_path: str):
         """Transcribe a recovered dictation WAV from a previous crash.
