@@ -322,3 +322,16 @@ Repo convention: unittest + fake modules in `sys.modules` (see
   thread, real timeouts), Phase 1b (migrate ~20 ephemeral thread spawns
   onto DICTATION/IO executors + scheduler). Each is one PR; start a
   fresh session from this doc.
+
+- **2026-06-11 (session 2, Phase 6)**: worker_manager rewritten with a
+  single reader thread owning the response queue (the old shared-get
+  design let one consumer swallow another's response). Requests get
+  pending-slots keyed by request_id; worker death fails ALL pending
+  callers immediately; transcribe_fast regains a real timeout (expiry
+  kills the wedged worker and raises WorkerCrashedError); transcribe
+  (meetings) intentionally stays unbounded (hard caps killed legit long
+  transcriptions, see 4f3b307) with death-detection via the reader.
+  worker import deferred so the protocol layer is unit-testable without
+  numpy. 7 protocol tests (routing, out-of-order, stale-drop, ready,
+  startup-error, death-fails-all, timeout-kills). Real-data E2E re-run
+  against the new protocol.
