@@ -81,3 +81,45 @@ class HeartbeatTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RssGaugeTests(unittest.TestCase):
+    def test_get_rss_mb_returns_nonnegative_int(self):
+        from whisper_sync.heartbeat import get_rss_mb
+        rss = get_rss_mb()
+        self.assertIsInstance(rss, int)
+        self.assertGreaterEqual(rss, 0)
+
+    def test_get_rss_mb_positive_on_windows(self):
+        import os
+        if os.name != "nt":
+            self.skipTest("Windows-only gauge")
+        from whisper_sync.heartbeat import get_rss_mb
+        self.assertGreater(
+            get_rss_mb(), 0,
+            "a running Python process must report nonzero working set",
+        )
+
+    def test_heartbeat_line_includes_rss(self):
+        import io
+        import logging
+        import time
+        from whisper_sync.heartbeat import Heartbeat
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        lg = logging.getLogger(f"test_heartbeat_rss.{self.id()}")
+        lg.handlers.clear()
+        lg.addHandler(handler)
+        lg.setLevel(logging.DEBUG)
+        hb = Heartbeat(lg, interval=0.05)
+        hb.start()
+        try:
+            time.sleep(0.12)
+        finally:
+            hb.stop(timeout=0.5)
+        out = stream.getvalue()
+        self.assertIn(
+            "rss=", out,
+            "heartbeat must log RSS so memory incidents are diagnosable "
+            "from the forensic log",
+        )

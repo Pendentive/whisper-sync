@@ -438,7 +438,53 @@ class WhisperSync:
                 logger.warning("Dictation disk streaming disabled: %s", e)
                 self._dictation_wav_path = None
 
+        # Memory protection: dictation mic audio accumulates in RAM
+        # (~230 MB/hour @16k float32). A forgotten hotkey used to grow
+        # unbounded. Auto-stop at the configured cap; the audio captured
+        # so far is transcribed normally, nothing is lost.
+        self._arm_dictation_cap()
+
+    def _arm_dictation_cap(self):
+        """Schedule the dictation auto-stop cap for this session."""
+        cap_min = float(self.cfg.get("dictation_max_minutes", 30) or 0)
+        if cap_min <= 0:
+            return
+        from .scheduler import scheduler
+
+        def _cap_hit():
+            mode = self.state.current.mode if self.state else None
+            if mode != "dictation":
+                return  # session already ended normally
+            logger.warning(
+                "Dictation auto-stopped at %.0f min cap "
+                "(dictation_max_minutes; audio so far is transcribed)",
+                cap_min,
+            )
+            try:
+                notify(
+                    "Dictation auto-stopped",
+                    f"Hit the {cap_min:.0f} min cap; transcribing what was recorded",
+                )
+            except Exception:
+                pass
+            # toggle takes the app lock and routes by current mode, so a
+            # user stop racing this tick is benign (mode check repeats
+            # under the lock inside toggle_dictation).
+            self.toggle_dictation()
+
+        self._cancel_dictation_cap()
+        self._dictation_cap_handle = scheduler.call_later(
+            cap_min * 60.0, _cap_hit, label="dictation-cap"
+        )
+
+    def _cancel_dictation_cap(self):
+        handle = getattr(self, "_dictation_cap_handle", None)
+        if handle is not None:
+            handle.cancel()
+            self._dictation_cap_handle = None
+
     def _stop_dictation(self):
+        self._cancel_dictation_cap()
         audio = self.recorder.stop()
         self.recorder.stop_streaming()
 
