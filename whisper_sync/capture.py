@@ -244,8 +244,12 @@ class AudioRecorder:
             # arrays (e.g. laptop 4-mic arrays) may only open at their
             # native channel count; mean-across-channels matches the
             # loopback downmix and is what the ASR model expects.
+            # dtype is explicit: input is already float32 here (normalized
+            # above), and numpy preserves float32 in mean for float input,
+            # but pinning it guards the float32 invariant against any
+            # future dtype drift upstream.
             if self._mic_channels > 1 and normalized.ndim == 2 and normalized.shape[1] > 1:
-                normalized = normalized.mean(axis=1, keepdims=True)
+                normalized = normalized.mean(axis=1, keepdims=True, dtype=np.float32)
 
             # Resample to the canonical sample_rate only when the device
             # fell back to its native rate. up/down are precomputed in

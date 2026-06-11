@@ -103,6 +103,23 @@ class MicDownmixTests(unittest.TestCase):
             atol=1e-3,
         )
 
+    def test_downmix_output_stays_float32(self):
+        # Regression for Copilot review on PR #143: the downmix result
+        # must remain float32 (the callback's normalization invariant) on
+        # every input dtype, including a hypothetical float64 input.
+        for in_dtype in (np.float32, np.int16, np.float64):
+            rec = self._make_recorder(channels=4)
+            frames = 64
+            if in_dtype == np.int16:
+                indata = np.full((frames, 4), 1000, dtype=in_dtype)
+            else:
+                indata = np.full((frames, 4), 0.25, dtype=in_dtype)
+            rec._mic_callback(indata, frames, None, None)
+            self.assertEqual(
+                rec._mic_data[0].dtype, np.float32,
+                f"downmix of {in_dtype.__name__} input must yield float32",
+            )
+
     def test_mono_input_unaffected(self):
         # channels=1 sessions must behave exactly as before.
         rec = self._make_recorder(channels=1)
