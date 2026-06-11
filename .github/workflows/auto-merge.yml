@@ -161,9 +161,12 @@ jobs:
                   cursor
                 });
                 const threads = resp.repository.pullRequest.reviewThreads;
+                // GraphQL may return the bot login with or without the
+                // [bot] suffix depending on API surface; accept both.
+                const copilotLogins = ['copilot-pull-request-reviewer', 'copilot-pull-request-reviewer[bot]'];
                 unresolvedThreads += threads.nodes.filter(t =>
                   !t.isResolved && !t.isOutdated
-                  && t.comments.nodes[0]?.author?.login === 'copilot-pull-request-reviewer'
+                  && copilotLogins.includes(t.comments.nodes[0]?.author?.login)
                 ).length;
                 if (!threads.pageInfo.hasNextPage) break;
                 cursor = threads.pageInfo.endCursor;
