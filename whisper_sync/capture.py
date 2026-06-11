@@ -53,12 +53,13 @@ def get_default_devices(api_filter: str | None = "WASAPI") -> dict:
     return {"input": defaults[0], "output": defaults[1]}
 
 
-# Cache of (device_key, target_samplerate, target_dtype, channels) -> (effective_rate, effective_dtype)
+# Cache of (device_name, target_samplerate, target_dtype, requested_channels)
+#   -> (effective_rate, effective_dtype, effective_channels)
 # Lets us skip the probe-and-fail sequence on subsequent opens for the same
-# device that already rejected the target rate once. On Windows this avoids
+# device that already rejected the target format once. On Windows this avoids
 # logging "mic open attempt failed (rate=16000 ...)" + "16000 Hz float32 rejected"
 # on every dictation/meeting start.
-_MIC_FORMAT_CACHE: dict[tuple, tuple[int, str]] = {}
+_MIC_FORMAT_CACHE: dict[tuple, tuple[int, str, int]] = {}
 _MIC_FORMAT_CACHE_LOCK = threading.Lock()
 
 
@@ -72,22 +73,27 @@ def _open_input_stream(*, device, target_samplerate: int, channels: int,
     retry, a single failed open propagates out of the hotkey handler and
     kills the keyboard dispatcher thread, bricking all further hotkeys.
 
-    Retry ladder:
+    Retry ladder, per (rate, dtype) rung:
       1. Caller-requested ``target_samplerate`` at ``dtype``.
       2. Device's native ``default_samplerate`` at the same ``dtype``.
       3. Device's native ``default_samplerate`` at ``int16``.
+    Each rung is tried at the requested ``channels`` first, then at the
+    device's native ``max_input_channels``. Microphone ARRAYS (e.g. laptop
+    4-mic arrays) often reject a mono open entirely; without the channel
+    fallback such devices were unusable with this app. Callers downmix
+    multi-channel input to mono in the audio callback.
 
-    Returns ``(stream, effective_samplerate)``. Callers are responsible
-    for resampling downstream audio when the effective rate differs from
-    the target.
+    Returns ``(stream, effective_samplerate, effective_channels)``.
+    Callers are responsible for resampling/downmixing downstream audio
+    when the effective format differs from the target.
 
     Reraises the last ``PortAudioError`` if every attempt fails.
 
-    A successful (rate, dtype) combination is cached per device so future
-    opens skip the probe and avoid logging the same fallback every session.
-    The cache key includes the resolved device name (not the raw ``device``
-    arg) so that ``device=None`` callers don't get a stale entry if the OS
-    default input device changes between calls.
+    A successful (rate, dtype, channels) combination is cached per device
+    so future opens skip the probe and avoid logging the same fallback
+    every session. The cache key includes the resolved device name (not
+    the raw ``device`` arg) so that ``device=None`` callers don't get a
+    stale entry if the OS default input device changes between calls.
     """
     # Resolve a stable device identity for the cache key. When the caller
     # passes device=None, sd.query_devices(None) returns info about the
@@ -104,60 +110,78 @@ def _open_input_stream(*, device, target_samplerate: int, channels: int,
         cached = _MIC_FORMAT_CACHE.get(cache_key)
 
     if cached is not None:
-        cached_rate, cached_dtype = cached
+        cached_rate, cached_dtype, cached_channels = cached
         try:
             stream = sd.InputStream(
                 samplerate=cached_rate,
-                channels=channels,
+                channels=cached_channels,
                 dtype=cached_dtype,
                 device=device,
                 callback=callback,
             )
-            return stream, cached_rate
+            return stream, cached_rate, cached_channels
         except sd.PortAudioError:
             # Device state changed; fall through to full probe.
             with _MIC_FORMAT_CACHE_LOCK:
                 _MIC_FORMAT_CACHE.pop(cache_key, None)
 
-    attempts = [(target_samplerate, dtype)]
+    rate_dtype_rungs = [(target_samplerate, dtype)]
+    native = None
+    native_channels = None
     try:
         # Reuse the device_info we already queried above, if available.
         info = device_info if device_info is not None else sd.query_devices(device)
         native = int(info["default_samplerate"])
+        native_channels = int(info.get("max_input_channels", 0)) or None
     except Exception:
-        native = None
+        pass
     if native and native != target_samplerate:
-        attempts.append((native, dtype))
-        attempts.append((native, "int16"))
+        rate_dtype_rungs.append((native, dtype))
+        rate_dtype_rungs.append((native, "int16"))
     else:
-        attempts.append((target_samplerate, "int16"))
+        rate_dtype_rungs.append((target_samplerate, "int16"))
+
+    # Channel candidates: requested first (mono), then the device's native
+    # channel count for mic arrays that refuse a mono open.
+    channel_candidates = [channels]
+    if native_channels and native_channels != channels:
+        channel_candidates.append(native_channels)
 
     last_err = None
-    for rate, this_dtype in attempts:
-        try:
-            stream = sd.InputStream(
-                samplerate=rate,
-                channels=channels,
-                dtype=this_dtype,
-                device=device,
-                callback=callback,
-            )
-            fell_back = (rate != target_samplerate or this_dtype != dtype)
-            if fell_back:
-                # Only log the fallback the FIRST time we discover it; cache
-                # hits below skip this branch. Use INFO not WARNING because
-                # the fallback succeeds and downstream code resamples.
-                logger.info(
-                    "mic: %d Hz %s rejected; using %d Hz %s "
-                    "(caching for this device)",
-                    target_samplerate, dtype, rate, this_dtype,
+    for rate, this_dtype in rate_dtype_rungs:
+        for this_channels in channel_candidates:
+            try:
+                stream = sd.InputStream(
+                    samplerate=rate,
+                    channels=this_channels,
+                    dtype=this_dtype,
+                    device=device,
+                    callback=callback,
                 )
-            with _MIC_FORMAT_CACHE_LOCK:
-                _MIC_FORMAT_CACHE[cache_key] = (rate, this_dtype)
-            return stream, rate
-        except sd.PortAudioError as e:
-            last_err = e
-            logger.debug("mic open attempt failed (rate=%s dtype=%s): %s", rate, this_dtype, e)
+                fell_back = (
+                    rate != target_samplerate
+                    or this_dtype != dtype
+                    or this_channels != channels
+                )
+                if fell_back:
+                    # Only log the fallback the FIRST time we discover it;
+                    # cache hits skip this branch. INFO not WARNING because
+                    # the fallback succeeds and downstream code adapts.
+                    logger.info(
+                        "mic: %d Hz %s %dch rejected; using %d Hz %s %dch "
+                        "(caching for this device)",
+                        target_samplerate, dtype, channels,
+                        rate, this_dtype, this_channels,
+                    )
+                with _MIC_FORMAT_CACHE_LOCK:
+                    _MIC_FORMAT_CACHE[cache_key] = (rate, this_dtype, this_channels)
+                return stream, rate, this_channels
+            except sd.PortAudioError as e:
+                last_err = e
+                logger.debug(
+                    "mic open attempt failed (rate=%s dtype=%s channels=%s): %s",
+                    rate, this_dtype, this_channels, e,
+                )
     assert last_err is not None
     raise last_err
 
@@ -174,6 +198,11 @@ class AudioRecorder:
         # recomputes it per buffer.
         self._mic_resample_up: int = 1
         self._mic_resample_down: int = 1
+        # Effective mic channel count for the current session. Usually 1,
+        # but mic ARRAYS (e.g. laptop 4-mic arrays) may reject a mono open;
+        # _open_input_stream then falls back to the device's native channel
+        # count and the callback downmixes to mono.
+        self._mic_channels: int = 1
         self._mic_data: list[np.ndarray] = []
         self._speaker_data: list[np.ndarray] = []
         self._mic_stream = None
@@ -210,6 +239,17 @@ class AudioRecorder:
                 normalized = indata.astype(np.float32)
             else:
                 normalized = indata
+
+            # Downmix multi-channel input to mono BEFORE resampling. Mic
+            # arrays (e.g. laptop 4-mic arrays) may only open at their
+            # native channel count; mean-across-channels matches the
+            # loopback downmix and is what the ASR model expects.
+            # dtype is explicit: input is already float32 here (normalized
+            # above), and numpy preserves float32 in mean for float input,
+            # but pinning it guards the float32 invariant against any
+            # future dtype drift upstream.
+            if self._mic_channels > 1 and normalized.ndim == 2 and normalized.shape[1] > 1:
+                normalized = normalized.mean(axis=1, keepdims=True, dtype=np.float32)
 
             # Resample to the canonical sample_rate only when the device
             # fell back to its native rate. up/down are precomputed in
@@ -259,7 +299,7 @@ class AudioRecorder:
             # False so stop()/subsequent starts see a clean state.
             stream = None
             try:
-                stream, effective_rate = _open_input_stream(
+                stream, effective_rate, effective_channels = _open_input_stream(
                     device=mic_device,
                     target_samplerate=self.sample_rate,
                     channels=1,
@@ -277,6 +317,7 @@ class AudioRecorder:
 
             self._mic_stream = stream
             self._mic_effective_rate = effective_rate
+            self._mic_channels = effective_channels
             # Precompute the resample ratio once per session.
             if effective_rate != self.sample_rate:
                 g = gcd(self.sample_rate, effective_rate)

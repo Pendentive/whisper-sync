@@ -283,3 +283,27 @@ Repo convention: unittest + fake modules in `sys.modules` (see
     real timeouts), Phase 1b (migrate the ~20 ephemeral thread spawn
     sites in __main__.py onto the executors/scheduler). Phase 1b is the
     largest remaining diff; suggest one PR per group of spawn sites.
+
+- **2026-06-10/11 (session 2, overnight)**: Log validation across May 12 -
+  June 10 found the dominant RECENT crash family is tkinter Tcl churn
+  (access violations in tkinter __del__; shutdown-GC faults), confirming
+  Phase 3 as top priority. Shipped:
+  - **#141**: real-data test harness (6 integration tests against real
+    meetings, flatten byte-exact vs known-good outputs; opt-in WS_E2E=1
+    end-to-end worker transcription of a real recording). The E2E
+    immediately found and fixed a real bug: stage_finalize never
+    populated word_count/num_speakers/duration/speaker_segments - every
+    meeting logged "0 words, 0 speakers" and weekly stats recorded
+    zeros. Also: heartbeat now logs rss=NMB (memory forensics) and
+    dictation auto-stops at dictation_max_minutes (default 30).
+  - **#142 (Phase 3)**: persistent hidden Tk root in DialogDispatcher;
+    all 8 dialog sites in __main__.py are Toplevel children; zero
+    tk.Tk() churn in the tray app. Copilot caught a shutdown
+    state-clear race (fixed + regression test).
+  - **Multi-channel mic support** (user request): _open_input_stream
+    ladder now tries native max_input_channels when mono open is
+    rejected (laptop 4-mic arrays were unusable); _mic_callback
+    downmixes mean-across-channels before resample/write; effective
+    channel count cached. 8 new tests (channel ladder + downmix math).
+  - REMAINING: Phase 5 (state consolidation), Phase 6 (worker protocol),
+    Phase 1b (ephemeral thread migration onto executors).

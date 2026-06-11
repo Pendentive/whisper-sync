@@ -43,6 +43,7 @@ class OpenInputStreamLadderTests(unittest.TestCase):
         fake.query_devices = lambda device: {
             "default_samplerate": 48000.0,
             "name": f"FakeMic-{device}",
+            "max_input_channels": 4,
         }
 
         from whisper_sync import capture
@@ -60,7 +61,7 @@ class OpenInputStreamLadderTests(unittest.TestCase):
     def test_first_attempt_succeeds_returns_requested_rate(self):
         self._responder = lambda kwargs: mock.Mock(name="stream")
         from whisper_sync.capture import _open_input_stream
-        stream, rate = _open_input_stream(
+        stream, rate, channels = _open_input_stream(
             device=7, target_samplerate=16000, channels=1,
             dtype="float32", callback=lambda *_: None,
         )
@@ -69,51 +70,92 @@ class OpenInputStreamLadderTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
 
     def test_falls_back_to_native_samplerate_on_portaudio_error(self):
-        responses = [
-            _FakePortAudioError("MME error 32"),  # first try
-            mock.Mock(name="stream"),             # second try ok
-        ]
-
+        # Device rejects ANYTHING at 16 kHz (rate problem, like MME error
+        # 32) regardless of channel count; accepts native 48 kHz.
         def _responder(kwargs):
-            r = responses.pop(0)
-            if isinstance(r, Exception):
-                raise r
-            return r
+            if kwargs["samplerate"] == 16000:
+                raise _FakePortAudioError("MME error 32")
+            return mock.Mock(name="stream")
 
         self._responder = _responder
         from whisper_sync.capture import _open_input_stream
-        stream, rate = _open_input_stream(
+        stream, rate, channels = _open_input_stream(
             device=7, target_samplerate=16000, channels=1,
             dtype="float32", callback=lambda *_: None,
         )
         self.assertIsNotNone(stream)
         self.assertEqual(rate, 48000)  # device default from fake query_devices
-        # First attempt at 16000, second at 48000
+        self.assertEqual(channels, 1, "rate fallback should keep mono")
         self.assertEqual(self.calls[0]["samplerate"], 16000)
-        self.assertEqual(self.calls[1]["samplerate"], 48000)
+        self.assertEqual(self.calls[-1]["samplerate"], 48000)
 
     def test_falls_back_to_int16_when_float32_and_native_both_fail(self):
-        responses = [
-            _FakePortAudioError("float32/16k rejected"),
-            _FakePortAudioError("float32/48k rejected"),
-            mock.Mock(name="stream"),
-        ]
-
+        # Device only accepts int16 (any rate/channels).
         def _responder(kwargs):
-            r = responses.pop(0)
-            if isinstance(r, Exception):
-                raise r
-            return r
+            if kwargs["dtype"] != "int16":
+                raise _FakePortAudioError("float32 rejected")
+            return mock.Mock(name="stream")
 
         self._responder = _responder
         from whisper_sync.capture import _open_input_stream
-        stream, rate = _open_input_stream(
+        stream, rate, channels = _open_input_stream(
             device=7, target_samplerate=16000, channels=1,
             dtype="float32", callback=lambda *_: None,
         )
         self.assertIsNotNone(stream)
         self.assertEqual(rate, 48000)
         self.assertEqual(self.calls[-1]["dtype"], "int16")
+
+    def test_mic_array_rejecting_mono_falls_back_to_native_channels(self):
+        # The user-reported case: a laptop 4-mic array refuses ANY mono
+        # open but accepts its native 4-channel format. Previously every
+        # rung used channels=1, all failed, and the app was unusable with
+        # the built-in mic.
+        def _responder(kwargs):
+            if kwargs["channels"] == 1:
+                raise _FakePortAudioError("mono not supported by mic array")
+            return mock.Mock(name="stream")
+
+        self._responder = _responder
+        from whisper_sync.capture import _open_input_stream
+        stream, rate, channels = _open_input_stream(
+            device=7, target_samplerate=16000, channels=1,
+            dtype="float32", callback=lambda *_: None,
+        )
+        self.assertIsNotNone(stream)
+        self.assertEqual(channels, 4, "must fall back to native channel count")
+        self.assertEqual(rate, 16000, "rate should stay at target when only channels failed")
+        # Mono was attempted FIRST (preferred), 4ch second.
+        self.assertEqual(self.calls[0]["channels"], 1)
+        self.assertEqual(self.calls[1]["channels"], 4)
+
+    def test_channel_fallback_caches_effective_channels(self):
+        from whisper_sync import capture
+        from whisper_sync.capture import _open_input_stream, _MIC_FORMAT_CACHE
+
+        def _responder(kwargs):
+            if kwargs["channels"] == 1:
+                raise _FakePortAudioError("mono not supported")
+            return mock.Mock(name="stream")
+
+        self._responder = _responder
+        _open_input_stream(
+            device=7, target_samplerate=16000, channels=1,
+            dtype="float32", callback=lambda *_: None,
+        )
+        with capture._MIC_FORMAT_CACHE_LOCK:
+            cached = _MIC_FORMAT_CACHE[("FakeMic-7", 16000, "float32", 1)]
+        self.assertEqual(cached, (16000, "float32", 4))
+
+        # Second open: single cache-hit call straight at 4 channels.
+        first_calls = len(self.calls)
+        _open_input_stream(
+            device=7, target_samplerate=16000, channels=1,
+            dtype="float32", callback=lambda *_: None,
+        )
+        cache_calls = self.calls[first_calls:]
+        self.assertEqual(len(cache_calls), 1)
+        self.assertEqual(cache_calls[0]["channels"], 4)
 
     def test_reraises_if_all_attempts_fail(self):
         def _responder(kwargs):
@@ -167,81 +209,69 @@ class OpenInputStreamLadderTests(unittest.TestCase):
         )
 
     def test_cache_skips_probe_on_second_open(self):
-        # First call: 16000 fails, 48000 succeeds -> cache (48000, float32)
-        # for this device. Second call MUST hit the cache and open at 48000
-        # directly with NO probe of 16000.
-        responses = [
-            _FakePortAudioError("16k rejected"),
-            mock.Mock(name="stream-1"),
-            mock.Mock(name="stream-2"),
-        ]
-
+        # First open: device rejects 16 kHz (any channels), accepts 48 kHz
+        # mono -> cache (48000, float32, 1). Second open MUST hit the
+        # cache: a single InputStream call at 48 kHz, no 16 kHz probe.
         def _responder(kwargs):
-            r = responses.pop(0)
-            if isinstance(r, Exception):
-                raise r
-            return r
+            if kwargs["samplerate"] == 16000:
+                raise _FakePortAudioError("16k rejected")
+            return mock.Mock(name="stream")
 
         self._responder = _responder
         from whisper_sync.capture import _open_input_stream
 
-        # First open: probes both rates.
         _open_input_stream(
             device=7, target_samplerate=16000, channels=1,
             dtype="float32", callback=lambda *_: None,
         )
-        first_calls = list(self.calls)
-        self.assertEqual(len(first_calls), 2)
+        first_calls = len(self.calls)
+        self.assertGreater(first_calls, 1, "first open must probe")
 
-        # Second open: cache hit, single attempt at 48000.
         _open_input_stream(
             device=7, target_samplerate=16000, channels=1,
             dtype="float32", callback=lambda *_: None,
         )
-        cache_calls = self.calls[len(first_calls):]
+        cache_calls = self.calls[first_calls:]
         self.assertEqual(
             len(cache_calls), 1,
             "second open should skip the probe and only call InputStream once",
         )
         self.assertEqual(cache_calls[0]["samplerate"], 48000)
         self.assertEqual(cache_calls[0]["dtype"], "float32")
+        self.assertEqual(cache_calls[0]["channels"], 1)
 
     def test_cache_evicts_and_reprobes_when_cached_format_fails(self):
-        # Prime cache with a known-good (48000, float32) for device 7. The
-        # cache key uses the resolved device NAME (from sd.query_devices),
-        # not the raw device id, so changing the OS default mic invalidates
-        # the entry automatically.
+        # Prime cache with a known-good (48000, float32, 1ch) for device 7.
+        # The cache key uses the resolved device NAME (from
+        # sd.query_devices), not the raw device id, so changing the OS
+        # default mic invalidates the entry automatically.
         from whisper_sync import capture
         from whisper_sync.capture import _open_input_stream, _MIC_FORMAT_CACHE
         cache_key = ("FakeMic-7", 16000, "float32", 1)
         with capture._MIC_FORMAT_CACHE_LOCK:
-            _MIC_FORMAT_CACHE[cache_key] = (48000, "float32")
+            _MIC_FORMAT_CACHE[cache_key] = (48000, "float32", 1)
 
-        # Now simulate the device suddenly rejecting the cached format.
-        # The helper must evict the stale cache entry and re-probe.
-        responses = [
-            _FakePortAudioError("cached rate now rejected"),  # cached attempt
-            _FakePortAudioError("16k still rejected"),         # probe 16k
-            mock.Mock(name="recovered-stream"),                # probe 48k succeeds
-        ]
-
+        # Device state changed: 48 kHz now rejected, only 16 kHz works.
+        # The helper must evict the stale entry, re-probe, and re-cache.
         def _responder(kwargs):
-            r = responses.pop(0)
-            if isinstance(r, Exception):
-                raise r
-            return r
+            if kwargs["samplerate"] == 48000:
+                raise _FakePortAudioError("48k now rejected")
+            return mock.Mock(name="recovered-stream")
 
         self._responder = _responder
-        stream, rate = _open_input_stream(
+        stream, rate, channels = _open_input_stream(
             device=7, target_samplerate=16000, channels=1,
             dtype="float32", callback=lambda *_: None,
         )
         self.assertIsNotNone(stream)
-        self.assertEqual(rate, 48000)
-        # Cache should have been re-populated with the now-working entry.
+        self.assertEqual(rate, 16000)
+        self.assertEqual(channels, 1)
+        # First call was the (failed) cached 48 kHz attempt.
+        self.assertEqual(self.calls[0]["samplerate"], 48000)
+        # Cache re-populated with the now-working entry.
         with capture._MIC_FORMAT_CACHE_LOCK:
             self.assertEqual(
-                _MIC_FORMAT_CACHE.get(cache_key), (48000, "float32"),
+                _MIC_FORMAT_CACHE.get(cache_key), (16000, "float32", 1),
                 "cache should refresh after eviction",
             )
 
