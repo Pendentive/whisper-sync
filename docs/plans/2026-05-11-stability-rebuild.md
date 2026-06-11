@@ -254,4 +254,11 @@ Repo convention: unittest + fake modules in `sys.modules` (see
 ## 6. Progress log
 
 - **2026-05-11 (session 1)**: Full codebase read. This plan written.
-  Phase 1 implementation started (scheduler, executors, idle_gc + tests).
+  Phase 1 implemented: scheduler.py, executors.py (+ native_call gauge
+  wrapped around ALL main-process subprocess sites), idle_gc.py wired
+  into run(). 26 new tests. PR #137. Copilot caught a submit/shutdown
+  race in Executor (fixed: enqueue under lock) and a flaky test (fixed).
+  Phase 2 implemented on stacked branch feat/stability-phase2-tray:
+  tray_refresh.MenuRefresher (debounced single-owner menu rebuild),
+  _update_tray extended to own menu swaps under _tray_lock,
+  _refresh_menu converted to coalescing request. 7 new tests (84 total).

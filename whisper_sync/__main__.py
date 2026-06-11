@@ -138,6 +138,7 @@ class WhisperSync:
         self.recorder = AudioRecorder(sample_rate=self.cfg["sample_rate"])
         self.tray = None
         self.state = None  # Initialized after tray creation in run()
+        self._menu_refresher = None  # MenuRefresher, created in run()
         self._lock = threading.RLock()
         self._tray_lock = threading.Lock()  # Serialize all tray icon/title updates (pystray not thread-safe)
         self._api_filter = "Windows WASAPI"  # None = show all
@@ -210,8 +211,17 @@ class WhisperSync:
                             shutil.copy2(f, dest)
                 logger.info(f"Migrated dictation logs -> {new_dict_dir}")
 
-    def _update_tray(self, icon=None, title=None):
-        """Thread-safe tray icon/title update. Serializes all pystray mutations."""
+    def _update_tray(self, icon=None, title=None, menu=None):
+        """Thread-safe tray update under _tray_lock.
+
+        Every pystray mutation must hold _tray_lock: either via this
+        method or, on the animation hot path, IconAnimator's direct
+        icon/title writes (icons.py) which take the same lock. Menu
+        swaps specifically must come through here (via MenuRefresher) —
+        assigning tray.menu from arbitrary threads raced the Win32 pump
+        and corrupted the heap (2026-05-07 crash: _build_menu <-
+        _refresh_menu <- _process_overlay).
+        """
         with self._tray_lock:
             if self.tray is None:
                 return
@@ -219,6 +229,9 @@ class WhisperSync:
                 self.tray.icon = icon
             if title is not None:
                 self.tray.title = title
+            if menu is not None:
+                self.tray.menu = menu
+                self.tray.update_menu()
 
     def _yellow_flash(self):
         """Universal loading/queuing signal: two quick yellow flashes (150ms on/off/on)."""
@@ -2689,9 +2702,16 @@ class WhisperSync:
             pass  # toast is best-effort
 
     def _refresh_menu(self):
-        if self.tray:
-            self.tray.menu = self._build_menu()
-            self.tray.update_menu()
+        """Request a debounced menu rebuild. Safe from any thread.
+
+        The actual rebuild runs on the scheduler thread via MenuRefresher
+        and the swap goes through _update_tray under _tray_lock. Burst
+        requests (dictation completion fires history + stats + state
+        refreshes back-to-back) coalesce into one rebuild.
+        """
+        refresher = getattr(self, "_menu_refresher", None)
+        if refresher is not None and self.tray is not None:
+            refresher.request()
 
     def _save_and_refresh(self):
         config.save(self.cfg)
@@ -3546,6 +3566,15 @@ class WhisperSync:
             idle_icon(),
             "WhisperSync: Idle",
             menu=self._build_menu(),
+        )
+
+        # Debounced single-owner menu refresh (see tray_refresh.py). All
+        # _refresh_menu() calls from any thread coalesce here; the rebuild
+        # runs on the scheduler thread and swaps under _tray_lock.
+        from .tray_refresh import MenuRefresher
+        self._menu_refresher = MenuRefresher(
+            build_menu=self._build_menu,
+            apply_menu=lambda m: self._update_tray(menu=m),
         )
 
         self.state = StateManager(self.tray, self.cfg)
