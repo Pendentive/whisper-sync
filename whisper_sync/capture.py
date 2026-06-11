@@ -187,6 +187,12 @@ class AudioRecorder:
         self._pyaudio = None
         self._speaker_pa_stream = None
         self._speaker_native_rate: int | None = None
+        # Block buffer for in-callback speaker resampling (disk streaming).
+        # Chunks accumulate to ~1s blocks before each resample+write so the
+        # per-callback cost stays trivial and FIR edge effects are bounded
+        # to block boundaries (inaudible for ASR).
+        self._speaker_block: list[np.ndarray] = []
+        self._speaker_block_frames = 0
 
     def _mic_callback(self, indata, frames, time_info, status):
         try:
@@ -320,7 +326,7 @@ class AudioRecorder:
                         if native_channels > 1:
                             audio = audio.reshape(-1, native_channels).mean(axis=1)
                         mono = audio.reshape(-1, 1)
-                        self._speaker_data.append(mono.copy())
+                        self._ingest_speaker_chunk(mono)
                 except Exception:
                     pass
                 return (None, pyaudio.paContinue)
@@ -339,6 +345,67 @@ class AudioRecorder:
         except Exception as e:
             logger.warning(f"Speaker loopback failed: {e}")
             self._close_pyaudio()
+
+    def _ingest_speaker_chunk(self, mono: np.ndarray) -> None:
+        """Route a mono float32 speaker chunk to disk or RAM.
+
+        When a speaker writer is open (meeting disk-streaming mode), chunks
+        accumulate into ~1 second blocks, are resampled to the target rate,
+        and stream to disk — RAM stays flat for the whole meeting. Without
+        a writer (legacy/RAM mode), chunks accumulate in RAM as before.
+
+        Historically the speaker channel was ALWAYS RAM-accumulated at the
+        device's native rate: 48 kHz x 4 bytes ~= 691 MB/hour held for the
+        entire meeting. The mic channel got disk streaming; this gives the
+        speaker channel the same treatment.
+        """
+        if self._speaker_writer is None:
+            self._speaker_data.append(mono.copy())
+            return
+
+        # Loopback capture starts in start() BEFORE start_streaming() opens
+        # the writer, so the first chunks land in _speaker_data. Migrate
+        # that backlog into the block buffer here (we ARE the callback
+        # thread — single consumer, no race) so meeting-start audio is not
+        # silently dropped when stop() returns only speaker_path.
+        self._migrate_speaker_backlog()
+
+        self._speaker_block.append(mono.copy())
+        self._speaker_block_frames += len(mono)
+        native = self._speaker_native_rate or self.sample_rate
+        if self._speaker_block_frames >= native:  # ~1 second buffered
+            self._flush_speaker_block()
+
+    def _migrate_speaker_backlog(self) -> None:
+        """Move pre-writer RAM chunks into the disk-streaming block buffer.
+
+        Chunks captured between loopback start and writer creation are at
+        the same native rate the block buffer expects, so they prepend
+        cleanly. No-op when there is no backlog.
+        """
+        if not self._speaker_data:
+            return
+        backlog, self._speaker_data = self._speaker_data, []
+        # Prepend in order: backlog audio came first.
+        self._speaker_block = backlog + self._speaker_block
+        self._speaker_block_frames += sum(len(c) for c in backlog)
+
+    def _flush_speaker_block(self) -> None:
+        """Resample the buffered speaker block and write it to disk."""
+        if not self._speaker_block or self._speaker_writer is None:
+            self._speaker_block = []
+            self._speaker_block_frames = 0
+            return
+        block = np.concatenate(self._speaker_block, axis=0).reshape(-1)
+        self._speaker_block = []
+        self._speaker_block_frames = 0
+        native = self._speaker_native_rate or self.sample_rate
+        if native != self.sample_rate:
+            g = gcd(self.sample_rate, native)
+            block = resample_poly(block, self.sample_rate // g, native // g)
+        self._speaker_writer.write(
+            block.astype(np.float32, copy=False).reshape(-1, 1)
+        )
 
     def _close_pyaudio(self):
         """Clean up PyAudio loopback resources."""
@@ -379,12 +446,24 @@ class AudioRecorder:
             result["mic_path"] = self._mic_writer.path
         elif self._mic_data:
             result["mic"] = np.concatenate(self._mic_data, axis=0)
-        if self._speaker_data:
+
+        if self._speaker_writer is not None:
+            # Disk-streamed speaker channel: migrate any pre-writer backlog
+            # (covers meetings so short that no callback ran after the
+            # writer opened), flush the tail block, finalize the WAV
+            # (already at target rate), hand back the path. The caller
+            # reads it lazily; RAM stayed flat for the whole meeting.
+            # Safe: _recording is already False and the PA stream closed,
+            # so no callback can race these buffers.
+            self._migrate_speaker_backlog()
+            self._flush_speaker_block()
+            self._speaker_writer.close()
+            result["speaker_path"] = self._speaker_writer.path
+            self._speaker_writer = None
+        elif self._speaker_data:
             raw = np.concatenate(self._speaker_data, axis=0)
             # Resample from native rate to target sample rate if needed
             if self._speaker_native_rate and self._speaker_native_rate != self.sample_rate:
-                from math import gcd
-                from scipy.signal import resample_poly
                 up = self.sample_rate // gcd(self.sample_rate, self._speaker_native_rate)
                 down = self._speaker_native_rate // gcd(self.sample_rate, self._speaker_native_rate)
                 resampled = resample_poly(raw.flatten(), up, down)
@@ -402,7 +481,9 @@ class AudioRecorder:
 
         Args:
             mic_path: Path for mic WAV file.
-            speaker_path: Optional path for speaker WAV file.
+            speaker_path: Optional explicit path for the speaker WAV file.
+                Defaults to ``speaker-temp.wav`` next to ``mic_path`` when
+                the loopback stream is active and ``disk_only`` is set.
             disk_only: If True, skip RAM accumulation -- audio lives only on disk.
                 Use for long meetings to prevent MemoryError.
 
@@ -417,6 +498,26 @@ class AudioRecorder:
         # meeting silently captured nothing.
         self._mic_writer = writer
         self._disk_only = disk_only
+
+        # Speaker channel: stream to disk too when in disk_only mode and
+        # loopback is capturing. Historically the speaker channel was
+        # ALWAYS RAM-accumulated at native rate (~691 MB/hour); see
+        # _ingest_speaker_chunk. Failure here is non-fatal: the callback
+        # falls back to RAM accumulation exactly as before.
+        if disk_only and self.speaker_loopback_active:
+            if speaker_path is None:
+                speaker_path = Path(mic_path).parent / "speaker-temp.wav"
+            try:
+                self._speaker_block = []
+                self._speaker_block_frames = 0
+                self._speaker_writer = StreamingWavWriter(
+                    speaker_path, channels=1, rate=self.sample_rate
+                )
+            except Exception as e:
+                logger.warning(
+                    "Speaker disk streaming unavailable (RAM fallback): %s", e
+                )
+                self._speaker_writer = None
 
     def stop_streaming(self):
         """Close and finalize streaming WAV writers."""

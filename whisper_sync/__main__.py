@@ -1921,18 +1921,32 @@ class WhisperSync:
                 meeting_dir.mkdir(parents=True, exist_ok=True)
 
                 wav_path = meeting_dir / "recording.wav"
+
+                # Speaker channel may arrive as a disk path (disk-streamed
+                # at target rate — the flat-RAM path) or as an in-memory
+                # array (legacy/RAM fallback). Normalize to an array here;
+                # this read is the only transient large allocation left.
+                speaker_arr = None
+                if "speaker_path" in audio:
+                    from .streaming_wav import StreamingWavWriter
+                    speaker_arr = StreamingWavWriter.read_audio_from(
+                        audio["speaker_path"]
+                    ).reshape(-1, 1)
+                elif "speaker" in audio:
+                    speaker_arr = audio["speaker"]
+
                 if "mic_path" in audio:
                     # Disk-only mode: mic audio already on disk as streaming WAV
                     mic_wav_path = audio["mic_path"]
-                    if "speaker" in audio:
+                    if speaker_arr is not None:
                         from .streaming_wav import StreamingWavWriter
                         mic_array = StreamingWavWriter.read_audio_from(mic_wav_path)
-                        save_stereo_wav(str(wav_path), mic_array.reshape(-1, 1), audio["speaker"], self.cfg["sample_rate"])
+                        save_stereo_wav(str(wav_path), mic_array.reshape(-1, 1), speaker_arr, self.cfg["sample_rate"])
                     else:
                         import shutil
                         shutil.move(str(mic_wav_path), str(wav_path))
-                elif "speaker" in audio:
-                    save_stereo_wav(str(wav_path), audio["mic"], audio["speaker"], self.cfg["sample_rate"])
+                elif speaker_arr is not None:
+                    save_stereo_wav(str(wav_path), audio["mic"], speaker_arr, self.cfg["sample_rate"])
                 else:
                     save_wav(str(wav_path), audio["mic"], self.cfg["sample_rate"])
 
