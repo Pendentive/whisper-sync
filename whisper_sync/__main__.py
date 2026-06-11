@@ -36,6 +36,7 @@ import pystray
 from . import config
 from .config_store import ConfigStore
 from .executors import DICTATION, IO, submit_or_spawn
+from .idle_reset import schedule_idle_reset
 from .capture import AudioRecorder, get_default_devices, get_host_apis, list_devices, save_wav, save_stereo_wav
 from .icons import (idle_icon, build_icon, resolve_icon_key, ICON_REGISTRY,
                      IconAnimator)
@@ -277,32 +278,10 @@ class WhisperSync:
     def _schedule_idle(self, seconds: float, blink: bool = False):
         """Return to idle after a delay. If blink=True, blink done 3 times first.
 
-        Only resets mode if it's still in a terminal state (done/error/None).
-        If the user started a new recording during the delay, the mode will be
-        'dictation' or 'meeting' and we must NOT overwrite it.
+        Delegates to idle_reset.schedule_idle_reset (scheduler jobs, no
+        per-event thread). Mode is only reset if still terminal.
         """
-        import time
-
-        def _reset():
-            if blink and self.state.current.mode == "done":
-                for _ in range(3):
-                    if self.state.current.mode not in ("done", None):
-                        return  # User started something new - abort blink
-                    self.state.emit(IDLE, mode="done")
-                    time.sleep(0.4)
-                    if self.state.current.mode not in ("done", None):
-                        return
-                    self.state.emit(IDLE, mode=None)
-                    time.sleep(0.3)
-            else:
-                time.sleep(seconds)
-            # Only reset to idle if mode is still in a terminal state
-            if self.state.current.mode in ("done", "error", None):
-                self.state.emit(IDLE, mode=None)
-            else:
-                logger.debug(f"_schedule_idle: skipped reset - mode is '{self.state.current.mode}' (not terminal)")
-
-        threading.Thread(target=_reset, daemon=True).start()
+        schedule_idle_reset(self.state, seconds, blink)
 
     @staticmethod
     def _safe_unlink(path: Path, retries: int = 2, delay: float = 0.5):
