@@ -285,14 +285,18 @@ def identify_speakers(
     timeout_s = 240
     started = time.monotonic()
     try:
-        result = subprocess.run(
-            ["claude", "-p", "--model", "sonnet"],
-            input=full_prompt,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            cwd=str(Path(__file__).parent.parent.parent),
-        )
+        # Mark this long-running subprocess in the native-call gauge so the
+        # idle GC collector never collects while we are mid-communicate.
+        from .executors import native_call
+        with native_call("speaker-id"):
+            result = subprocess.run(
+                ["claude", "-p", "--model", "sonnet"],
+                input=full_prompt,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                cwd=str(Path(__file__).parent.parent.parent),
+            )
         elapsed = time.monotonic() - started
         if result.returncode != 0:
             logger.warning(
@@ -432,14 +436,16 @@ def opus_deep_identify(
 
     # Step 6: Call Opus
     try:
-        result = subprocess.run(
-            ["claude", "-p", "--model", "opus"],
-            input=full_prompt,
-            capture_output=True,
-            text=True,
-            timeout=600,
-            cwd=str(Path(__file__).parent.parent.parent),
-        )
+        from .executors import native_call
+        with native_call("speaker-deep-id"):
+            result = subprocess.run(
+                ["claude", "-p", "--model", "opus"],
+                input=full_prompt,
+                capture_output=True,
+                text=True,
+                timeout=600,
+                cwd=str(Path(__file__).parent.parent.parent),
+            )
 
         if progress_callback:
             progress_callback("Processing results...", 0.90)
