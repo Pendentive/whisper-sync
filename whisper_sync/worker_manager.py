@@ -114,9 +114,15 @@ class TranscriptionWorker:
         # Fresh generation per spawn: the reader binds to THIS generation,
         # so a lingering previous reader cannot touch the new state.
         self._gen = _WorkerGeneration()
+        # Snapshot at the pickle boundary: _cfg may be a live ConfigStore
+        # (a Mapping holding a lock, which must not cross into the
+        # subprocess). Snapshotting here also means a worker restart picks
+        # up the latest settings, as the live-dict version did.
+        snapshot = getattr(self._cfg, "snapshot", None)
+        cfg = snapshot() if callable(snapshot) else dict(self._cfg)
         self._process = ctx.Process(
             target=worker_main,
-            args=(self._request_q, self._response_q, self._cfg, self._preload_model),
+            args=(self._request_q, self._response_q, cfg, self._preload_model),
             daemon=True,
         )
         self._process.start()
@@ -335,8 +341,14 @@ class TranscriptionWorker:
     def is_ready(self) -> bool:
         return self._gen.ready_ok and self.is_alive()
 
-    def update_config(self, cfg: dict):
-        """Update the config snapshot for the next worker spawn."""
+    def update_config(self, cfg) -> None:
+        """Rebind the config source used at the next worker spawn.
+
+        Accepts the live ConfigStore (preferred - respawns then always
+        see current settings; start() snapshots at the pickle boundary)
+        or a plain dict to pin a frozen config, as the backup
+        transcriber does.
+        """
         self._cfg = cfg
 
     def restart(self) -> None:

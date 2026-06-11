@@ -34,6 +34,7 @@ import keyboard
 import pystray
 
 from . import config
+from .config_store import ConfigStore
 from .capture import AudioRecorder, get_default_devices, get_host_apis, list_devices, save_wav, save_stereo_wav
 from .icons import (idle_icon, build_icon, resolve_icon_key, ICON_REGISTRY,
                      IconAnimator)
@@ -133,7 +134,7 @@ def _get_cpu_name() -> str:
 class WhisperSync:
     def __init__(self):
         self._migrate_data()
-        self.cfg = config.load()
+        self.cfg = ConfigStore(config.load())
         set_console_level(self.cfg.get("log_window", "normal"))
         self.recorder = AudioRecorder(sample_rate=self.cfg["sample_rate"])
         self.tray = None
@@ -2820,7 +2821,7 @@ class WhisperSync:
             refresher.request()
 
     def _save_and_refresh(self):
-        config.save(self.cfg)
+        config.save(self.cfg.snapshot())
         self._refresh_menu()
 
     # --- GitHub PR Status ---
@@ -3183,7 +3184,7 @@ class WhisperSync:
         old = self.cfg["hotkeys"].get(key)
         if old == hotkey:
             return
-        self.cfg["hotkeys"][key] = hotkey
+        self.cfg.set_nested("hotkeys", key, hotkey)
         self._save_and_refresh()
         self._restart()
 
@@ -3226,7 +3227,7 @@ class WhisperSync:
             return
 
         logger.info(f"Switching device: {old} -> {device} ({old_resolved} -> {new_resolved})")
-        self.worker.update_config(dict(self.cfg))
+        self.worker.update_config(self.cfg)
         _previous_device = old
         def _do_restart():
             self.worker.restart()
@@ -3286,16 +3287,17 @@ class WhisperSync:
     def _set_diarize_method(self, slot_key: str, method_id: str):
         """Set a diarization slot, swapping with any slot that already has this method."""
         from .transcribe import DIARIZE_METHODS
-        current = self.cfg.get(slot_key, "balanced_mix")
-        if current == method_id:
-            return
-        # Find if another slot already uses this method and swap
-        all_slots = ["diarize_primary", "diarize_fallback", "diarize_last_resort"]
-        for other_slot in all_slots:
-            if other_slot != slot_key and self.cfg.get(other_slot, "balanced_mix") == method_id:
-                self.cfg[other_slot] = current  # swap
-                break
-        self.cfg[slot_key] = method_id
+        with self.cfg.transaction():
+            current = self.cfg.get(slot_key, "balanced_mix")
+            if current == method_id:
+                return
+            # Find if another slot already uses this method and swap
+            all_slots = ["diarize_primary", "diarize_fallback", "diarize_last_resort"]
+            for other_slot in all_slots:
+                if other_slot != slot_key and self.cfg.get(other_slot, "balanced_mix") == method_id:
+                    self.cfg[other_slot] = current  # swap
+                    break
+            self.cfg[slot_key] = method_id
         label = DIARIZE_METHODS.get(method_id, method_id)
         logger.info(f"Diarization {slot_key}: {label}", extra={"secondary": True})
         self._save_and_refresh()
