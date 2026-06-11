@@ -234,4 +234,18 @@ def submit_or_spawn(executor: Executor, label: str, fn: Callable[[], None],
             "executor %s rejected %r; falling back to one-shot thread",
             executor.name, label,
         )
-        threading.Thread(target=fn, daemon=True, name=label).start()
+
+        def _fallback():
+            # Mirror executor-job semantics: native sections stay visible
+            # to the idle-GC gauge, and exceptions are logged, not lost
+            # to the default thread excepthook.
+            try:
+                if native:
+                    with native_call(label):
+                        fn()
+                else:
+                    fn()
+            except Exception:
+                logger.exception("fallback thread %r raised", label)
+
+        threading.Thread(target=_fallback, daemon=True, name=label).start()

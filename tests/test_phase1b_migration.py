@@ -55,6 +55,46 @@ class SubmitOrSpawnTests(unittest.TestCase):
         release.set()
         ex.shutdown()
 
+    def test_fallback_honors_native_gauge(self):
+        # Regression for Copilot review on PR #150: a native job that
+        # falls back to a thread must still register in the idle-GC
+        # gauge, or collection could race the subprocess.
+        from whisper_sync.executors import native_calls_in_flight
+        ex = Executor("t-native-fb")
+        ex.submit("warmup", lambda: None)
+        ex.shutdown()  # force the fallback path
+
+        release = threading.Event()
+        observed = []
+        started = threading.Event()
+
+        def _job():
+            observed.append(native_calls_in_flight())
+            started.set()
+            release.wait(timeout=5.0)
+
+        submit_or_spawn(ex, "native-fb", _job, native=True)
+        self.assertTrue(started.wait(timeout=2.0))
+        self.assertGreaterEqual(
+            observed[0], 1,
+            "fallback native job must be counted in native_calls_in_flight",
+        )
+        release.set()
+
+    def test_fallback_logs_exceptions_instead_of_dying_silently(self):
+        ex = Executor("t-exc-fb")
+        ex.submit("warmup", lambda: None)
+        ex.shutdown()
+        ran = threading.Event()
+
+        def _boom():
+            ran.set()
+            raise RuntimeError("fallback exception")
+
+        # Must not raise out of submit_or_spawn and must execute the job.
+        submit_or_spawn(ex, "boom", _boom)
+        self.assertTrue(ran.wait(timeout=2.0))
+
     def test_falls_back_after_shutdown(self):
         ex = Executor("t-shut")
         ex.submit("warmup", lambda: None)
