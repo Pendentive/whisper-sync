@@ -11,9 +11,10 @@ import unittest
 
 try:
     import numpy as np
-    _HAS_NUMPY = True
+    import scipy.signal  # noqa: F401 -- capture.py imports it at module level
+    _HAS_DEPS = True
 except ImportError:
-    _HAS_NUMPY = False
+    _HAS_DEPS = False
 
 
 class _FakeWriter:
@@ -32,7 +33,7 @@ class _FakeWriter:
         self.closed = True
 
 
-@unittest.skipUnless(_HAS_NUMPY, "requires numpy/scipy (run under app venv)")
+@unittest.skipUnless(_HAS_DEPS, "requires numpy AND scipy (run under app venv)")
 class SpeakerStreamingTests(unittest.TestCase):
     def _make_recorder(self):
         from whisper_sync.capture import AudioRecorder
@@ -159,6 +160,53 @@ class SpeakerStreamingTests(unittest.TestCase):
         chunk = np.zeros((100, 1), dtype=np.float32)
         rec._ingest_speaker_chunk(chunk)
         self.assertEqual(len(rec._speaker_data), 1)
+
+    def test_pre_writer_backlog_migrates_on_next_ingest(self):
+        # Regression for Copilot review on PR #139: loopback starts in
+        # start() BEFORE start_streaming() opens the writer, so the first
+        # chunks land in _speaker_data. They must migrate to the disk
+        # stream, in order, not be silently dropped.
+        rec = self._make_recorder()
+        rec._speaker_native_rate = 48000
+
+        # Phase A: no writer yet — chunks accumulate in RAM (marker value 1.0).
+        early = np.ones((24000, 1), dtype=np.float32)
+        rec._ingest_speaker_chunk(early)
+        self.assertEqual(len(rec._speaker_data), 1)
+
+        # Phase B: writer opens; next chunk (marker 0.5) triggers migration
+        # and, with 24000+24000=48000 native frames buffered, one flush.
+        writer = _FakeWriter()
+        rec._speaker_writer = writer
+        late = np.ones((24000, 1), dtype=np.float32) * 0.5
+        rec._ingest_speaker_chunk(late)
+
+        self.assertEqual(rec._speaker_data, [], "backlog must migrate out of RAM")
+        self.assertEqual(len(writer.writes), 1)
+        block = writer.writes[0].reshape(-1)
+        self.assertEqual(len(block), 16000)  # 48000 @48k -> 16000 @16k
+        # Order check: first half of the resampled block comes from the
+        # early (1.0) audio, second half from the late (0.5) audio.
+        self.assertGreater(float(block[4000]), 0.75, "early audio must come first")
+        self.assertLess(float(block[12000]), 0.75, "late audio must come second")
+
+    def test_pre_writer_backlog_migrates_on_stop(self):
+        # Short-meeting case: writer opens but NO callback fires afterwards.
+        # stop() must still migrate + flush the backlog.
+        rec = self._make_recorder()
+        rec._speaker_native_rate = 48000
+
+        early = np.ones((24000, 1), dtype=np.float32)
+        rec._ingest_speaker_chunk(early)  # no writer yet -> RAM
+
+        writer = _FakeWriter()
+        rec._speaker_writer = writer
+        result = rec.stop()
+
+        self.assertEqual(len(writer.writes), 1, "stop() must flush migrated backlog")
+        self.assertEqual(len(writer.writes[0]), 8000)  # 24000 @48k -> 8000 @16k
+        self.assertTrue(writer.closed)
+        self.assertEqual(result.get("speaker_path"), writer.path)
 
 
 if __name__ == "__main__":

@@ -363,11 +363,32 @@ class AudioRecorder:
             self._speaker_data.append(mono.copy())
             return
 
+        # Loopback capture starts in start() BEFORE start_streaming() opens
+        # the writer, so the first chunks land in _speaker_data. Migrate
+        # that backlog into the block buffer here (we ARE the callback
+        # thread — single consumer, no race) so meeting-start audio is not
+        # silently dropped when stop() returns only speaker_path.
+        self._migrate_speaker_backlog()
+
         self._speaker_block.append(mono.copy())
         self._speaker_block_frames += len(mono)
         native = self._speaker_native_rate or self.sample_rate
         if self._speaker_block_frames >= native:  # ~1 second buffered
             self._flush_speaker_block()
+
+    def _migrate_speaker_backlog(self) -> None:
+        """Move pre-writer RAM chunks into the disk-streaming block buffer.
+
+        Chunks captured between loopback start and writer creation are at
+        the same native rate the block buffer expects, so they prepend
+        cleanly. No-op when there is no backlog.
+        """
+        if not self._speaker_data:
+            return
+        backlog, self._speaker_data = self._speaker_data, []
+        # Prepend in order: backlog audio came first.
+        self._speaker_block = backlog + self._speaker_block
+        self._speaker_block_frames += sum(len(c) for c in backlog)
 
     def _flush_speaker_block(self) -> None:
         """Resample the buffered speaker block and write it to disk."""
@@ -427,9 +448,14 @@ class AudioRecorder:
             result["mic"] = np.concatenate(self._mic_data, axis=0)
 
         if self._speaker_writer is not None:
-            # Disk-streamed speaker channel: flush the tail block, finalize
-            # the WAV (already at target rate), hand back the path. The
-            # caller reads it lazily; RAM stayed flat for the whole meeting.
+            # Disk-streamed speaker channel: migrate any pre-writer backlog
+            # (covers meetings so short that no callback ran after the
+            # writer opened), flush the tail block, finalize the WAV
+            # (already at target rate), hand back the path. The caller
+            # reads it lazily; RAM stayed flat for the whole meeting.
+            # Safe: _recording is already False and the PA stream closed,
+            # so no callback can race these buffers.
+            self._migrate_speaker_backlog()
             self._flush_speaker_block()
             self._speaker_writer.close()
             result["speaker_path"] = self._speaker_writer.path
