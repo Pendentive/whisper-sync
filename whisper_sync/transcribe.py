@@ -615,7 +615,7 @@ def stage_finalize(ctx: dict, result: dict, diarize_segments=None) -> dict:
     # Meeting stats consumed by meeting_job.step_transcribe (completion
     # toast, session stats, weekly_stats). These keys were never populated,
     # so every meeting logged "Transcribed: 0 words, 0 speakers" and weekly
-    # stats recorded zeros — found by the real-data E2E test asserting
+    # stats recorded zeros - found by the real-data E2E test asserting
     # word_count > 0 against an actual recording.
     segments_list = result.get("segments", [])
     output["word_count"] = len(output["text"].split())

@@ -455,22 +455,32 @@ class WhisperSync:
             mode = self.state.current.mode if self.state else None
             if mode != "dictation":
                 return  # session already ended normally
-            logger.warning(
-                "Dictation auto-stopped at %.0f min cap "
-                "(dictation_max_minutes; audio so far is transcribed)",
-                cap_min,
-            )
-            try:
-                notify(
-                    "Dictation auto-stopped",
-                    f"Hit the {cap_min:.0f} min cap; transcribing what was recorded",
+
+            def _do_stop():
+                logger.warning(
+                    "Dictation auto-stopped at %.0f min cap "
+                    "(dictation_max_minutes; audio so far is transcribed)",
+                    cap_min,
                 )
-            except Exception:
-                pass
-            # toggle takes the app lock and routes by current mode, so a
-            # user stop racing this tick is benign (mode check repeats
-            # under the lock inside toggle_dictation).
-            self.toggle_dictation()
+                try:
+                    notify(
+                        "Dictation auto-stopped",
+                        f"Hit the {cap_min:.0f} min cap; transcribing what was recorded",
+                    )
+                except Exception:
+                    pass
+                # toggle takes the app lock and routes by current mode, so
+                # a user stop racing this is benign (mode check repeats
+                # under the lock inside toggle_dictation).
+                self.toggle_dictation()
+
+            # Scheduler jobs must stay short (scheduler.py contract):
+            # toggle acquires the app lock and stops the recorder, so
+            # offload it instead of blocking other timer jobs (menu
+            # refresh, idle GC).
+            threading.Thread(
+                target=_do_stop, daemon=True, name="dictation-cap-stop"
+            ).start()
 
         self._cancel_dictation_cap()
         self._dictation_cap_handle = scheduler.call_later(
