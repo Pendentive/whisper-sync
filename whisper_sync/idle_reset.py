@@ -24,11 +24,14 @@ BLINK_OFF_S = 0.3
 
 
 def schedule_idle_reset(state, seconds: float, blink: bool = False) -> None:
-    """Return ``state`` to idle after ``seconds``; optionally blink first.
+    """Return ``state`` to idle, plain-delayed or via the done-blink.
 
-    ``blink=True`` only blinks when the mode is currently ``done``
-    (matching the original behavior); otherwise it degrades to the
-    plain delayed reset.
+    With ``blink=False``, resets after ``seconds``. With ``blink=True``
+    and the mode currently ``done``, runs the fixed blink choreography
+    instead - ``seconds`` is ignored and the total time is the
+    BLINK_CYCLES * (BLINK_ON_S + BLINK_OFF_S) chain (matching the
+    historical thread version). ``blink=True`` in any other mode
+    degrades to the plain ``seconds`` delay.
     """
 
     def _finish():

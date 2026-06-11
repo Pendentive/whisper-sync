@@ -6,6 +6,7 @@ times when asked, and abort the blink silently if a new recording
 starts mid-chain.
 """
 
+import threading
 import time
 import unittest
 from types import SimpleNamespace
@@ -17,14 +18,16 @@ from whisper_sync.state_manager import IDLE
 
 
 class _FakeState:
-    """Records emits and tracks mode the way StateManager would."""
+    """Records emits (and their thread) and tracks mode like StateManager."""
 
     def __init__(self, mode="done"):
         self.current = SimpleNamespace(mode=mode)
         self.events = []
+        self.emit_threads = []
 
     def emit(self, event_type, mode=None, **_kw):
         self.events.append((event_type, mode))
+        self.emit_threads.append(threading.current_thread())
         self.current.mode = mode
 
 
@@ -101,10 +104,15 @@ class BlinkChainTests(unittest.TestCase):
     def test_caller_does_not_emit_synchronously(self):
         # The first frame goes through the scheduler: pipeline
         # finally-blocks must not re-enter state.emit on their own stack.
+        # Assert on the emitting thread rather than on timing - the
+        # scheduler may legitimately fire before the caller's next line.
         state = _FakeState(mode="done")
         schedule_idle_reset(state, 0.02, blink=True)
-        self.assertEqual(state.events, [], "no emit on the caller's stack")
         self.assertTrue(_wait_for(lambda: state.events))
+        self.assertNotIn(
+            threading.current_thread(), state.emit_threads,
+            "emits must never run on the caller's stack",
+        )
 
 
 if __name__ == "__main__":
