@@ -23,8 +23,12 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .logger import logger
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 class WorkerCrashedError(RuntimeError):
@@ -177,7 +181,8 @@ class TranscriptionWorker:
         pending = _PendingRequest()
         with self._pending_lock:
             self._pending[request_id] = pending
-        payload["request_id"] = request_id
+        # Copy: never mutate the caller's dict (it may be reused/logged).
+        payload = {**payload, "request_id": request_id}
         try:
             self._request_q.put(payload)
         except Exception:
@@ -195,6 +200,9 @@ class TranscriptionWorker:
             try:
                 if self._process is not None and self._process.is_alive():
                     self._process.kill()
+                    # Reap promptly so repeated timeouts cannot accumulate
+                    # zombie children; stop()/restart() join again safely.
+                    self._process.join(timeout=3)
             except Exception:
                 pass
             raise WorkerCrashedError(
@@ -223,7 +231,8 @@ class TranscriptionWorker:
         logger.error("Worker startup timed out")
         return False
 
-    def transcribe_fast(self, audio_np, model_override: str | None = None,
+    def transcribe_fast(self, audio_np: "np.ndarray",
+                        model_override: str | None = None,
                         timeout: float = 60) -> str:
         """Send dictation audio to worker, return transcribed text.
 

@@ -30,6 +30,9 @@ class _FakeProcess:
         self.alive = False
         self.exitcode = -9
 
+    def join(self, timeout=None):
+        self.joined = True
+
 
 def _make_worker():
     """Worker wired to fake process + plain queues, reader running."""
@@ -59,11 +62,9 @@ class WorkerProtocolTests(unittest.TestCase):
 
         t1 = threading.Thread(target=_call, args=("a",), daemon=True)
         t1.start()
-        # Wait until the request is registered, then answer it.
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline and not w._pending:
-            time.sleep(0.01)
-        rid = w._request_q.get(timeout=1.0)["request_id"]
+        # The enqueued request is the synchronization point: by the time
+        # it is observable on the queue, the pending slot is registered.
+        rid = w._request_q.get(timeout=2.0)["request_id"]
         w._response_q.put({"type": "result", "text": "hello", "request_id": rid})
         t1.join(timeout=2.0)
         self.assertEqual(results["a"]["text"], "hello")
@@ -143,10 +144,12 @@ class WorkerProtocolTests(unittest.TestCase):
         threads = [threading.Thread(target=_call, daemon=True) for _ in range(3)]
         for t in threads:
             t.start()
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline and len(w._pending) < 3:
-            time.sleep(0.01)
-        self.assertEqual(len(w._pending), 3)
+        # Drain all three enqueued requests as the synchronization point;
+        # each is only observable after its pending slot is registered.
+        for _ in range(3):
+            w._request_q.get(timeout=2.0)
+        with w._pending_lock:
+            self.assertEqual(len(w._pending), 3)
 
         w._process.alive = False  # worker dies with requests in flight
         for t in threads:
@@ -155,7 +158,8 @@ class WorkerProtocolTests(unittest.TestCase):
             len(errors), 3,
             "every pending caller must get WorkerCrashedError on death",
         )
-        self.assertEqual(w._pending, {}, "pending map must be drained")
+        with w._pending_lock:
+            self.assertEqual(w._pending, {}, "pending map must be drained")
 
     def test_timeout_kills_wedged_worker_and_raises(self):
         # Worker is alive but never answers (wedged). The request must
@@ -164,7 +168,8 @@ class WorkerProtocolTests(unittest.TestCase):
         with self.assertRaises(WorkerCrashedError):
             w._request({"type": "transcribe_fast"}, timeout=0.2)
         self.assertTrue(w._process.killed, "wedged worker must be killed on timeout")
-        self.assertEqual(w._pending, {}, "timed-out request must be unregistered")
+        with w._pending_lock:
+            self.assertEqual(w._pending, {}, "timed-out request must be unregistered")
 
 
 if __name__ == "__main__":
