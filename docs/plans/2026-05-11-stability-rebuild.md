@@ -357,3 +357,24 @@ Repo convention: unittest + fake modules in `sys.modules` (see
   written, __main__/meeting_job wired; worker spawn pickle boundary
   pending), Phase 1b (migrate ~20 ephemeral thread spawns onto
   DICTATION/IO executors + scheduler).
+
+- **2026-06-11 (session 2, final)**: **#149 (Phase 5b)** merged:
+  ConfigStore Mapping wraps the shared cfg dict - locked writes,
+  copy-on-write set_nested, copy-on-read for mutable values (Copilot
+  catch), atomic snapshot() for save/pickle boundaries, transaction()
+  for the diarize-slot swap; worker spawn snapshots at the pickle
+  boundary and update_config rebinds the live store (fixing a
+  pre-existing staleness bug where a device switch pinned a frozen
+  copy). 11 tests. **#150 (Phase 1b part 1)** merged: high-frequency
+  spawn sites onto the Phase 1 primitives - dictation/overlay/cap-stop
+  on DICTATION, feature formatting (native-gauged) + toast callbacks +
+  manual GitHub poll on IO, icon flashes as scheduler frame chains;
+  submit_or_spawn() falls back to a one-shot thread (native-gauged,
+  exception-logged - Copilot catch) so work is never dropped. 8 tests.
+  System suite 135 pass; venv suite 36 pass.
+  REMAINING (part 2, lower priority): _schedule_idle blink chain ->
+  scheduler steps (touches state emissions, do carefully); leave
+  once-per-session threads (download/update/restart/quit/recovery)
+  as dedicated threads by design. Pipeline note: close out review
+  feedback by replying with the fixing commit and resolving the
+  thread - auto-merge gates on unresolved Copilot threads (#147).
