@@ -175,8 +175,8 @@ class StateManager:
         unknown_keys = [k for k in state_changes if not hasattr(self._state, k)]
         if unknown_keys:
             _logger.warning(
-                "StateManager.emit received unknown state field(s): %s",
-                ", ".join(sorted(unknown_keys)),
+                "StateManager received unknown state field(s) for %s: %s",
+                event_type, ", ".join(sorted(unknown_keys)),
             )
         for k, v in state_changes.items():
             if hasattr(self._state, k):

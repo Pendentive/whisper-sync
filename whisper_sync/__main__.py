@@ -168,6 +168,9 @@ class WhisperSync:
         # _dictation_history is appended from dictation AND overlay worker
         # threads and read by menu builds; guard every access.
         self._dictation_history_lock = threading.Lock()
+        # Flash gate: lock-guarded check-and-set (Event.is_set()+set() alone
+        # is not atomic; two hotkey threads could both observe False).
+        self._flash_lock = threading.Lock()
         self._flash_active = threading.Event()
 
     @staticmethod
@@ -232,12 +235,13 @@ class WhisperSync:
 
     def _yellow_flash(self):
         """Universal loading/queuing signal: two quick yellow flashes (150ms on/off/on)."""
-        # Event instead of a bare attribute: the old getattr-default
-        # pattern raced concurrent hotkey threads (both could see False
-        # and both start animations).
-        if self._flash_active.is_set():
-            return
-        self._flash_active.set()
+        # Lock-guarded check-and-set: the old getattr-default pattern (and
+        # a bare Event is_set/set pair) raced concurrent hotkey threads -
+        # both could observe "not flashing" and both start animations.
+        with self._flash_lock:
+            if self._flash_active.is_set():
+                return
+            self._flash_active.set()
         animator = IconAnimator(self.tray, lock=self._tray_lock)
         animator.flash(count=2, interval_ms=150)
         # Reset after the animation completes (~600ms) on the shared
