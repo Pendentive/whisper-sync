@@ -60,6 +60,24 @@ class _PendingRequest:
         self.response: dict | None = None  # None after done => worker died
 
 
+class _WorkerGeneration:
+    """Per-spawn shared state, bound to exactly one reader thread.
+
+    A restart creates a NEW generation; the old reader only ever touches
+    its own generation's pending map and ready event, so a late-exiting
+    old reader can never clobber the successor worker's state (Copilot
+    finding on PR #146).
+    """
+
+    __slots__ = ("pending", "pending_lock", "ready_event", "ready_ok")
+
+    def __init__(self):
+        self.pending: dict[int, _PendingRequest] = {}
+        self.pending_lock = threading.Lock()
+        self.ready_event = threading.Event()
+        self.ready_ok = False
+
+
 class TranscriptionWorker:
     """Manages a long-lived transcription subprocess."""
 
@@ -73,13 +91,10 @@ class TranscriptionWorker:
         self._lock = threading.Lock()
         self.gpu_name: str | None = None
         self.device: str | None = None
-        # Reader-thread state (Phase 6). _pending maps request_id ->
-        # _PendingRequest; only the reader completes entries.
-        self._pending: dict[int, _PendingRequest] = {}
-        self._pending_lock = threading.Lock()
+        # Reader-thread state (Phase 6): one _WorkerGeneration per spawn;
+        # only that generation's bound reader completes its entries.
+        self._gen = _WorkerGeneration()
         self._reader: threading.Thread | None = None
-        self._ready_event = threading.Event()
-        self._ready_ok = False
 
     def _next_id(self) -> int:
         with self._lock:
@@ -96,8 +111,9 @@ class TranscriptionWorker:
         ctx = multiprocessing.get_context("spawn")
         self._request_q = ctx.Queue()
         self._response_q = ctx.Queue()
-        self._ready_event.clear()
-        self._ready_ok = False
+        # Fresh generation per spawn: the reader binds to THIS generation,
+        # so a lingering previous reader cannot touch the new state.
+        self._gen = _WorkerGeneration()
         self._process = ctx.Process(
             target=worker_main,
             args=(self._request_q, self._response_q, self._cfg, self._preload_model),
@@ -106,7 +122,7 @@ class TranscriptionWorker:
         self._process.start()
         self._reader = threading.Thread(
             target=self._reader_loop,
-            args=(self._process, self._response_q),
+            args=(self._process, self._response_q, self._gen),
             daemon=True,
             name="worker-response-reader",
         )
@@ -115,13 +131,15 @@ class TranscriptionWorker:
 
     # -- reader thread ------------------------------------------------------
 
-    def _reader_loop(self, process, response_q) -> None:
-        """Single owner of the response queue.
+    def _reader_loop(self, process, response_q, gen: _WorkerGeneration) -> None:
+        """Single owner of the response queue for ONE worker generation.
 
         Routes responses to pending waiters by request_id; handles 'ready'
         and startup-error messages; on process death fails every pending
-        request so no caller waits forever. Args are bound at spawn so a
-        restart() creating new process/queues never races this loop.
+        request so no caller waits forever. All args (process, queue, and
+        generation state) are bound at spawn, so a restart() creating a
+        new generation never races this loop, and a late exit here can
+        only touch THIS generation's state - never the successor's.
         """
         while True:
             alive = process.is_alive()
@@ -131,41 +149,46 @@ class TranscriptionWorker:
                 if not alive:
                     break  # drained after death
                 continue
-            except (EOFError, OSError):
+            except (EOFError, OSError, ValueError):
+                # ValueError: multiprocessing.Queue raises it once the
+                # queue is closed during shutdown/restart. Treat exactly
+                # like process death so pending waiters are failed below
+                # instead of stranded forever.
                 break
 
             mtype = msg.get("type")
             if mtype == "ready":
                 self.gpu_name = msg.get("gpu_name")
                 self.device = msg.get("device")
-                self._ready_ok = True
-                self._ready_event.set()
+                gen.ready_ok = True
+                gen.ready_event.set()
                 continue
             if msg.get("request_id") == "__init__":
                 # Startup failure (e.g. model preload error)
                 logger.error(f"Worker startup error: {msg.get('message')}")
-                self._ready_ok = False
-                self._ready_event.set()
+                gen.ready_ok = False
+                gen.ready_event.set()
                 continue
 
             rid = msg.get("request_id")
-            with self._pending_lock:
-                pending = self._pending.pop(rid, None)
+            with gen.pending_lock:
+                pending = gen.pending.pop(rid, None)
             if pending is not None:
                 pending.response = msg
                 pending.done.set()
             else:
                 logger.debug("worker reader: dropping stale response id=%r", rid)
 
-        # Process is dead and queue drained: fail everything outstanding.
-        with self._pending_lock:
-            orphans = list(self._pending.values())
-            self._pending.clear()
+        # Process is dead and queue drained: fail everything outstanding
+        # in THIS generation only.
+        with gen.pending_lock:
+            orphans = list(gen.pending.values())
+            gen.pending.clear()
         for p in orphans:
             p.response = None
             p.done.set()
-        # Unblock anyone still in wait_ready on a dead worker.
-        self._ready_event.set()
+        # Unblock anyone still in wait_ready on this (dead) generation.
+        gen.ready_event.set()
 
     # -- request plumbing ----------------------------------------------------
 
@@ -181,22 +204,23 @@ class TranscriptionWorker:
         alive — unusable either way) and raises WorkerCrashedError so the
         caller's existing crash handling respawns it.
         """
+        gen = self._gen
         request_id = self._next_id()
         pending = _PendingRequest()
-        with self._pending_lock:
-            self._pending[request_id] = pending
+        with gen.pending_lock:
+            gen.pending[request_id] = pending
         # Copy: never mutate the caller's dict (it may be reused/logged).
         outgoing = {**payload, "request_id": request_id}  # caller dict untouched
         try:
             self._request_q.put(outgoing)
         except Exception:
-            with self._pending_lock:
-                self._pending.pop(request_id, None)
+            with gen.pending_lock:
+                gen.pending.pop(request_id, None)
             raise
 
         if not pending.done.wait(timeout):
-            with self._pending_lock:
-                self._pending.pop(request_id, None)
+            with gen.pending_lock:
+                gen.pending.pop(request_id, None)
             logger.error(
                 "Worker request %s timed out after %ss; killing wedged worker",
                 payload.get("type"), timeout,
@@ -204,8 +228,6 @@ class TranscriptionWorker:
             try:
                 if self._process is not None and self._process.is_alive():
                     self._process.kill()
-                    # Reap promptly so repeated timeouts cannot accumulate
-                    # zombie children; stop()/restart() join again safely.
                     # join reaps the killed child immediately (review:
                     # repeated timeouts must not accumulate zombies).
                     self._process.join(timeout=3)
@@ -225,10 +247,11 @@ class TranscriptionWorker:
 
     def wait_ready(self, timeout: float = 120) -> bool:
         """Block until worker reports models are loaded."""
+        gen = self._gen
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if self._ready_event.wait(timeout=1.0):
-                return self._ready_ok and self.is_alive()
+            if gen.ready_event.wait(timeout=1.0):
+                return gen.ready_ok and self.is_alive()
             if not self.is_alive():
                 logger.error(
                     f"Worker died during startup (exit code {self._exitcode()})"
@@ -310,7 +333,7 @@ class TranscriptionWorker:
         return self._process is not None and self._process.is_alive()
 
     def is_ready(self) -> bool:
-        return self._ready_ok and self.is_alive()
+        return self._gen.ready_ok and self.is_alive()
 
     def update_config(self, cfg: dict):
         """Update the config snapshot for the next worker spawn."""
@@ -356,9 +379,10 @@ class TranscriptionWorker:
         except (ValueError, AttributeError):
             pass
         self._process = None
-        self._ready_ok = False
+        self._gen.ready_ok = False
         # Reader exits on its own after observing process death and
-        # draining; it fails any pending waiters first.
+        # draining; it fails its own generation's pending waiters first
+        # and cannot touch any successor generation's state.
 
     def _exitcode(self):
         return self._process.exitcode if self._process else None

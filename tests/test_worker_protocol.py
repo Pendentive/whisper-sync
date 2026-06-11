@@ -41,7 +41,8 @@ def _make_worker():
     w._request_q = queue.Queue()
     w._response_q = queue.Queue()
     w._reader = threading.Thread(
-        target=w._reader_loop, args=(w._process, w._response_q), daemon=True
+        target=w._reader_loop, args=(w._process, w._response_q, w._gen),
+        daemon=True,
     )
     w._reader.start()
     return w
@@ -148,8 +149,8 @@ class WorkerProtocolTests(unittest.TestCase):
         # each is only observable after its pending slot is registered.
         for _ in range(3):
             w._request_q.get(timeout=2.0)
-        with w._pending_lock:
-            self.assertEqual(len(w._pending), 3)
+        with w._gen.pending_lock:
+            self.assertEqual(len(w._gen.pending), 3)
 
         w._process.alive = False  # worker dies with requests in flight
         for t in threads:
@@ -158,8 +159,8 @@ class WorkerProtocolTests(unittest.TestCase):
             len(errors), 3,
             "every pending caller must get WorkerCrashedError on death",
         )
-        with w._pending_lock:
-            self.assertEqual(w._pending, {}, "pending map must be drained")
+        with w._gen.pending_lock:
+            self.assertEqual(w._gen.pending, {}, "pending map must be drained")
 
     def test_timeout_kills_wedged_worker_and_raises(self):
         # Worker is alive but never answers (wedged). The request must
@@ -168,8 +169,83 @@ class WorkerProtocolTests(unittest.TestCase):
         with self.assertRaises(WorkerCrashedError):
             w._request({"type": "transcribe_fast"}, timeout=0.2)
         self.assertTrue(w._process.killed, "wedged worker must be killed on timeout")
-        with w._pending_lock:
-            self.assertEqual(w._pending, {}, "timed-out request must be unregistered")
+        with w._gen.pending_lock:
+            self.assertEqual(w._gen.pending, {}, "timed-out request must be unregistered")
+
+
+    def test_old_generation_reader_cannot_clobber_new_generation(self):
+        # Regression for Copilot review on PR #146: after restart(), a
+        # late-exiting OLD reader must not touch the NEW generation's
+        # ready state or pending map.
+        self.w = w = _make_worker()
+        old_gen = w._gen
+        old_process = w._process
+
+        # Simulate restart: fresh generation + process + reader (as
+        # start() does), while the old reader still runs.
+        from whisper_sync.worker_manager import _WorkerGeneration
+        w._gen = _WorkerGeneration()
+        w._process = _FakeProcess()
+        new_q = queue.Queue()
+        w._response_q = new_q
+        new_reader = threading.Thread(
+            target=w._reader_loop, args=(w._process, new_q, w._gen),
+            daemon=True,
+        )
+        new_reader.start()
+
+        # Old worker dies; old reader exits, failing ITS generation only.
+        old_process.alive = False
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not old_gen.ready_event.is_set():
+            time.sleep(0.01)
+        self.assertTrue(old_gen.ready_event.is_set(), "old gen unblocked")
+        self.assertFalse(
+            w._gen.ready_event.is_set(),
+            "old reader exit must NOT set the new generation's ready event",
+        )
+
+        # New generation still fully functional.
+        new_q.put({"type": "ready", "gpu_name": "G", "device": "cuda"})
+        self.assertTrue(w.wait_ready(timeout=2.0))
+
+    def test_closed_queue_valueerror_fails_pending(self):
+        # Regression for Copilot review on PR #146: a closed queue raises
+        # ValueError in get(); the reader must treat it as death and fail
+        # pending waiters rather than dying silently.
+        class _ClosingQueue:
+            def __init__(self):
+                self.calls = 0
+
+            def get(self, timeout=None):
+                self.calls += 1
+                raise ValueError("queue is closed")
+
+        w = TranscriptionWorker(cfg={})
+        w._process = _FakeProcess()
+        w._request_q = queue.Queue()
+        self.w = w
+
+        # Register a pending request directly, then run the reader against
+        # the closing queue.
+        from whisper_sync.worker_manager import _PendingRequest
+        pending = _PendingRequest()
+        with w._gen.pending_lock:
+            w._gen.pending[1] = pending
+
+        reader = threading.Thread(
+            target=w._reader_loop,
+            args=(w._process, _ClosingQueue(), w._gen),
+            daemon=True,
+        )
+        reader.start()
+        self.assertTrue(
+            pending.done.wait(timeout=2.0),
+            "pending waiter must be failed when the queue closes",
+        )
+        self.assertIsNone(pending.response, "failure marker must be set")
+        reader.join(timeout=2.0)
+        self.assertFalse(reader.is_alive(), "reader must exit on closed queue")
 
 
 if __name__ == "__main__":
