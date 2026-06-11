@@ -72,21 +72,19 @@ class SchedulerTests(unittest.TestCase):
 
     def test_all_jobs_share_one_thread(self):
         threads = set()
+        ran = []
         done = threading.Event()
-
-        def _record():
-            threads.add(threading.current_thread().name)
-            if len(threads) >= 1 and _record.count == 4:
-                done.set()
-        _record.count = 0
+        total = 5
 
         def _job():
-            _record.count += 1
-            _record()
+            threads.add(threading.current_thread().name)
+            ran.append(1)
+            if len(ran) == total:
+                done.set()
 
-        for i in range(5):
+        for i in range(total):
             self.sched.call_later(0.01 + i * 0.01, _job, label=f"j{i}")
-        time.sleep(0.5)
+        self.assertTrue(done.wait(timeout=2.0), "all jobs should run")
         self.assertEqual(
             len(threads), 1,
             f"all jobs must run on the single scheduler thread, got {threads}",

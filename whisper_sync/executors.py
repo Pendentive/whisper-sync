@@ -101,6 +101,7 @@ class Executor:
 
     def __init__(self, name: str, queue_max: int = _QUEUE_MAX):
         self.name = name
+        self._queue_max = queue_max
         self._queue: "queue.Queue" = queue.Queue(maxsize=queue_max)
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -139,23 +140,30 @@ class Executor:
             if self._shutdown:
                 return
             self._shutdown = True
-        # Drain pending jobs so the sentinel is consumed next.
-        try:
-            while True:
-                self._queue.get_nowait()
-        except queue.Empty:
-            pass
-        try:
-            self._queue.put_nowait(self._SENTINEL)
-        except queue.Full:
-            pass
-        t = self._thread
+            # Drain pending jobs and insert the sentinel under the SAME
+            # lock that _submit enqueues under, so no job can slip in
+            # behind the sentinel. get_nowait/put_nowait never block.
+            try:
+                while True:
+                    self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._queue.put_nowait(self._SENTINEL)
+            except queue.Full:
+                pass
+            t = self._thread
         if t is not None and t.is_alive():
             t.join(timeout=timeout)
 
     # -- internals ---------------------------------------------------------
 
     def _submit(self, job: _Job) -> bool:
+        # Enqueue under the lock so a concurrent shutdown() cannot drain
+        # the queue and insert its sentinel between our shutdown check and
+        # the put — that would either enqueue a job behind the sentinel
+        # (never executed) or violate the submit-after-shutdown contract.
+        # put_nowait never blocks, so holding the lock here is safe.
         with self._lock:
             if self._shutdown:
                 logger.warning(
@@ -163,15 +171,15 @@ class Executor:
                 )
                 return False
             self._ensure_thread_locked()
-        try:
-            self._queue.put_nowait(job)
-            return True
-        except queue.Full:
-            logger.error(
-                "executor %s queue full (%d); rejected %r",
-                self.name, _QUEUE_MAX, job.label,
-            )
-            return False
+            try:
+                self._queue.put_nowait(job)
+                return True
+            except queue.Full:
+                logger.error(
+                    "executor %s queue full (%d); rejected %r",
+                    self.name, self._queue_max, job.label,
+                )
+                return False
 
     def _ensure_thread_locked(self) -> None:
         if self._thread is None or not self._thread.is_alive():
