@@ -65,7 +65,20 @@ class MenuRefresher:
             if self._pending:
                 return
             self._pending = True
-        self._sched.call_later(self._debounce_s, self._run, label="menu-refresh")
+        try:
+            handle = self._sched.call_later(
+                self._debounce_s, self._run, label="menu-refresh"
+            )
+        except Exception:
+            handle = None
+            logger.exception("menu refresh scheduling failed")
+        # A shut-down scheduler returns a pre-cancelled handle (and a
+        # scheduling error yields none); the job will never run, so the
+        # pending flag must be released or every future request becomes
+        # a permanent no-op.
+        if handle is None or handle.cancelled:
+            with self._lock:
+                self._pending = False
 
     def _run(self) -> None:
         # Clear the pending flag FIRST so a request arriving during the

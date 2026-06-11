@@ -212,12 +212,15 @@ class WhisperSync:
                 logger.info(f"Migrated dictation logs -> {new_dict_dir}")
 
     def _update_tray(self, icon=None, title=None, menu=None):
-        """Thread-safe tray update. Serializes ALL pystray mutations.
+        """Thread-safe tray update under _tray_lock.
 
-        Every pystray write (icon, title, AND menu) must go through this
-        method under _tray_lock. Assigning tray.menu from arbitrary
-        threads raced the Win32 pump and corrupted the heap (2026-05-07
-        crash: _build_menu <- _refresh_menu <- _process_overlay).
+        Every pystray mutation must hold _tray_lock: either via this
+        method or, on the animation hot path, IconAnimator's direct
+        icon/title writes (icons.py) which take the same lock. Menu
+        swaps specifically must come through here (via MenuRefresher) —
+        assigning tray.menu from arbitrary threads raced the Win32 pump
+        and corrupted the heap (2026-05-07 crash: _build_menu <-
+        _refresh_menu <- _process_overlay).
         """
         with self._tray_lock:
             if self.tray is None:

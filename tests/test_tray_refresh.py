@@ -126,6 +126,25 @@ class MenuRefresherTests(unittest.TestCase):
         r.request()
         self.assertTrue(self._wait_for(lambda: r.rebuild_count == 1))
 
+    def test_pending_released_when_scheduler_shut_down(self):
+        # Regression for Copilot review on PR #138: a shut-down scheduler
+        # returns a pre-cancelled handle; the pending flag must be released
+        # or every later request becomes a permanent no-op.
+        r = self._make(debounce_s=0.02)
+        self.sched.shutdown(timeout=2.0)
+        r.request()  # handle is pre-cancelled; must not wedge the flag
+        self.assertFalse(
+            r._pending,
+            "pending flag must be released when scheduling cannot run",
+        )
+        # A working scheduler must be able to serve future requests.
+        from whisper_sync.scheduler import Scheduler
+        self.sched = Scheduler(name="test-tray-sched-2")
+        r._sched = self.sched
+        r.request()
+        self.assertTrue(self._wait_for(lambda: len(self.applied) == 1),
+                        "refresher must recover once scheduling works again")
+
 
 if __name__ == "__main__":
     unittest.main()
