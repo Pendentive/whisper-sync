@@ -18,7 +18,7 @@ Use a prefix that describes the type of change:
 2. **Make your changes** -- keep PRs focused on a single concern
 3. **Open a PR** against `dev`
 4. **Automated review runs** -- the CI workflow classifies your PR by complexity, Copilot reviews the code
-5. **Auto-merge** if Copilot finds no issues and complexity is low/medium. Otherwise, address suggestions and push again.
+5. **Auto-merge** if Copilot finds no issues and complexity is low/medium. Otherwise, address suggestions, push, and resolve each review thread with a reply citing the fixing commit.
 
 ### Automated Review
 
@@ -33,7 +33,7 @@ The [review-pr workflow](.github/workflows/review-pr.yml) runs on every PR:
 | `complexity:medium` | 50-200 lines, 3-5 files | Automated review comment, merge-ready |
 | `complexity:high` | >200 lines or >5 files | Copilot reviews thoroughly, auto-merge if clean |
 
-All PRs are machine-reviewed by Copilot Code Review. If Copilot finds inline suggestions, address them and push. Auto-merge fires when Copilot has no suggestions.
+All PRs are machine-reviewed by Copilot Code Review. If Copilot finds inline suggestions, address them, push, and resolve the threads (reply with the fixing commit, then resolve). Auto-merge fires when Copilot has no unresolved review threads. Threads whose anchor lines were rewritten by the fix become outdated and clear automatically; threads fixed elsewhere in the file must be resolved explicitly, because GitHub remaps surviving comments onto new head commits.
 
 ## Labels
 

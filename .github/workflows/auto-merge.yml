@@ -126,28 +126,58 @@ jobs:
                 continue;
               }
 
-              // Check for unresolved inline suggestions
-              const { data: reviewComments } = await github.rest.pulls.listReviewComments({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: prNumber,
-                per_page: 100
-              });
-              // Only count comments on the latest commit - old comments from
-              // previous pushes should not permanently block auto-merge.
-              const suggestions = reviewComments.filter(
-                c => c.user.login === 'copilot-pull-request-reviewer[bot]'
-                  && c.commit_id === prData.head.sha
-              );
+              // Check for unresolved Copilot review threads.
+              //
+              // Why thread state and not commit_id matching: when a push fixes
+              // a comment WITHOUT rewriting its exact anchored lines, GitHub
+              // remaps the surviving comment onto the new head commit and
+              // updates its commit_id, so `commit_id === head.sha` re-counts
+              // already-addressed feedback forever (PR #146). Thread state is
+              // the first-class signal: a thread blocks until it is resolved
+              // (reply citing the fixing commit, then resolve) or its anchor
+              // lines are rewritten (isOutdated).
+              let unresolvedThreads = 0;
+              let cursor = null;
+              while (true) {
+                const resp = await github.graphql(`
+                  query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+                    repository(owner: $owner, name: $repo) {
+                      pullRequest(number: $number) {
+                        reviewThreads(first: 100, after: $cursor) {
+                          pageInfo { hasNextPage endCursor }
+                          nodes {
+                            isResolved
+                            isOutdated
+                            comments(first: 1) { nodes { author { login } } }
+                          }
+                        }
+                      }
+                    }
+                  }
+                `, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  number: prNumber,
+                  cursor
+                });
+                const threads = resp.repository.pullRequest.reviewThreads;
+                unresolvedThreads += threads.nodes.filter(t =>
+                  !t.isResolved && !t.isOutdated
+                  && t.comments.nodes[0]?.author?.login === 'copilot-pull-request-reviewer'
+                ).length;
+                if (!threads.pageInfo.hasNextPage) break;
+                cursor = threads.pageInfo.endCursor;
+              }
 
-              if (suggestions.length > 0) {
+              if (unresolvedThreads > 0) {
+                console.log(`PR #${prNumber}: ${unresolvedThreads} unresolved Copilot thread(s)`);
                 // Only comment once
                 if (!comments.some(c => c.user.login === 'github-actions[bot]' && c.body.includes('Auto-merge skipped'))) {
                   await github.rest.issues.createComment({
                     owner: context.repo.owner,
                     repo: context.repo.repo,
                     issue_number: prNumber,
-                    body: `## Auto-merge skipped\n\nCopilot found ${suggestions.length} suggestion(s). Push fixes and auto-merge will re-check.`
+                    body: `## Auto-merge skipped\n\nCopilot has ${unresolvedThreads} unresolved review thread(s). Push fixes, resolve each thread with a reply citing the fixing commit, and auto-merge will re-check.`
                   });
                 }
                 continue;
@@ -176,7 +206,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: prNumber,
-                  body: `## Auto-merged\n\nCopilot reviewed (${complexity}), no suggestions. Merged automatically.\n\n**${changedLines} lines** across: ${fileList}`
+                  body: `## Auto-merged\n\nCopilot reviewed (${complexity}), no unresolved review threads. Merged automatically.\n\n**${changedLines} lines** across: ${fileList}`
                 });
                 console.log(`PR #${prNumber} auto-merged`);
               } catch (err) {
