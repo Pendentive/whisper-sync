@@ -10,6 +10,8 @@ import logging
 import queue
 import threading
 
+from .executors import IO, submit_or_spawn
+
 _logger = logging.getLogger("whisper_sync.notifications")
 
 _AUMID = "Pendentive.WhisperSync"
@@ -133,7 +135,7 @@ def notify(title: str, body: str, *, buttons=None, on_click=None):
                                     fn()
                                 except Exception as exc:
                                     _logger.exception(f"Toast button callback error: {exc}")
-                            threading.Thread(target=_run, daemon=True).start()
+                            submit_or_spawn(IO, "toast-button", _run)
                         return _handler
 
                     toast_btn.on_activated = _make_handler(action)
@@ -146,7 +148,7 @@ def notify(title: str, body: str, *, buttons=None, on_click=None):
                         on_click()
                     except Exception as exc:
                         _logger.exception(f"Toast click callback error: {exc}")
-                threading.Thread(target=_run, daemon=True).start()
+                submit_or_spawn(IO, "toast-click", _run)
 
             toast.on_activated = _body_handler
 

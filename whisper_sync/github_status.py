@@ -8,6 +8,8 @@ No LLM cost — pure CLI + JSON parsing.
 import json
 import subprocess
 import threading
+
+from .executors import IO, submit_or_spawn
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -228,7 +230,7 @@ class GitHubPoller:
         """Trigger an immediate poll (non-blocking, deduplicated)."""
         if self._polling.locked():
             return  # Already polling
-        threading.Thread(target=self._do_poll, daemon=True).start()
+        submit_or_spawn(IO, "github-poll", self._do_poll)
 
     def _poll_loop(self):
         """Main polling loop."""
