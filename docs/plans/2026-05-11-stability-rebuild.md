@@ -372,7 +372,7 @@ Repo convention: unittest + fake modules in `sys.modules` (see
   submit_or_spawn() falls back to a one-shot thread (native-gauged,
   exception-logged - Copilot catch) so work is never dropped. 8 tests.
   System suite 135 pass; venv suite 36 pass.
-  REMAINING (part 2, lower priority): _schedule_idle blink chain ->
+  REMAINING (part 2, lower priority): `_schedule_idle` blink chain ->
   scheduler steps (touches state emissions, do carefully); leave
   once-per-session threads (download/update/restart/quit/recovery)
   as dedicated threads by design. Pipeline note: close out review
