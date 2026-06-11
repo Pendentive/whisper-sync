@@ -307,3 +307,18 @@ Repo convention: unittest + fake modules in `sys.modules` (see
     channel count cached. 8 new tests (channel ladder + downmix math).
   - REMAINING: Phase 5 (state consolidation), Phase 6 (worker protocol),
     Phase 1b (ephemeral thread migration onto executors).
+
+- **2026-06-11 (session 2, continued)**: **#144 (Phase 5a)** merged:
+  StateManager.try_transition (atomic mode check-and-set) wired into
+  _start_dictation/_start_meeting - concurrent mode changes now reject
+  a start instead of double-starting; SessionStats lock-guarded
+  counters replace the racy bare _stats dict; _dictation_history under
+  a lock at all 3 append sites + readers; _yellow_flash gated by
+  _flash_lock (Copilot caught that a bare Event is_set/set pair is not
+  atomic). 11 new tests incl. 8-thread contention proofs. System suite
+  107 pass on dev 79425c7.
+  REMAINING: Phase 5b (ConfigStore - lock + snapshot for the shared cfg
+  dict, ~100 call sites), Phase 6 (worker protocol: single reader
+  thread, real timeouts), Phase 1b (migrate ~20 ephemeral thread spawns
+  onto DICTATION/IO executors + scheduler). Each is one PR; start a
+  fresh session from this doc.
