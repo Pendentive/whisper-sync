@@ -262,3 +262,24 @@ Repo convention: unittest + fake modules in `sys.modules` (see
   tray_refresh.MenuRefresher (debounced single-owner menu rebuild),
   _update_tray extended to own menu swaps under _tray_lock,
   _refresh_menu converted to coalescing request. 7 new tests (84 total).
+
+- **2026-05-11 (session 1, end)**: All three PRs MERGED to dev:
+  - **#137 (Phase 1)**: scheduler + executors + provable-idle GC.
+    Restores cycle-leak cleanup safely (the #134/#135 dilemma resolved:
+    collect only when every native call is gauged idle).
+  - **#138 (Phase 2)**: tray mutation serialization + 300 ms menu
+    debounce. Closes the 2026-05-07 crash path (unsynchronized
+    tray.menu swap racing the Win32 pump). Copilot caught a stuck
+    pending-flag edge on scheduler shutdown (fixed + regression test).
+  - **#139 (Phase 4)**: speaker loopback disk streaming. Meeting RAM
+    drops ~691 MB/hour -> flat. Copilot caught real dropped-audio bug
+    (pre-writer backlog chunks); fixed with _migrate_speaker_backlog
+    on first post-writer ingest and in stop().
+  - Verification at dev b353f25: system suite 85 pass, venv capture
+    suite 21 pass (106 total; was 51 at session start).
+  - REMAINING: Phase 3 (persistent Tk root in DialogDispatcher),
+    Phase 5 (ConfigStore + StateManager.try_transition + flag
+    consolidation), Phase 6 (worker protocol: single reader thread,
+    real timeouts), Phase 1b (migrate the ~20 ephemeral thread spawn
+    sites in __main__.py onto the executors/scheduler). Phase 1b is the
+    largest remaining diff; suggest one PR per group of spawn sites.
