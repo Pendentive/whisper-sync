@@ -41,6 +41,18 @@ class ConfigStoreMappingTests(unittest.TestCase):
         cfg["model"] = "base"
         self.assertEqual(cfg["model"], "base")
 
+    def test_read_values_are_copies_not_live_references(self):
+        # Regression for Copilot review on PR #149: handing out the live
+        # inner dict/list would let callers mutate shared state without
+        # the lock. Reads of mutable containers must be isolated copies.
+        cfg = _store()
+        cfg["toast_events"] = ["a", "b"]
+        cfg["toast_events"].append("c")          # mutating a read copy...
+        self.assertEqual(cfg["toast_events"], ["a", "b"])  # ...never writes back
+        hk = cfg["hotkeys"]
+        hk["dictation_toggle"] = "tampered"
+        self.assertEqual(cfg["hotkeys"]["dictation_toggle"], "ctrl+shift+space")
+
     def test_store_does_not_alias_initial_dict(self):
         initial = {"hotkeys": {"dictation_toggle": "a"}}
         cfg = ConfigStore(initial)

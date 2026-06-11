@@ -118,7 +118,8 @@ class TranscriptionWorker:
         # (a Mapping holding a lock, which must not cross into the
         # subprocess). Snapshotting here also means a worker restart picks
         # up the latest settings, as the live-dict version did.
-        cfg = self._cfg.snapshot() if hasattr(self._cfg, "snapshot") else dict(self._cfg)
+        snapshot = getattr(self._cfg, "snapshot", None)
+        cfg = snapshot() if callable(snapshot) else dict(self._cfg)
         self._process = ctx.Process(
             target=worker_main,
             args=(self._request_q, self._response_q, cfg, self._preload_model),

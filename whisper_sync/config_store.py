@@ -39,7 +39,16 @@ class ConfigStore(Mapping):
 
     def __getitem__(self, key):
         with self._lock:
-            return self._data[key]
+            value = self._data[key]
+            # Mutable containers are returned as deep copies: handing out
+            # the live inner object would let callers mutate it without
+            # the lock, defeating the guarantees this class exists for.
+            # Config values are small, so the copy is cheap. In-place
+            # mutation of a read value therefore does NOT write back;
+            # use __setitem__/set_nested.
+            if isinstance(value, (dict, list)):
+                return copy.deepcopy(value)
+            return value
 
     def __iter__(self) -> Iterator:
         with self._lock:
