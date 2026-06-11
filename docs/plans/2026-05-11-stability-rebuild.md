@@ -307,3 +307,16 @@ Repo convention: unittest + fake modules in `sys.modules` (see
     channel count cached. 8 new tests (channel ladder + downmix math).
   - REMAINING: Phase 5 (state consolidation), Phase 6 (worker protocol),
     Phase 1b (ephemeral thread migration onto executors).
+
+- **2026-06-11 (session 2, Phase 6)**: worker_manager rewritten with a
+  single reader thread owning the response queue (the old shared-get
+  design let one consumer swallow another's response). Requests get
+  pending-slots keyed by request_id; worker death fails ALL pending
+  callers immediately; transcribe_fast regains a real timeout (expiry
+  kills the wedged worker and raises WorkerCrashedError); transcribe
+  (meetings) intentionally stays unbounded (hard caps killed legit long
+  transcriptions, see 4f3b307) with death-detection via the reader.
+  worker import deferred so the protocol layer is unit-testable without
+  numpy. 7 protocol tests (routing, out-of-order, stale-drop, ready,
+  startup-error, death-fails-all, timeout-kills). Real-data E2E re-run
+  against the new protocol.

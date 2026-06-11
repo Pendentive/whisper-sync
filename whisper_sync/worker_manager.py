@@ -2,6 +2,19 @@
 
 The worker runs whisperX/CTranslate2/CUDA in isolation. If it segfaults,
 the main process detects the death, logs it, and respawns automatically.
+
+Stability rebuild Phase 6: a single READER THREAD owns the response queue.
+Previously multiple threads raced ``response_q.get()`` (``wait_ready`` vs
+``_wait_response``; dictation vs meeting paths), and one consumer could
+swallow another's response, wedging the second caller forever. Now every
+request registers a pending-entry keyed by request_id; the reader routes
+responses to waiters and fails ALL pending requests when the process dies.
+``transcribe_fast`` (dictation, short audio) regains a real timeout:
+on expiry the worker is killed and respawn is left to the caller's
+WorkerCrashedError handling. ``transcribe`` (meetings) intentionally keeps
+NO timeout — long meetings legitimately exceed any fixed cap (the old hard
+timeout was removed in 4f3b307 for killing real transcriptions); worker
+death is still detected immediately via the reader.
 """
 
 import multiprocessing
@@ -11,10 +24,7 @@ import threading
 import time
 from pathlib import Path
 
-import numpy as np
-
 from .logger import logger
-from .worker import worker_main
 
 
 class WorkerCrashedError(RuntimeError):
@@ -36,6 +46,16 @@ def _reconstruct_error(response: dict) -> Exception:
     return RuntimeError(f"[{error_type}] {message}")
 
 
+class _PendingRequest:
+    """A response slot one caller waits on; completed by the reader thread."""
+
+    __slots__ = ("done", "response")
+
+    def __init__(self):
+        self.done = threading.Event()
+        self.response: dict | None = None  # None after done => worker died
+
+
 class TranscriptionWorker:
     """Manages a long-lived transcription subprocess."""
 
@@ -43,60 +63,177 @@ class TranscriptionWorker:
         self._cfg = cfg
         self._preload_model = preload_model
         self._process: multiprocessing.Process | None = None
-        self._request_q: multiprocessing.Queue | None = None
-        self._response_q: multiprocessing.Queue | None = None
-        self._ready = False
+        self._request_q = None
+        self._response_q = None
         self._request_counter = 0
         self._lock = threading.Lock()
         self.gpu_name: str | None = None
         self.device: str | None = None
+        # Reader-thread state (Phase 6). _pending maps request_id ->
+        # _PendingRequest; only the reader completes entries.
+        self._pending: dict[int, _PendingRequest] = {}
+        self._pending_lock = threading.Lock()
+        self._reader: threading.Thread | None = None
+        self._ready_event = threading.Event()
+        self._ready_ok = False
 
     def _next_id(self) -> int:
-        self._request_counter += 1
-        return self._request_counter
+        with self._lock:
+            self._request_counter += 1
+            return self._request_counter
 
     def start(self) -> None:
-        """Spawn the worker process. Non-blocking."""
+        """Spawn the worker process and its response reader. Non-blocking."""
+        # Deferred import: worker.py pulls numpy at module level, which is
+        # only needed in the subprocess. Keeping it out of module scope
+        # lets the protocol layer be unit-tested without heavy deps.
+        from .worker import worker_main
+
         ctx = multiprocessing.get_context("spawn")
         self._request_q = ctx.Queue()
         self._response_q = ctx.Queue()
-        self._ready = False
+        self._ready_event.clear()
+        self._ready_ok = False
         self._process = ctx.Process(
             target=worker_main,
             args=(self._request_q, self._response_q, self._cfg, self._preload_model),
             daemon=True,
         )
         self._process.start()
+        self._reader = threading.Thread(
+            target=self._reader_loop,
+            args=(self._process, self._response_q),
+            daemon=True,
+            name="worker-response-reader",
+        )
+        self._reader.start()
         logger.info(f"Worker process spawned (pid={self._process.pid})")
+
+    # -- reader thread ------------------------------------------------------
+
+    def _reader_loop(self, process, response_q) -> None:
+        """Single owner of the response queue.
+
+        Routes responses to pending waiters by request_id; handles 'ready'
+        and startup-error messages; on process death fails every pending
+        request so no caller waits forever. Args are bound at spawn so a
+        restart() creating new process/queues never races this loop.
+        """
+        while True:
+            alive = process.is_alive()
+            try:
+                msg = response_q.get(timeout=0.5)
+            except queue.Empty:
+                if not alive:
+                    break  # drained after death
+                continue
+            except (EOFError, OSError):
+                break
+
+            mtype = msg.get("type")
+            if mtype == "ready":
+                self.gpu_name = msg.get("gpu_name")
+                self.device = msg.get("device")
+                self._ready_ok = True
+                self._ready_event.set()
+                continue
+            if msg.get("request_id") == "__init__":
+                # Startup failure (e.g. model preload error)
+                logger.error(f"Worker startup error: {msg.get('message')}")
+                self._ready_ok = False
+                self._ready_event.set()
+                continue
+
+            rid = msg.get("request_id")
+            with self._pending_lock:
+                pending = self._pending.pop(rid, None)
+            if pending is not None:
+                pending.response = msg
+                pending.done.set()
+            else:
+                logger.debug("worker reader: dropping stale response id=%r", rid)
+
+        # Process is dead and queue drained: fail everything outstanding.
+        with self._pending_lock:
+            orphans = list(self._pending.values())
+            self._pending.clear()
+        for p in orphans:
+            p.response = None
+            p.done.set()
+        # Unblock anyone still in wait_ready on a dead worker.
+        self._ready_event.set()
+
+    # -- request plumbing ----------------------------------------------------
+
+    def _request(self, payload: dict, timeout: float | None) -> dict:
+        """Send a request and wait for its routed response.
+
+        timeout=None waits until the worker answers or dies (meeting
+        path). With a timeout, expiry KILLS the worker (it is wedged but
+        alive — unusable either way) and raises WorkerCrashedError so the
+        caller's existing crash handling respawns it.
+        """
+        request_id = self._next_id()
+        pending = _PendingRequest()
+        with self._pending_lock:
+            self._pending[request_id] = pending
+        payload["request_id"] = request_id
+        try:
+            self._request_q.put(payload)
+        except Exception:
+            with self._pending_lock:
+                self._pending.pop(request_id, None)
+            raise
+
+        if not pending.done.wait(timeout):
+            with self._pending_lock:
+                self._pending.pop(request_id, None)
+            logger.error(
+                "Worker request %s timed out after %ss; killing wedged worker",
+                payload.get("type"), timeout,
+            )
+            try:
+                if self._process is not None and self._process.is_alive():
+                    self._process.kill()
+            except Exception:
+                pass
+            raise WorkerCrashedError(
+                f"Worker request timed out after {timeout}s (worker killed)"
+            )
+
+        if pending.response is None:
+            raise WorkerCrashedError(
+                f"Worker process died (exit code {self._exitcode()})"
+            )
+        return pending.response
+
+    # -- public API -----------------------------------------------------------
 
     def wait_ready(self, timeout: float = 120) -> bool:
         """Block until worker reports models are loaded."""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._ready_event.wait(timeout=1.0):
+                return self._ready_ok and self.is_alive()
             if not self.is_alive():
-                logger.error(f"Worker died during startup (exit code {self._exitcode()})")
+                logger.error(
+                    f"Worker died during startup (exit code {self._exitcode()})"
+                )
                 return False
-            try:
-                msg = self._response_q.get(timeout=1.0)
-                if msg.get("type") == "ready":
-                    self._ready = True
-                    self.gpu_name = msg.get("gpu_name")
-                    self.device = msg.get("device")
-                    return True
-                if msg.get("type") == "error":
-                    logger.error(f"Worker startup error: {msg.get('message')}")
-                    return False
-            except queue.Empty:
-                continue
         logger.error("Worker startup timed out")
         return False
 
-    def transcribe_fast(self, audio_np: np.ndarray, model_override: str | None = None,
+    def transcribe_fast(self, audio_np, model_override: str | None = None,
                         timeout: float = 60) -> str:
         """Send dictation audio to worker, return transcribed text.
 
-        Audio is transferred via a temp .npy file to avoid pickling large arrays.
+        Audio is transferred via a temp .npy file to avoid pickling large
+        arrays. Dictations are short, so the timeout is real (Phase 6): a
+        wedged worker is killed and WorkerCrashedError raised instead of
+        hanging the dictation thread forever.
         """
+        import numpy as np
+
         # Save audio to temp file (NamedTemporaryFile avoids mktemp TOCTOU race)
         tmp_fd = tempfile.NamedTemporaryFile(suffix=".npy", prefix="ws_audio_", delete=False)
         tmp_path = Path(tmp_fd.name)
@@ -104,14 +241,11 @@ class TranscriptionWorker:
         np.save(str(tmp_path), audio_np)
 
         try:
-            request_id = self._next_id()
-            self._request_q.put({
+            response = self._request({
                 "type": "transcribe_fast",
                 "audio_path": str(tmp_path),
                 "model": model_override,
-                "request_id": request_id,
-            })
-            response = self._wait_response(request_id, timeout)
+            }, timeout=timeout)
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -122,46 +256,44 @@ class TranscriptionWorker:
     def transcribe(self, audio_path: str, diarize: bool = False,
                    model_override: str | None = None,
                    diarize_method: str | None = None,
-                   timeout: float = 600) -> dict:
+                   timeout: float | None = None) -> dict:
         """Send meeting audio to worker, return result dict.
 
         Args:
             diarize_method: Force a specific diarization method
                 ("balanced_mix", "per_channel", "raw_audio"). None uses config.
+            timeout: None (default) waits until the worker answers or
+                dies — long meetings legitimately run for many minutes and
+                a hard cap killed real transcriptions (see 4f3b307).
+                Callers that know their audio is short (tests) may pass one.
         """
-        request_id = self._next_id()
-        self._request_q.put({
+        response = self._request({
             "type": "transcribe",
             "audio_path": audio_path,
             "diarize": diarize,
             "model": model_override,
             "diarize_method": diarize_method,
-            "request_id": request_id,
-        })
-        response = self._wait_response(request_id, timeout)
+        }, timeout=timeout)
         if response["type"] == "error":
             raise _reconstruct_error(response)
         return response.get("result", {})
 
     def reload_model(self, model_name: str, timeout: float = 120) -> bool:
         """Ask the worker to load a different model."""
-        request_id = self._next_id()
-        self._request_q.put({
-            "type": "reload_model",
-            "model": model_name,
-            "request_id": request_id,
-        })
         try:
-            response = self._wait_response(request_id, timeout)
+            response = self._request({
+                "type": "reload_model",
+                "model": model_name,
+            }, timeout=timeout)
             return response.get("type") == "model_loaded"
-        except (WorkerCrashedError, TimeoutError):
+        except WorkerCrashedError:
             return False
 
     def is_alive(self) -> bool:
         return self._process is not None and self._process.is_alive()
 
     def is_ready(self) -> bool:
-        return self._ready and self.is_alive()
+        return self._ready_ok and self.is_alive()
 
     def update_config(self, cfg: dict):
         """Update the config snapshot for the next worker spawn."""
@@ -170,9 +302,10 @@ class TranscriptionWorker:
     def restart(self) -> None:
         """Kill and respawn the worker (e.g., after a crash).
 
-        Blocks until the new worker is ready so that no concurrent
-        ``_wait_response`` call can race with ``wait_ready`` on the
-        response queue.
+        Blocks until the new worker is ready. The old reader thread is
+        bound to the old process/queue objects and exits on its own when
+        the old process dies; pending requests against the old worker are
+        failed by that reader, so no waiter leaks across the restart.
         """
         logger.info("Restarting transcription worker...")
         self.stop()
@@ -206,32 +339,9 @@ class TranscriptionWorker:
         except (ValueError, AttributeError):
             pass
         self._process = None
-        self._ready = False
+        self._ready_ok = False
+        # Reader exits on its own after observing process death and
+        # draining; it fails any pending waiters first.
 
-    def _wait_response(self, request_id: int, timeout: float = None) -> dict:
-        """Wait for a response matching request_id.
-
-        Blocks until the worker sends a matching response or dies. There is no
-        hard timeout - the only termination condition is worker death. The
-        ``timeout`` parameter is accepted for backward compatibility but ignored.
-        """
-        while True:
-            if not self.is_alive():
-                raise WorkerCrashedError(
-                    f"Worker process died (exit code {self._exitcode()})"
-                )
-            try:
-                msg = self._response_q.get(timeout=0.5)
-                if msg.get("request_id") == request_id:
-                    return msg
-                # Handle "ready" messages that arrive while waiting for a response
-                if msg.get("type") == "ready":
-                    self._ready = True
-                    self.gpu_name = msg.get("gpu_name")
-                    self.device = msg.get("device")
-                # Stale message from a previous request - discard
-            except queue.Empty:
-                continue
-
-    def _exitcode(self) -> int | None:
+    def _exitcode(self):
         return self._process.exitcode if self._process else None
