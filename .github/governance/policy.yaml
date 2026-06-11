@@ -5,7 +5,11 @@
 merge_policy:
   auto_merge_enabled: true
   require_copilot_review: true
-  require_zero_suggestions: true
+  # Zero unresolved (and not outdated) Copilot review threads required.
+  # Addressed feedback is closed by replying with the fixing commit and
+  # resolving the thread; commit-sha matching is NOT used because GitHub
+  # remaps surviving comments onto new head commits.
+  require_zero_unresolved_threads: true
   manual_merge_prohibited: true
   # All merges must go through auto-merge workflow after Copilot review.
   # Manual gh pr merge or GitHub UI merge is a policy violation.
