@@ -23,6 +23,10 @@ production logs: access violations in ``tkinter __del__`` and
 interpreter-shutdown GC faults over orphaned Tcl objects. The root is
 created lazily on the dispatcher thread and destroyed exactly once, on
 that same thread, at shutdown.
+
+Scope: this covers the TRAY APP runtime (every dialog in __main__.py).
+installer_gui.py is a separate standalone installer process with its own
+single mainloop and is unaffected by per-dialog interpreter churn.
 """
 
 from __future__ import annotations
@@ -105,7 +109,15 @@ class DialogDispatcher:
             logger.debug("DialogDispatcher started")
 
     def shutdown(self, timeout: float | None = 5.0) -> None:
-        """Signal the dispatcher to stop and wait for it to exit."""
+        """Signal the dispatcher to stop and wait for it to exit.
+
+        State is cleared ONLY when the thread has actually exited. If the
+        join times out (e.g. a dialog is still open), the dispatcher stays
+        marked started: clearing state would let a later start() spawn a
+        SECOND dispatcher thread that reuses the persistent Tk root created
+        on the first thread - violating Tk thread-affinity and
+        reintroducing the exact crash class this class exists to prevent.
+        """
         with self._lock:
             if not self._started:
                 return
@@ -113,6 +125,12 @@ class DialogDispatcher:
         t = self._thread
         if t is not None:
             t.join(timeout=timeout)
+            if t.is_alive():
+                logger.warning(
+                    "DialogDispatcher shutdown timed out (dialog still open?); "
+                    "keeping dispatcher state intact"
+                )
+                return
         with self._lock:
             self._started = False
             self._thread = None

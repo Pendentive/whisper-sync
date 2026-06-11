@@ -100,6 +100,45 @@ class DialogDispatcherRootTests(unittest.TestCase):
         outer_root, inner_root = outer_inner[0]
         self.assertIs(outer_root, inner_root)
 
+    def test_timed_out_shutdown_keeps_dispatcher_state(self):
+        # Regression for Copilot review on PR #142: if shutdown's join
+        # times out (dialog still open), state must stay intact so a later
+        # start() cannot spawn a SECOND thread that would reuse the Tk
+        # root across threads.
+        gate = threading.Event()
+        entered = threading.Event()
+
+        def _blocking_dialog(root):
+            entered.set()
+            gate.wait(timeout=10.0)
+
+        # run() blocks until the dialog completes, so submit from a helper.
+        t = threading.Thread(
+            target=lambda: self.d.run(
+                _blocking_dialog, label="stuck", wants_root=True
+            ),
+            daemon=True,
+        )
+        t.start()
+        self.assertTrue(entered.wait(timeout=2.0))
+
+        # Shutdown with a tiny timeout: join times out, state must hold.
+        self.d.shutdown(timeout=0.05)
+        self.assertTrue(self.d._started, "timed-out shutdown must keep state")
+        first_thread = self.d._thread
+        self.assertIsNotNone(first_thread)
+
+        # start() while the original thread lives must NOT spawn another.
+        self.d.start()
+        self.assertIs(self.d._thread, first_thread)
+
+        # Release the dialog; the sentinel already queued by the first
+        # shutdown lets the loop exit; a second shutdown clears state.
+        gate.set()
+        t.join(timeout=2.0)
+        self.d.shutdown(timeout=2.0)
+        self.assertFalse(self.d._started)
+
     def test_root_factory_failure_propagates_but_dispatcher_survives(self):
         calls = []
 
