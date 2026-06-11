@@ -386,7 +386,7 @@ class MeetingJob:
                 dont_show = self.app._show_llm_unavailable()
                 if dont_show:
                     self.app.cfg["suppress_llm_warning"] = True
-                    config.save(self.app.cfg)
+                    config.save(self.app.cfg.snapshot())
             logger.warning("Claude CLI not available, skipping summarize")
             return
 
