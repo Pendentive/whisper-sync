@@ -172,6 +172,10 @@ class TranscriptionWorker:
     def _request(self, payload: dict, timeout: float | None) -> dict:
         """Send a request and wait for its routed response.
 
+        The caller's ``payload`` is never mutated; a copy gains the
+        request_id (addressed in review: no externally visible side
+        effects).
+
         timeout=None waits until the worker answers or dies (meeting
         path). With a timeout, expiry KILLS the worker (it is wedged but
         alive — unusable either way) and raises WorkerCrashedError so the
@@ -182,9 +186,9 @@ class TranscriptionWorker:
         with self._pending_lock:
             self._pending[request_id] = pending
         # Copy: never mutate the caller's dict (it may be reused/logged).
-        payload = {**payload, "request_id": request_id}
+        outgoing = {**payload, "request_id": request_id}  # caller dict untouched
         try:
-            self._request_q.put(payload)
+            self._request_q.put(outgoing)
         except Exception:
             with self._pending_lock:
                 self._pending.pop(request_id, None)
@@ -202,6 +206,8 @@ class TranscriptionWorker:
                     self._process.kill()
                     # Reap promptly so repeated timeouts cannot accumulate
                     # zombie children; stop()/restart() join again safely.
+                    # join reaps the killed child immediately (review:
+                    # repeated timeouts must not accumulate zombies).
                     self._process.join(timeout=3)
             except Exception:
                 pass
@@ -239,7 +245,9 @@ class TranscriptionWorker:
         Audio is transferred via a temp .npy file to avoid pickling large
         arrays. Dictations are short, so the timeout is real (Phase 6): a
         wedged worker is killed and WorkerCrashedError raised instead of
-        hanging the dictation thread forever.
+        hanging the dictation thread forever. The np.ndarray annotation
+        is a TYPE_CHECKING forward reference (review: keep type safety
+        without importing numpy at module scope).
         """
         import numpy as np
 
