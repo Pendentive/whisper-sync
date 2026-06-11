@@ -378,3 +378,18 @@ Repo convention: unittest + fake modules in `sys.modules` (see
   as dedicated threads by design. Pipeline note: close out review
   feedback by replying with the fixing commit and resolving the
   thread - auto-merge gates on unresolved Copilot threads (#147).
+
+- **2026-06-11 (session 2, addendum)**: **#152 (Phase 1b part 2)**
+  merged: `_schedule_idle` extracted to idle_reset.schedule_idle_reset -
+  the delay and each done-blink frame are scheduler jobs, retiring the
+  last per-event ephemeral thread. Semantics preserved (terminal-mode
+  guard, silent mid-chain abort, blink-without-done degrade); first
+  frame also goes through the scheduler so pipeline finally-blocks
+  never re-enter state.emit on their own stack. 6 tests. System suite
+  141 pass; venv suite 36 pass.
+  **THE REBUILD PLAN IS COMPLETE.** All six phases shipped (PRs
+  #137-#152). Remaining dedicated threads (model download, app update,
+  worker restart, quit, startup recovery, long-lived loops) are
+  by-design exclusions documented in #150. Future stability work
+  should start from production evidence: heartbeat rss= series and
+  crash-free run duration on the updated build.
