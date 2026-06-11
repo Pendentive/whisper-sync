@@ -391,5 +391,6 @@ Repo convention: unittest + fake modules in `sys.modules` (see
   #137-#152). Remaining dedicated threads (model download, app update,
   worker restart, quit, startup recovery, long-lived loops) are
   by-design exclusions documented in #150. Future stability work
-  should start from production evidence: heartbeat rss= series and
+  should start from production evidence: the heartbeat `rss=NMB`
+  time series and
   crash-free run duration on the updated build.
