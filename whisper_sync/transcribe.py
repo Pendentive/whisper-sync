@@ -612,6 +612,19 @@ def stage_finalize(ctx: dict, result: dict, diarize_segments=None) -> dict:
     text = " ".join(seg.get("text", "") for seg in result.get("segments", []))
     output = {"text": text.strip()}
 
+    # Meeting stats consumed by meeting_job.step_transcribe (completion
+    # toast, session stats, weekly_stats). These keys were never populated,
+    # so every meeting logged "Transcribed: 0 words, 0 speakers" and weekly
+    # stats recorded zeros - found by the real-data E2E test asserting
+    # word_count > 0 against an actual recording.
+    segments_list = result.get("segments", [])
+    output["word_count"] = len(output["text"].split())
+    speaker_ids = {
+        seg.get("speaker") for seg in segments_list if seg.get("speaker")
+    }
+    output["num_speakers"] = len(speaker_ids)
+    output["duration"] = float(segments_list[-1].get("end", 0)) if segments_list else 0.0
+
     if diarize_segments is not None:
         audio_p = Path(ctx["audio_path"])
         json_path = audio_p.parent / "transcript.json"
@@ -628,6 +641,10 @@ def stage_finalize(ctx: dict, result: dict, diarize_segments=None) -> dict:
             }
             for seg in result.get("segments", [])
         ]
+        # meeting_job.step_transcribe reads "speaker_segments" for the
+        # transcript preview log; same mismatched-key family as the stats
+        # above (it always read None before).
+        output["speaker_segments"] = output["segments"]
         # Pass the full parsed transcript dict back to the calling process so
         # downstream steps (notably write_speaker_map) can mutate it in memory
         # rather than re-reading transcript.json on a background thread, which

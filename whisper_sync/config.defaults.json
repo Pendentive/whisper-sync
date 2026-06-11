@@ -28,5 +28,6 @@
   "backup_model": "base",
   "diarize_primary": "balanced_mix",
   "diarize_fallback": "per_channel",
-  "diarize_last_resort": "raw_audio"
+  "diarize_last_resort": "raw_audio",
+  "dictation_max_minutes": 30
 }

@@ -28,6 +28,7 @@ _VALID_KEYS = {
     "always_available_dictation", "backup_device", "backup_model",
     "toast_events",
     "diarize_primary", "diarize_fallback", "diarize_last_resort",
+    "dictation_max_minutes",
 }
 
 
