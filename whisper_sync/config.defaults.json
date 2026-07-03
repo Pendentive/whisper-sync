@@ -30,5 +30,15 @@
   "diarize_fallback": "per_channel",
   "diarize_last_resort": "raw_audio",
   "dictation_max_minutes": 30,
-  "gpu_guard_single_instance": true
+  "gpu_guard_single_instance": true,
+  "gpu_guard": true,
+  "gpu_guard_low_vram_mb": 750,
+  "gpu_guard_poll_seconds": 30,
+  "gpu_guard_ladder": [
+    "large-v3",
+    "medium",
+    "small",
+    "base"
+  ],
+  "gpu_guard_probe": null
 }

@@ -135,8 +135,14 @@ class MeetingJob:
             if not self.app.worker.wait_ready(timeout=120):
                 raise RuntimeError("Worker failed to restart")
 
+        guard = getattr(self.app, "_gpu_guard", None)
+        model_override = (
+            guard.effective_model(str(self.app.cfg.get("model", "large-v3")))
+            if guard is not None else None
+        )
         self.transcript_result = self.app.worker.transcribe(
             str(self.wav_path), diarize=True,
+            model_override=model_override,
             diarize_method=self.diarize_method,
         )
         logger.debug(

@@ -49,6 +49,7 @@ from .paths import (get_install_root, get_default_output_dir,
                      get_legacy_dictation_log_dir, get_config_path as get_data_config_path,
                      get_speaker_config_path)
 from .worker_manager import TranscriptionWorker, WorkerCrashedError
+from .gpu_guard import GpuGuard
 from .backup_worker import BackupTranscriber
 from . import dictation_log
 from . import feature_log
@@ -147,7 +148,9 @@ class WhisperSync:
         self._api_filter = "Windows WASAPI"  # None = show all
         self._dictation_wav_path: Path | None = None
         self._meeting_start_time: datetime | None = None
-        dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
+        self._gpu_guard = GpuGuard(self.cfg, notify=notify)
+        dictation_model = self._gpu_guard.effective_model(
+            self.cfg.get("dictation_model", self.cfg["model"]))
         self.worker = TranscriptionWorker(self.cfg, preload_model=dictation_model)
         self._backup = BackupTranscriber(self.cfg)
         self._overlay_recorder = None    # Separate AudioRecorder for dictation during meetings
@@ -496,7 +499,8 @@ class WhisperSync:
 
         self.state.emit(TRANSCRIPTION_STARTED, mode="transcribing")
 
-        dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
+        dictation_model = self._gpu_guard.effective_model(
+            self.cfg.get("dictation_model", self.cfg["model"]))
         use_backup = self.state.current.meeting_transcribing and BackupTranscriber.is_enabled(self.cfg)
         # Capture feature flag under lock before spawning background thread
         with self._lock:
@@ -595,6 +599,7 @@ class WhisperSync:
                     self._safe_unlink(self._dictation_wav_path)
                 self.state.emit(DICTATION_COMPLETED, mode="done")
             except WorkerCrashedError:
+                self._gpu_guard.note_pressure_trigger("worker_crash_dictation")
                 logger.error("Worker crashed during dictation -- respawning...")
                 if self._dictation_wav_path:
                     logger.info(f"Dictation audio preserved at: {self._dictation_wav_path}")
@@ -735,7 +740,8 @@ class WhisperSync:
                 # Fall back to queuing on main worker if backup fails
                 try:
                     logger.info("Falling back to main worker for overlay dictation", extra={"secondary": True})
-                    dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
+                    dictation_model = self._gpu_guard.effective_model(
+                        self.cfg.get("dictation_model", self.cfg["model"]))
                     timeout = 180
                     text = self.worker.transcribe_fast(overlay_audio, model_override=dictation_model, timeout=timeout)
                     if text:
@@ -787,7 +793,8 @@ class WhisperSync:
                 frames = wf.readframes(wf.getnframes())
                 audio_np = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32767.0
 
-            dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
+            dictation_model = self._gpu_guard.effective_model(
+                self.cfg.get("dictation_model", self.cfg["model"]))
             text = self.worker.transcribe_fast(audio_np, model_override=dictation_model)
             if text:
                 pyperclip.copy(text)
@@ -829,7 +836,8 @@ class WhisperSync:
                 frames = wf.readframes(wf.getnframes())
                 audio_np = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32767.0
 
-            dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
+            dictation_model = self._gpu_guard.effective_model(
+                self.cfg.get("dictation_model", self.cfg["model"]))
             text = self.worker.transcribe_fast(audio_np, model_override=dictation_model)
             if not text:
                 logger.info("Crashed feature suggestion produced no text, cleaning up")
@@ -2107,6 +2115,7 @@ class WhisperSync:
             logger.info(f"Meeting done: {job.name or 'meeting'}")
 
         except WorkerCrashedError as e:
+            self._gpu_guard.note_pressure_trigger("worker_crash_meeting")
             logger.error("Worker crashed during meeting, respawning...")
             logger.info(f"Audio is preserved at: {job.wav_path}")
             self.worker.restart()
@@ -3682,7 +3691,8 @@ class WhisperSync:
         toast_listener = ToastListener(self.cfg)
         self.state.on_any(toast_listener)
 
-        dictation_model = self.cfg.get("dictation_model", self.cfg["model"])
+        dictation_model = self._gpu_guard.effective_model(
+            self.cfg.get("dictation_model", self.cfg["model"]))
         logger.info("WhisperSync running. Hotkeys:")
         logger.info(f"  Dictation: {self.cfg['hotkeys']['dictation_toggle']} (model: {dictation_model})")
         logger.info(f"  Meeting:   {self.cfg['hotkeys']['meeting_toggle']} (model: {self.cfg['model']})")
@@ -3768,6 +3778,10 @@ class WhisperSync:
             ),
         )
         self._idle_collector.start()
+
+        # GPU guard: VRAM watermark polling + downgrade ladder (spec B1-B3).
+        from .scheduler import scheduler as _sched
+        self._gpu_guard.start(_sched, IO)
 
         try:
             self.tray.run()
