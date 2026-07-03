@@ -20,8 +20,9 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install test dependencies
-        # pytest is the runner; pillow is needed by icons.py (imported
-        # via state_manager); windows-toasts by the notification tests.
+        # pytest is the runner; pillow is needed because the tests import
+        # whisper_sync.icons directly (IconAnimator); windows-toasts by
+        # the notification tests.
         run: python -m pip install pytest pillow windows-toasts
       - name: Run system suite
         run: python -m pytest tests/ --ignore=tests/test_capture_recorder.py --ignore=tests/test_capture_open_input.py --ignore=tests/test_capture_speaker_streaming.py --ignore=tests/test_capture_mic_downmix.py --ignore=tests/test_real_meeting_data.py --ignore=tests/test_e2e_real_transcription.py -q

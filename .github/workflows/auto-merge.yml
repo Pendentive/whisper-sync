@@ -21,6 +21,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  checks: read
 
 jobs:
   auto-merge:
