@@ -60,8 +60,14 @@ class GpuGuard:
         return bool(self._cfg.get("gpu_guard", True))
 
     def _ladder(self) -> list:
-        ladder = self._cfg.get("gpu_guard_ladder") or DEFAULT_LADDER
-        return list(ladder)
+        """Validated ladder; malformed config falls back to the default."""
+        ladder = self._cfg.get("gpu_guard_ladder")
+        if (isinstance(ladder, (list, tuple)) and len(ladder) > 0
+                and all(isinstance(m, str) and m for m in ladder)):
+            return list(ladder)
+        if ladder is not None:
+            logger.warning(f"GPU guard: invalid gpu_guard_ladder {ladder!r}; using default")
+        return list(DEFAULT_LADDER)
 
     def _watermark_mb(self) -> int:
         return int(self._cfg.get("gpu_guard_low_vram_mb", 750))
@@ -81,10 +87,12 @@ class GpuGuard:
                 self._cfg.get("gpu_guard_probe") or None
             )
         if self._probe is None:
+            # Mark started so repeated start() calls do not re-log or
+            # re-probe; the guard is permanently inert this session.
+            self._started = True
             logger.info("GPU guard: no VRAM probe provider on this machine; guard inactive")
             self._event("probe_unavailable")
             return
-        self._started = True
         poll = float(self._cfg.get("gpu_guard_poll_seconds", 30))
         # The probe (subprocess for nvidia-smi) must not run on the
         # scheduler thread (short-jobs contract): the tick only enqueues
@@ -123,8 +131,12 @@ class GpuGuard:
                             total_mb=result.total_mb, level=self._level)
 
     def note_pressure_trigger(self, reason: str) -> None:
-        """Escalate one rung immediately (worker crash, OOM exhaustion)."""
-        if not self.enabled:
+        """Escalate one rung immediately (worker crash, OOM exhaustion).
+
+        Inert without a probe provider: on providerless machines the
+        guard must never alter model selection (documented contract).
+        """
+        if not self.enabled or self._probe is None:
             return
         with self._lock:
             self._escalate_locked(trigger=reason,
@@ -161,7 +173,7 @@ class GpuGuard:
         a downgrade may never upgrade a caller that already asked for a
         small model. Models not on the ladder map to the current rung.
         """
-        if not self.enabled:
+        if not self.enabled or self._probe is None:
             return requested
         with self._lock:
             return self._effective_locked(requested)

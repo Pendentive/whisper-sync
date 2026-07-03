@@ -133,6 +133,24 @@ class LadderTests(_Harness):
 
 
 class DisabledTests(_Harness):
+    def test_providerless_guard_is_inert_even_for_crash_triggers(self):
+        # Regression for PR #158 review: without a probe provider the
+        # guard must never alter model selection, including on crashes.
+        g = GpuGuard(_cfg(), notify=lambda t, m: None,
+                     probe=None, probe_name=None, event_path=self.event_path)
+        g.note_pressure_trigger("worker_crash_meeting")
+        self.assertEqual(g.effective_model("large-v3"), "large-v3")
+
+    def test_invalid_ladder_config_falls_back_to_default(self):
+        # Regression for PR #158 review: an empty or malformed ladder
+        # must not crash escalation with an IndexError.
+        g = self._guard(gpu_guard_ladder=[])
+        g.note_pressure_trigger("x")
+        self.assertEqual(g.effective_model("large-v3"), "medium")
+        g2 = self._guard(gpu_guard_ladder="large-v3")  # string, not list
+        g2.note_pressure_trigger("x")
+        self.assertEqual(g2.effective_model("large-v3"), "medium")
+
     def test_disabled_guard_is_inert(self):
         g = self._guard(gpu_guard=False)
         g.note_pressure_trigger("worker_crash_meeting")
