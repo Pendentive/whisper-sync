@@ -20,7 +20,7 @@
 | 8 | Finish executor migration (remaining stray spawns) | architecture-validation A3 | MERGED (#161) |
 | 4 | Device-loss and wedged-worker stall detection | hardware-resilience H2+H4 | MERGED (#165) |
 | 5 | Overlay dictation disk-first | hardware-resilience H3 | MERGED (#162) |
-| 7 | State machine transition table | architecture-validation A1 | IN PIPELINE |
+| 7 | State machine transition table | architecture-validation A1 | MERGED (#164) |
 | 6 | __main__.py decomposition by workflow | architecture-validation A2 | PENDING |
 
 Execution order: 2, 9, 1, 3, 11+10, 8, 4, 5, 7, 6. Owner approved the
@@ -155,3 +155,26 @@ in one place, not a branching if/then system and not a framework.
   toggled at 15+ sites inside the code the decomposition will move, so
   folding them first would create double churn. 4 new tests including
   the full legal-matrix sweep.
+
+- **2026-07-03 (items 7 and 4 merged, #164/#165)**: review rounds fixed
+  a mid-file test main guard, tightened the table annotation, made the
+  matrix sweep use only public emits, bound the wedge-kill to the
+  request-registration generation (a restart mid-wait can never kill
+  the new healthy worker), and re-armed the mic-stall flag across
+  recordings.
+
+- **2026-07-03 (round closing)**: 10 of 11 items shipped (PRs
+  #155-#165). ONLY item 6 remains: __main__.py decomposition by
+  workflow (architecture-validation A2). Do it in a FRESH session, in
+  this extraction order: dictation flow (incl. overlay), meeting flow
+  (start/stop/save/recovery), settings + menu construction,
+  update/restart/quit lifecycle. Fold the stray flags
+  (_feature_suggest_active, _updating, _flash_active) into AppState
+  during the dictation/meeting extractions (deferred from item 7 for
+  exactly this reason). Target: __main__.py becomes wiring + hotkey
+  routing under ~800 lines; every extracted module gets unit tests.
+  Also watch the MODE_TRANSITIONS soak: any "Unexpected mode
+  transition" warnings in production logs mean the table needs a row
+  (or a flow needs fixing) BEFORE tightening warn-to-reject.
+  Production validation (docs/testing.md five signals + gpu-guard.jsonl
+  correlation) still awaits the owner updating the running app.
