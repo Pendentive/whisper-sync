@@ -20,7 +20,8 @@ When a user reports that a meeting "crashed" or "failed" or "didn't finish", do 
 
 | Module | Purpose |
 |--------|---------|
-| `__main__.py` | Entry point. Tray icon, hotkeys, recording flows, GitHub status, incognito, session stats. Uses StateManager for all state transitions. |
+| `__main__.py` | Entry point. Tray icon, hotkey wiring, meeting flow, menu/settings, GitHub status, session stats. Workflows are being extracted into flow modules (hardening item 6). |
+| `dictation_flow.py` | Dictation workflow component: normal/feature-suggest/overlay dictation, auto-stop cap, discard, crash recovery, history. Feature routing state lives in AppState.feature_suggest. |
 | `state_manager.py` | Observable state machine. AppState dataclass, typed StateEvent, event constants, thread-safe emit(), listener subscriptions (on/on_any), event log ringbuffer. All icon/toast updates flow through here. |
 | `transcribe.py` | WhisperX with persistent model cache. Fast path (dictation) and staged pipeline (meeting) |
 | `worker.py` | Multiprocessing transcription worker. CUDA isolation via spawn context |

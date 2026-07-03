@@ -26,7 +26,6 @@ warnings.filterwarnings("ignore", message="std\\(\\): degrees of freedom is <= 0
 logging.getLogger("lightning.pytorch.utilities.migration.utils").setLevel(logging.ERROR)
 logging.getLogger("whisperx.vads.pyannote").setLevel(logging.WARNING)
 logging.getLogger("whisperx.diarize").setLevel(logging.WARNING)
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -40,19 +39,16 @@ from .idle_reset import schedule_idle_reset
 from .capture import AudioRecorder, get_default_devices, get_host_apis, list_devices, save_wav, save_stereo_wav
 from .icons import (idle_icon, build_icon, resolve_icon_key, ICON_REGISTRY,
                      IconAnimator)
-from .logger import logger, get_log_path, set_console_level, log_dictation_result, log_meeting_result, log_transcript_preview
+from .logger import logger, get_log_path, set_console_level
 from .model_status import get_model_status, download_model, bootstrap_models
-from .paste import paste
-from .paths import (get_install_root, get_default_output_dir,
+from .paths import (get_install_root,
                      get_data_dir, get_dictation_log_dir,
                      get_legacy_config_path, get_legacy_speaker_config_path,
                      get_legacy_dictation_log_dir, get_config_path as get_data_config_path,
                      get_speaker_config_path)
-from .worker_manager import TranscriptionWorker, WorkerCrashedError
+from .worker_manager import TranscriptionWorker
 from .gpu_guard import GpuGuard
 from .backup_worker import BackupTranscriber
-from . import dictation_log
-from . import feature_log
 from . import weekly_stats
 from .streaming_wav import fix_orphan
 from .crash_diagnostics import install_excepthook, check_previous_crash, install_faulthandler
@@ -63,12 +59,12 @@ from .notifications import notify, ToastListener
 from .state_manager import (
     StateManager, AppState,
     MEETING_STARTED, MEETING_STOPPED, MEETING_COMPLETED,
-    DICTATION_STARTED, DICTATION_COMPLETED, DICTATION_DISCARDED,
     TRANSCRIPTION_STARTED, TRANSCRIPTION_PROGRESS, TRANSCRIPTION_COMPLETED,
     ERROR, MODEL_LOADING, MODEL_READY, MODEL_DOWNLOADING,
     PR_STATUS_CHANGED, SPEAKER_HEALTH_CHANGED, QUEUED, IDLE,
 )
 from .meeting_job import MeetingJob
+from .dictation_flow import DictationFlow
 from .rebuild_index import rebuild_root_index
 from .speakers import identify_speakers, write_speaker_map, update_config, get_config_path
 from .dialog_dispatcher import DialogDispatcher
@@ -146,18 +142,14 @@ class WhisperSync:
         self._lock = threading.RLock()
         self._tray_lock = threading.Lock()  # Serialize all tray icon/title updates (pystray not thread-safe)
         self._api_filter = "Windows WASAPI"  # None = show all
-        self._dictation_wav_path: Path | None = None
         self._meeting_start_time: datetime | None = None
         self._gpu_guard = GpuGuard(self.cfg, notify=notify)
         dictation_model = self._gpu_guard.effective_model(
             self.cfg.get("dictation_model", self.cfg["model"]))
         self.worker = TranscriptionWorker(self.cfg, preload_model=dictation_model)
         self._backup = BackupTranscriber(self.cfg)
-        self._overlay_recorder = None    # Separate AudioRecorder for dictation during meetings
         self._github_poller = None
         self._github_prs = []
-        self._dictation_history = dictation_log.load_recent(10)  # persist across restarts
-        self._feature_suggest_active = False  # routes dictation output to feature log
         self._post_queue = queue.Queue()  # Post-processing queue for completed meetings
         self._post_worker_thread = None  # Started in run()
         # Single long-lived thread for ALL tkinter dialogs. tk.Tk() must not
@@ -171,13 +163,14 @@ class WhisperSync:
         # worker threads concurrently (see session_stats.py).
         from .session_stats import SessionStats
         self._stats = SessionStats()
-        # _dictation_history is appended from dictation AND overlay worker
-        # threads and read by menu builds; guard every access.
-        self._dictation_history_lock = threading.Lock()
         # Flash gate: lock-guarded check-and-set (Event.is_set()+set() alone
         # is not atomic; two hotkey threads could both observe False).
         self._flash_lock = threading.Lock()
         self._flash_active = threading.Event()
+        # Dictation workflow component (dictation_flow.py): dictation,
+        # overlay, feature-suggest, discard, recovery, history. The app
+        # remains the wiring surface (hardening item 6).
+        self.dictation = DictationFlow(self)
 
     @staticmethod
     def _migrate_data():
@@ -261,7 +254,7 @@ class WhisperSync:
         if action == "meeting":
             self.toggle_meeting()
         elif action == "dictation":
-            self.toggle_dictation()
+            self.dictation.toggle()
 
     def _on_left_click(self):
         # Left-click while dictating = discard (stop recording, throw away audio)
@@ -269,7 +262,7 @@ class WhisperSync:
         mode = current.mode if current else None
         overlay = current.dictation_overlay if current else False
         if mode == "dictation" or overlay:
-            self._discard_dictation()
+            self.dictation.discard()
             return
         self._dispatch_action(self.cfg.get("left_click", "meeting"))
 
@@ -286,21 +279,6 @@ class WhisperSync:
         """
         schedule_idle_reset(self.state, seconds, blink)
 
-    @staticmethod
-    def _safe_unlink(path: Path, retries: int = 2, delay: float = 0.5):
-        """Delete a file, retrying on PermissionError (Windows file locking)."""
-        import time
-        for attempt in range(retries + 1):
-            try:
-                if path and path.exists():
-                    path.unlink(missing_ok=True)
-                return
-            except PermissionError:
-                if attempt < retries:
-                    time.sleep(delay)
-                else:
-                    logger.debug(f"Could not delete {path} — will clean up on next restart")
-
     def _flash_queued(self):
         """Rapid amber flash to indicate dictation is queued behind a meeting stage."""
         animator = IconAnimator(self.tray, lock=self._tray_lock)
@@ -310,607 +288,6 @@ class WhisperSync:
         """Can we start a new recording? Allowed if idle or just transcribing in background."""
         mode = self.state.current.mode if self.state else None
         return mode is None or mode in ("transcribing", "done", "error")
-
-    def toggle_dictation(self):
-        with self._lock:
-            current = self.state.current if self.state else None
-            mode = current.mode if current else None
-            overlay = current.dictation_overlay if current else False
-            meeting_tx = current.meeting_transcribing if current else False
-
-            # Handle overlay dictation during meetings
-            if overlay:
-                self._stop_overlay_dictation()
-                return
-
-            if mode == "dictation":
-                self._stop_dictation()
-            elif mode == "meeting" or (mode is None and meeting_tx):
-                # Dictation during meeting recording or meeting transcription
-                if self.cfg.get("always_available_dictation", True):
-                    if self._backup.is_loading:
-                        logger.debug("Backup model still loading, triggering yellow flash", extra={"secondary": True})
-                        self._yellow_flash()
-                        return
-                    self._start_overlay_dictation()
-                else:
-                    logger.info("Dictation unavailable during meeting (always_available_dictation disabled)", extra={"secondary": True})
-                    notify("Dictation unavailable", "Enable always-available dictation in settings")
-            elif mode == "saving":
-                logger.debug("Dictation ignored - meeting is saving")
-            elif self._can_record():
-                self._start_dictation()
-
-    def toggle_feature_suggest(self):
-        """Toggle feature suggestion recording (same as dictation but saves to feature log)."""
-        with self._lock:
-            current = self.state.current if self.state else None
-            mode = current.mode if current else None
-            overlay = current.dictation_overlay if current else False
-            meeting_tx = current.meeting_transcribing if current else False
-
-            # If already recording a feature suggestion, stop it
-            if overlay and self._feature_suggest_active:
-                self._stop_overlay_dictation()
-                return
-            if mode == "dictation" and self._feature_suggest_active:
-                self._stop_dictation()
-                return
-
-            # Start feature suggestion (reuses dictation pipeline)
-            if mode == "dictation" and not self._feature_suggest_active:
-                # Already recording a normal dictation - ignore
-                logger.debug("Feature suggest ignored - dictation in progress")
-                return
-
-            self._feature_suggest_active = True
-            if mode == "meeting" or (mode is None and meeting_tx):
-                if self.cfg.get("always_available_dictation", True):
-                    if self._backup.is_loading:
-                        self._feature_suggest_active = False
-                        logger.debug("Backup model still loading, triggering yellow flash", extra={"secondary": True})
-                        self._yellow_flash()
-                        return
-                    self._start_overlay_dictation()
-                else:
-                    self._feature_suggest_active = False
-                    logger.info("Feature suggest unavailable during meeting (always_available_dictation disabled)", extra={"secondary": True})
-                    notify("Feature suggest unavailable", "Enable always-available dictation in settings")
-            elif mode == "saving":
-                self._feature_suggest_active = False
-                logger.debug("Feature suggest ignored - meeting is saving")
-            elif self._can_record():
-                self._start_dictation()
-            else:
-                self._feature_suggest_active = False
-
-    def _dictation_log_dir(self) -> Path:
-        return get_dictation_log_dir()
-
-    def _start_dictation(self):
-        _meeting_tx = self.state.current.meeting_transcribing if self.state else False
-        if not self.worker.is_ready() and not (_meeting_tx and BackupTranscriber.is_enabled(self.cfg)):
-            logger.warning("Worker not ready yet - ignoring dictation request")
-            self._feature_suggest_active = False
-            self._yellow_flash()
-            return
-        # Atomic claim: only start if mode is still startable. A worker
-        # completion (or a double-fired hotkey on another thread) changing
-        # mode between the toggle's check and this start is rejected here
-        # instead of producing two concurrent recording sessions.
-        if not self.state.try_transition(
-            (None, "transcribing", "done", "error"),
-            DICTATION_STARTED, mode="dictation",
-        ):
-            logger.debug("dictation start rejected: mode changed concurrently")
-            self._feature_suggest_active = False
-            return
-        mic = self.cfg.get("mic_device")
-        if self.cfg.get("use_system_devices", True):
-            # Explicitly use the WASAPI default instead of falling through
-            # to sd.default.device[0], which on Windows resolves to an MME
-            # device and often rejects float32 @ 16 kHz with MME error 32.
-            mic = get_default_devices().get("input")
-        try:
-            self.recorder.start(mic_device=mic)
-        except Exception as e:
-            logger.error("Failed to start mic for dictation: %s", e, exc_info=True)
-            notify("Dictation unavailable", f"Mic could not be opened: {e}")
-            self._feature_suggest_active = False
-            self.state.emit(IDLE, mode=None)
-            return
-        # Stream to disk for crash recovery -- skip when incognito (RAM only)
-        if self.cfg.get("incognito", False):
-            self._dictation_wav_path = None
-        else:
-            log_dir = self._dictation_log_dir()
-            log_dir.mkdir(parents=True, exist_ok=True)
-            ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            prefix = "feature_" if self._feature_suggest_active else ""
-            self._dictation_wav_path = log_dir / f"{prefix}{ts}.wav"
-            try:
-                self.recorder.start_streaming(self._dictation_wav_path)
-            except Exception as e:
-                logger.warning("Dictation disk streaming disabled: %s", e)
-                self._dictation_wav_path = None
-
-        # Memory protection: dictation mic audio accumulates in RAM
-        # (~230 MB/hour @16k float32). A forgotten hotkey used to grow
-        # unbounded. Auto-stop at the configured cap; the audio captured
-        # so far is transcribed normally, nothing is lost.
-        self._arm_dictation_cap()
-
-    def _arm_dictation_cap(self):
-        """Schedule the dictation auto-stop cap for this session."""
-        cap_min = float(self.cfg.get("dictation_max_minutes", 30) or 0)
-        if cap_min <= 0:
-            return
-        from .scheduler import scheduler
-
-        def _cap_hit():
-            mode = self.state.current.mode if self.state else None
-            if mode != "dictation":
-                return  # session already ended normally
-
-            def _do_stop():
-                logger.warning(
-                    "Dictation auto-stopped at %.0f min cap "
-                    "(dictation_max_minutes; audio so far is transcribed)",
-                    cap_min,
-                )
-                try:
-                    notify(
-                        "Dictation auto-stopped",
-                        f"Hit the {cap_min:.0f} min cap; transcribing what was recorded",
-                    )
-                except Exception:
-                    pass
-                # toggle takes the app lock and routes by current mode, so
-                # a user stop racing this is benign (mode check repeats
-                # under the lock inside toggle_dictation).
-                self.toggle_dictation()
-
-            # Scheduler jobs must stay short (scheduler.py contract):
-            # toggle acquires the app lock and stops the recorder, so
-            # offload it instead of blocking other timer jobs (menu
-            # refresh, idle GC).
-            submit_or_spawn(DICTATION, "dictation-cap-stop", _do_stop)
-
-        self._cancel_dictation_cap()
-        self._dictation_cap_handle = scheduler.call_later(
-            cap_min * 60.0, _cap_hit, label="dictation-cap"
-        )
-
-    def _cancel_dictation_cap(self):
-        handle = getattr(self, "_dictation_cap_handle", None)
-        if handle is not None:
-            handle.cancel()
-            self._dictation_cap_handle = None
-
-    def _stop_dictation(self):
-        self._cancel_dictation_cap()
-        audio = self.recorder.stop()
-        self.recorder.stop_streaming()
-
-        if "mic" not in audio:
-            self._feature_suggest_active = False
-            self.state.emit(IDLE, mode=None)
-            return
-
-        self.state.emit(TRANSCRIPTION_STARTED, mode="transcribing")
-
-        dictation_model = self._gpu_guard.effective_model(
-            self.cfg.get("dictation_model", self.cfg["model"]))
-        use_backup = self.state.current.meeting_transcribing and BackupTranscriber.is_enabled(self.cfg)
-        # Capture feature flag under lock before spawning background thread
-        with self._lock:
-            is_feature = self._feature_suggest_active
-            self._feature_suggest_active = False
-
-        def _process():
-            import time as _time
-
-            t0 = _time.perf_counter()
-            try:
-                text = None
-                used_backup = False
-                if use_backup:
-                    # Meeting is transcribing - use lightweight backup model
-                    # instead of queuing on the busy worker
-                    try:
-                        text = self._backup.transcribe(audio["mic"])
-                        used_backup = True
-                        t1 = _time.perf_counter()
-                        backup_model = self.cfg.get("backup_model", "base")
-                        backup_device = self.cfg.get("backup_device", "cpu")
-                        logger.info(
-                            f"Dictation (backup, {backup_device} {backup_model}): "
-                            f"{t1 - t0:.2f}s",
-                            extra={"secondary": True},
-                        )
-                    except Exception as backup_err:
-                        # Backup failed - fall back to queuing on the main worker
-                        logger.warning(f"Backup transcriber failed: {backup_err}", extra={"secondary": True})
-                        logger.info("Falling back to main worker (queued)", extra={"secondary": True})
-                        self._flash_queued()
-                        timeout = 180
-                        text = self.worker.transcribe_fast(audio["mic"], model_override=dictation_model, timeout=timeout)
-                        t1 = _time.perf_counter()
-                        logger.debug(f"transcribe_fast (fallback): {t1 - t0:.2f}s")
-                else:
-                    # Normal path or backup disabled
-                    if self.state.current.meeting_transcribing:
-                        self._flash_queued()
-                    timeout = 180 if self.state.current.meeting_transcribing else 60
-                    text = self.worker.transcribe_fast(audio["mic"], model_override=dictation_model, timeout=timeout)
-                    t1 = _time.perf_counter()
-                    logger.debug(f"transcribe_fast: {t1 - t0:.2f}s")
-                t2 = _time.perf_counter()
-                char_count = len(text) if text else 0
-
-                if is_feature:
-                    # Feature suggestion mode
-                    if not text:
-                        logger.info("Feature suggestion discarded (no speech detected)")
-                    elif self.cfg.get("incognito", False):
-                        logger.info("Feature suggestion skipped: whisper mode enabled")
-                        notify("Feature not saved", "Whisper mode is on; suggestions are not stored on disk")
-                    else:
-                        entry_id = feature_log.append_raw(text, t2 - t0)
-                        logger.info(f"Feature suggestion saved: {char_count} chars in {t2 - t0:.2f}s")
-                        notify("Feature saved", f"Suggestion recorded ({char_count} chars)")
-                        self._stats.record_feature_suggestion()
-                        weekly_stats.record_feature_suggestion()
-                        # Format asynchronously via Claude CLI
-                        submit_or_spawn(
-                            IO, "feature-format",
-                            lambda t=text, e=entry_id: self._format_feature_async(t, e),
-                            native=True,
-                        )
-                else:
-                    # Normal dictation mode: paste + log
-                    if text:
-                        paste(text, self.cfg["paste_method"], restore=not self.cfg.get("incognito", False))
-                    delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
-                    if self.cfg.get("incognito"):
-                        logger.info(f"Dictation: {t2 - t0:.2f}s -- {delivery} ({char_count} chars)")
-                    else:
-                        log_dictation_result(text or "", t2 - t0, delivery, char_count, secondary=used_backup)
-                    effective_model = self.cfg.get("backup_model", "base") if used_backup else dictation_model
-                    logger.debug(f"total (stop -> paste): {t2 - t0:.2f}s, model={effective_model}{' (backup)' if used_backup else ''}")
-                    # Update session stats
-                    self._stats.record_dictation(char_count, t2 - t0)
-                    weekly_stats.record_dictation(char_count, t2 - t0)
-                    incognito = self.cfg.get("incognito", False)
-                    if text and not incognito:
-                        dictation_log.append(text, t2 - t0, model=effective_model)
-                        with self._dictation_history_lock:
-                            self._dictation_history.append({
-                                "text": text,
-                                "timestamp": datetime.now().strftime("%H:%M"),
-                                "chars": len(text),
-                            })
-                            if len(self._dictation_history) > 10:
-                                self._dictation_history = self._dictation_history[-10:]
-                        self._refresh_menu()
-                # Success -- remove crash-safety WAV (text is in the log)
-                self.recorder.stop_streaming()  # defensive: ensure writer closed
-                if self._dictation_wav_path:
-                    self._safe_unlink(self._dictation_wav_path)
-                self.state.emit(DICTATION_COMPLETED, mode="done")
-            except WorkerCrashedError:
-                self._gpu_guard.note_pressure_trigger("worker_crash_dictation")
-                logger.error("Worker crashed during dictation -- respawning...")
-                if self._dictation_wav_path:
-                    logger.info(f"Dictation audio preserved at: {self._dictation_wav_path}")
-                self.worker.restart()
-                self.state.emit(ERROR, mode="error", data={"message": "Worker crashed during dictation", "recoverable": True})
-            except Exception as e:
-                logger.error(f"Dictation error: {e}")
-                import traceback
-                logger.debug(traceback.format_exc())
-                self.state.emit(ERROR, mode="error", data={"message": str(e), "recoverable": False})
-            finally:
-                self._schedule_idle(2)
-
-        submit_or_spawn(DICTATION, "dictation-process", _process)
-
-    # --- Overlay dictation (dictation during meeting recording/transcription) ---
-
-    def _start_overlay_dictation(self):
-        """Start dictation using a separate audio stream while meeting continues.
-
-        Uses an independent AudioRecorder so the meeting recording is never
-        interrupted. Transcription uses the backup model (CPU or secondary GPU).
-        """
-        # Note: always_available_dictation config flag already gates the call to
-        # this method in toggle_dictation(), so no need to re-check is_enabled() here.
-
-        meeting_state = "recording" if (self.state.current.mode if self.state else None) == "meeting" else "transcribing"
-        backup_model = self.cfg.get("backup_model", "base")
-        backup_device = self.cfg.get("backup_device", "cpu")
-        logger.info(f"Dictation requested during meeting {meeting_state} (using backup model)", extra={"secondary": True})
-        logger.info(f"Backup model: {backup_model} on {backup_device}", extra={"secondary": True})
-
-        # Create a separate recorder for dictation audio (mic only)
-        self._overlay_recorder = AudioRecorder(sample_rate=self.cfg["sample_rate"])
-        mic = self.cfg.get("mic_device")
-        if self.cfg.get("use_system_devices", True):
-            mic = get_default_devices().get("input")
-        try:
-            self._overlay_recorder.start(mic_device=mic)
-        except Exception as e:
-            logger.error("Failed to start overlay dictation mic: %s", e, exc_info=True)
-            notify("Dictation unavailable", f"Mic could not be opened: {e}")
-            self._overlay_recorder = None
-            self._feature_suggest_active = False
-            return
-        # Disk-first like normal dictation (hardware-resilience H3):
-        # overlay audio was the last RAM-only capture path, so a crash
-        # mid-overlay lost it. Incognito intentionally stays RAM-only.
-        self._overlay_wav_path = None
-        if not self.cfg.get("incognito", False):
-            log_dir = self._dictation_log_dir()
-            log_dir.mkdir(parents=True, exist_ok=True)
-            ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            prefix = "feature_" if self._feature_suggest_active else ""
-            self._overlay_wav_path = log_dir / f"overlay_{prefix}{ts}.wav"
-            try:
-                self._overlay_recorder.start_streaming(self._overlay_wav_path)
-            except Exception as e:
-                logger.warning("Overlay disk streaming disabled: %s", e)
-                self._overlay_wav_path = None
-        logger.info("Dictation during meeting: recording started", extra={"secondary": True})
-        self.state.emit(DICTATION_STARTED, dictation_overlay=True)
-
-    def _stop_overlay_dictation(self):
-        """Stop overlay dictation, transcribe with backup model, paste result."""
-        if not self._overlay_recorder:
-            self.state.emit(IDLE, dictation_overlay=False)
-            return
-
-        audio = self._overlay_recorder.stop()
-        # Finalize the streaming WAV (header + handle) so the file can be
-        # deleted on success or preserved intact on failure - stop() does
-        # not close the mic writer (same discipline as normal dictation).
-        self._overlay_recorder.stop_streaming()
-        self.state.emit(DICTATION_COMPLETED, dictation_overlay=False)
-
-        if "mic" not in audio:
-            logger.debug("Overlay dictation stopped - no audio captured", extra={"secondary": True})
-            self._overlay_recorder = None
-            self._feature_suggest_active = False
-            return
-
-        overlay_audio = audio["mic"]
-        self._overlay_recorder = None
-        overlay_wav = getattr(self, "_overlay_wav_path", None)
-        self._overlay_wav_path = None
-
-        # Capture feature flag before spawning background thread
-        with self._lock:
-            is_feature = self._feature_suggest_active
-            self._feature_suggest_active = False
-
-        logger.info("Dictation during meeting: transcribing...", extra={"secondary": True})
-
-        def _process_overlay():
-            import time as _time
-
-            transcribed = False
-            t0 = _time.perf_counter()
-            try:
-                text = self._backup.transcribe(overlay_audio)
-                transcribed = True
-                t1 = _time.perf_counter()
-                duration = t1 - t0
-                char_count = len(text) if text else 0
-                backup_model = self.cfg.get("backup_model", "base")
-                backup_device = self.cfg.get("backup_device", "cpu")
-                logger.info(
-                    f"Dictation during meeting: {duration:.1f}s, {char_count} chars "
-                    f"(backup {backup_device} {backup_model})",
-                    extra={"secondary": True},
-                )
-                if is_feature:
-                    if not text:
-                        logger.info("Feature suggestion (overlay) discarded (no speech detected)", extra={"secondary": True})
-                    elif self.cfg.get("incognito", False):
-                        logger.info("Feature suggestion skipped: whisper mode enabled", extra={"secondary": True})
-                        notify("Feature not saved", "Whisper mode is on; suggestions are not stored on disk")
-                    else:
-                        entry_id = feature_log.append_raw(text, duration)
-                        logger.info(f"Feature suggestion (overlay) saved: {char_count} chars in {duration:.2f}s", extra={"secondary": True})
-                        notify("Feature saved", f"Suggestion recorded ({char_count} chars)")
-                        self._stats.record_feature_suggestion()
-                        weekly_stats.record_feature_suggestion()
-                        submit_or_spawn(
-                            IO, "feature-format",
-                            lambda t=text, e=entry_id: self._format_feature_async(t, e),
-                            native=True,
-                        )
-                else:
-                    if text:
-                        paste(text, self.cfg["paste_method"], restore=not self.cfg.get("incognito", False))
-
-                    # Update session stats
-                    self._stats.record_dictation(char_count, duration)
-                    weekly_stats.record_dictation(char_count, duration)
-
-                    incognito = self.cfg.get("incognito", False)
-                    if text and not incognito:
-                        dictation_log.append(text, duration, model=backup_model)
-                        with self._dictation_history_lock:
-                            self._dictation_history.append({
-                                "text": text,
-                                "timestamp": datetime.now().strftime("%H:%M"),
-                                "chars": len(text),
-                            })
-                            if len(self._dictation_history) > 10:
-                                self._dictation_history = self._dictation_history[-10:]
-                        self._refresh_menu()
-
-                    delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
-                    if incognito:
-                        logger.info(f"Overlay dictation: {duration:.2f}s - {delivery} ({char_count} chars)", extra={"secondary": True})
-                    else:
-                        log_dictation_result(text or "", duration, delivery, char_count, secondary=True)
-
-            except Exception as e:
-                logger.error(f"Overlay dictation error: {e}", extra={"secondary": True})
-                import traceback
-                logger.debug(traceback.format_exc())
-                # Fall back to queuing on main worker if backup fails
-                try:
-                    logger.info("Falling back to main worker for overlay dictation", extra={"secondary": True})
-                    dictation_model = self._gpu_guard.effective_model(
-                        self.cfg.get("dictation_model", self.cfg["model"]))
-                    timeout = 180
-                    text = self.worker.transcribe_fast(overlay_audio, model_override=dictation_model, timeout=timeout)
-                    transcribed = True
-                    if text:
-                        paste(text, self.cfg["paste_method"], restore=not self.cfg.get("incognito", False))
-                    t1 = _time.perf_counter()
-                    duration = t1 - t0
-                    char_count = len(text or "")
-                    logger.info(f"Overlay dictation fallback: {duration:.2f}s, {char_count} chars", extra={"secondary": True})
-
-                    # Post-dictation bookkeeping (same as the normal overlay path)
-                    self._stats.record_dictation(char_count, duration)
-                    weekly_stats.record_dictation(char_count, duration)
-
-                    incognito = self.cfg.get("incognito", False)
-                    if text and not incognito:
-                        dictation_log.append(text, duration, model=dictation_model)
-                        with self._dictation_history_lock:
-                            self._dictation_history.append({
-                                "text": text,
-                                "timestamp": datetime.now().strftime("%H:%M"),
-                                "chars": len(text),
-                            })
-                            if len(self._dictation_history) > 10:
-                                self._dictation_history = self._dictation_history[-10:]
-                        self._refresh_menu()
-
-                    delivery = "pasted" if self.cfg["paste_method"] == "keystrokes" else "clipboard"
-                    if incognito:
-                        logger.info(f"Overlay dictation fallback: {duration:.2f}s - {delivery} ({char_count} chars)", extra={"secondary": True})
-                    else:
-                        log_dictation_result(text or "", duration, delivery, char_count, secondary=True)
-                except Exception as fallback_err:
-                    logger.error(f"Overlay dictation fallback also failed: {fallback_err}", extra={"secondary": True})
-
-            if overlay_wav:
-                if transcribed:
-                    self._safe_unlink(overlay_wav)
-                else:
-                    logger.info(f"Overlay dictation audio preserved at: {overlay_wav}", extra={"secondary": True})
-
-        submit_or_spawn(DICTATION, "overlay-process", _process_overlay)
-
-    def _recover_dictation(self, wav_path: str):
-        """Transcribe a recovered dictation WAV from a previous crash.
-
-        Puts the text on the clipboard (not auto-paste — wrong window may be focused
-        after a restart). The user can Ctrl+V when ready.
-        """
-        import pyperclip
-        logger.info(f"Recovering crashed dictation from: {wav_path}")
-        try:
-            import numpy as np
-            import wave
-            with wave.open(wav_path, "r") as wf:
-                frames = wf.readframes(wf.getnframes())
-                audio_np = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32767.0
-
-            dictation_model = self._gpu_guard.effective_model(
-                self.cfg.get("dictation_model", self.cfg["model"]))
-            text = self.worker.transcribe_fast(audio_np, model_override=dictation_model)
-            if text:
-                pyperclip.copy(text)
-                dictation_log.append(text, 0, model=dictation_model)
-                logger.info(f"Crash-recovered dictation copied to clipboard: {text[:80]}...")
-                # #38: Toast with recovered text info and Copy button
-                try:
-                    _recovered_text = text
-                    def _copy_recovered(t=_recovered_text):
-                        import pyperclip as _pc
-                        _pc.copy(t)
-                    notify(
-                        "Dictation recovered",
-                        f"{len(text)} chars recovered from crash",
-                        buttons=[{"label": "Copy to Clipboard", "action": _copy_recovered}],
-                    )
-                except Exception:
-                    logger.debug("Recovery toast failed", exc_info=True)
-            else:
-                logger.info("Crash-recovered dictation produced no text")
-            # Clean up the WAV now that text is on clipboard + in the .md log
-            Path(wav_path).unlink(missing_ok=True)
-        except Exception as e:
-            logger.error(f"Failed to recover dictation: {e}")
-            logger.info(f"Audio preserved at: {wav_path}")
-
-    def _recover_feature(self, wav_path: str):
-        """Recover a crashed feature suggestion with interactive notification.
-
-        Unlike dictation recovery (clipboard only), feature recovery routes
-        the transcription to the feature log and applies Claude formatting.
-        Shows a toast with Recover / Cancel options.
-        """
-        logger.info(f"Recovering crashed feature suggestion from: {wav_path}")
-        try:
-            import numpy as np
-            import wave
-            with wave.open(wav_path, "r") as wf:
-                frames = wf.readframes(wf.getnframes())
-                audio_np = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32767.0
-
-            dictation_model = self._gpu_guard.effective_model(
-                self.cfg.get("dictation_model", self.cfg["model"]))
-            text = self.worker.transcribe_fast(audio_np, model_override=dictation_model)
-            if not text:
-                logger.info("Crashed feature suggestion produced no text, cleaning up")
-                Path(wav_path).unlink(missing_ok=True)
-                return
-
-            logger.info(f"Recovered feature text ({len(text)} chars): {text[:80]}...")
-
-            # Show interactive notification with Recover / Cancel options
-            def _do_recover():
-                entry_id = feature_log.append_raw(text, 0)
-                logger.info(f"Feature suggestion recovered to feature log: {entry_id}")
-                # Format via Claude CLI in background
-                submit_or_spawn(
-                    IO, "feature-format",
-                    lambda t=text, e=entry_id: self._format_feature_async(t, e),
-                    native=True,
-                )
-                notify("Feature recovered", f"{len(text)} chars saved to feature log")
-
-            def _do_cancel():
-                logger.info("Feature recovery cancelled by user")
-
-            try:
-                preview = f'"{text[:120]}..."' if len(text) > 120 else f'"{text}"'
-                notify(
-                    "Recover feature suggestion?",
-                    preview,
-                    buttons=[
-                        {"label": "Recover", "action": _do_recover},
-                        {"label": "Cancel", "action": _do_cancel},
-                    ],
-                )
-            except Exception:
-                # If notification fails, auto-recover silently
-                logger.debug("Feature recovery notification failed, auto-recovering", exc_info=True)
-                _do_recover()
-
-            # Clean up WAV after showing notification (actions handle the rest)
-            Path(wav_path).unlink(missing_ok=True)
-        except Exception as e:
-            logger.error(f"Failed to recover feature suggestion: {e}")
-            logger.info(f"Audio preserved at: {wav_path}")
 
     def _recover_meetings(self):
         """Show a dialog for each recovered meeting WAV, let user name and place it."""
@@ -1138,32 +515,6 @@ class WhisperSync:
 
         name = result[0] or ""
         return "".join(c if c.isalnum() or c in " -_" else "" for c in name).strip().replace(" ", "-")
-
-    def _discard_dictation(self):
-        """Discard current dictation - stop recording, throw away audio, return to idle."""
-        with self._lock:
-            # Handle overlay dictation discard
-            _overlay = self.state.current.dictation_overlay if self.state else False
-            if _overlay and self._overlay_recorder:
-                self._overlay_recorder.stop()
-                self._overlay_recorder.stop_streaming()
-                self._overlay_recorder = None
-                discarded_wav = getattr(self, "_overlay_wav_path", None)
-                self._overlay_wav_path = None
-                if discarded_wav:
-                    self._safe_unlink(discarded_wav)
-                logger.info("Overlay dictation discarded (left-click)", extra={"secondary": True})
-                self.state.emit(DICTATION_DISCARDED, dictation_overlay=False)
-                return
-
-            if (self.state.current.mode if self.state else None) != "dictation":
-                return
-            self.recorder.stop()  # stop recording, discard the audio
-            self.recorder.stop_streaming()
-            if self._dictation_wav_path and self._dictation_wav_path.exists():
-                self._dictation_wav_path.unlink(missing_ok=True)
-            logger.info("Dictation discarded (left-click)")
-            self.state.emit(DICTATION_DISCARDED, mode=None)
 
     def toggle_meeting(self):
         with self._lock:
@@ -2315,42 +1666,6 @@ class WhisperSync:
         except _sp.TimeoutExpired:
             logger.warning("Claude CLI timed out generating minutes (5 min limit)")
 
-    def _format_feature_async(self, raw_text: str, entry_id: str):
-        """Format a feature suggestion via Claude CLI (background thread)."""
-        import subprocess as _sp
-
-        prompt_file = Path(__file__).parent / "feature_prompt.md"
-        if not prompt_file.exists():
-            logger.warning(f"Feature prompt template not found: {prompt_file}")
-            return
-
-        prompt_text = prompt_file.read_text(encoding="utf-8")
-        prompt_text = prompt_text.replace("{TRANSCRIPTION}", raw_text)
-
-        logger.info("Formatting feature suggestion via Claude CLI...")
-        try:
-            from .executors import native_call
-            with native_call("claude-feature-format"):
-                result = _sp.run(
-                    ["claude", "-p", "--model", "haiku"],
-                    input=prompt_text,
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                )
-            if result.returncode == 0 and result.stdout.strip():
-                feature_log.update_consolidated(entry_id, result.stdout.strip())
-                logger.info("Feature suggestion formatted successfully")
-                notify("Feature formatted", "Claude formatted your feature suggestion")
-            else:
-                logger.warning(f"Claude CLI returned code {result.returncode}")
-                if result.stderr:
-                    logger.debug(f"stderr: {result.stderr[:500]}")
-        except FileNotFoundError:
-            logger.warning("Claude CLI not found - raw feature saved without formatting")
-        except _sp.TimeoutExpired:
-            logger.warning("Claude CLI timed out formatting feature (60s limit)")
-
     def _meeting_temp_dir(self) -> Path:
         return Path(__file__).parent / "logs" / "data" / "meeting"
 
@@ -2385,16 +1700,9 @@ class WhisperSync:
         else:
             logger.info("No dictation logs folder found")
 
-    def _clear_dictation_history(self):
-        """Clear the in-memory dictation history (menu only, logs on disk are preserved)."""
-        with self._dictation_history_lock:
-            self._dictation_history.clear()
-        self._refresh_menu()
-
     def _build_recent_dictations_menu(self):
         """Build the Recent Dictations submenu items."""
-        with self._dictation_history_lock:
-            history = list(self._dictation_history)
+        history = self.dictation.recent_history()
         if not history:
             return pystray.Menu(
                 pystray.MenuItem("No dictations yet", None, enabled=False),
@@ -2414,7 +1722,7 @@ class WhisperSync:
             pystray.MenuItem("Open Logs", self._cb(self._open_dictation_logs))
         )
         items.append(
-            pystray.MenuItem("Clear History", self._cb(self._clear_dictation_history))
+            pystray.MenuItem("Clear History", self._cb(self.dictation.clear_history))
         )
         return pystray.Menu(*items)
 
@@ -2706,7 +2014,7 @@ class WhisperSync:
             pystray.MenuItem("Meetings", self._build_meetings_menu()),
             pystray.MenuItem("Recent Dictations", self._build_recent_dictations_menu()),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(f"Dictation\t{dict_hk}", lambda: self._on_left_click() if left_action == "dictation" else self.toggle_dictation(),
+            pystray.MenuItem(f"Dictation\t{dict_hk}", lambda: self._on_left_click() if left_action == "dictation" else self.dictation.toggle(),
                              default=left_action == "dictation"),
             pystray.MenuItem(f"Meeting\t{meet_hk}", lambda: self._on_left_click() if left_action == "meeting" else self.toggle_meeting(),
                              default=left_action == "meeting"),
@@ -3640,7 +2948,7 @@ class WhisperSync:
         # Check for orphaned dictation WAVs from a previous crash
         # (successful dictations delete the WAV, so any .wav here = crash)
         self._recovered_dictation_paths = []
-        dict_log_dir = self._dictation_log_dir()
+        dict_log_dir = get_dictation_log_dir()
         if dict_log_dir.exists():
             for wav in sorted(dict_log_dir.glob("*.wav")):
                 dur = fix_orphan(wav)
@@ -3672,7 +2980,7 @@ class WhisperSync:
 
         keyboard.add_hotkey(
             self.cfg["hotkeys"]["dictation_toggle"],
-            _guarded(self.toggle_dictation, "dictation"),
+            _guarded(self.dictation.toggle, "dictation"),
             suppress=False,
         )
         keyboard.add_hotkey(
@@ -3684,7 +2992,7 @@ class WhisperSync:
         if feature_hk:
             keyboard.add_hotkey(
                 feature_hk,
-                _guarded(self.toggle_feature_suggest, "feature-suggest"),
+                _guarded(self.dictation.toggle_feature_suggest, "feature-suggest"),
                 suppress=False,
             )
 
@@ -3770,9 +3078,9 @@ class WhisperSync:
                 # Recover any crashed dictations/features found at startup
                 for wav_path in self._recovered_dictation_paths:
                     if Path(wav_path).name.startswith("feature_"):
-                        self._recover_feature(wav_path)
+                        self.dictation.recover_feature(wav_path)
                     else:
-                        self._recover_dictation(wav_path)
+                        self.dictation.recover_dictation(wav_path)
                 self._recovered_dictation_paths = []
                 # Recover any crashed meetings — show dialog for naming
                 if self._recovered_meeting_paths:
@@ -3811,7 +3119,7 @@ class WhisperSync:
         self._idle_collector = IdleCollector(
             is_pipeline_idle=lambda: self._post_queue.unfinished_tasks == 0,
             is_recording=lambda: (
-                self.recorder.is_recording or self._overlay_recorder is not None
+                self.recorder.is_recording or self.dictation.overlay_active
             ),
             is_mode_terminal=lambda: (
                 self.state is not None
