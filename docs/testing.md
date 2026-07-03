@@ -13,6 +13,15 @@ page disagree, fix the other doc.
 | End-to-end | Production worker subprocess on the smallest real recording (~1 min) | Local, opt-in (`WS_E2E=1`); run after worker-protocol or pipeline changes | see development.md |
 | Manual checklist | Hardware-in-the-loop checks no automated test covers (real mic, hotkeys, tray, GPU) | Local, before releases and after audio/tray changes | [.claude/rules/testing.md](../.claude/rules/testing.md) |
 
+## Test-run isolation
+
+The tray app runs from the repo checkout, so test runs used to write
+into the live app log and live data dir. `tests/__init__.py` now points
+`WS_LOG_DIR` and `WS_DATA_DIR` at a disposable temp dir before any
+whisper_sync import; both the pytest system suite and the unittest venv
+suite get this automatically, and the env vars propagate to the E2E
+worker subprocess. Set either variable explicitly to retarget a run.
+
 ## Where results and decisions are recorded
 
 Test results and the decisions made on them live in the active plan

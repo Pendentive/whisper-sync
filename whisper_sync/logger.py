@@ -6,7 +6,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-_LOG_DIR = Path(__file__).parent / "logs" / "app"
+# WS_LOG_DIR redirects app logs (set by tests/__init__.py so test runs
+# never write into the live app log - the tray app runs from this checkout).
+_LOG_DIR = Path(os.environ.get("WS_LOG_DIR") or Path(__file__).parent / "logs" / "app")
 _LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 _log_file = _LOG_DIR / f"whisper-sync-{datetime.now():%Y-%m-%d}.log"
