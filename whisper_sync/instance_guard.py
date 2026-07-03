@@ -16,8 +16,9 @@ worker subprocess holding a CUDA context until the NEXT launcher run
   and not owned by the current process tree.
 
 Non-Windows platforms: the mutex degrades to always-acquired and
-reaping still works (pid registry is portable; termination uses
-os.kill). The app is Windows-first; this keeps imports safe elsewhere.
+orphan reaping no-ops (no safe positive PID-reuse check exists there,
+and the spawn-orphan problem is Windows-specific). The pid registry
+itself is portable. This keeps imports safe everywhere.
 """
 
 from __future__ import annotations
@@ -34,6 +35,40 @@ _mutex_handle = None  # held for process lifetime; never closed deliberately
 _registry_lock = threading.Lock()
 
 ERROR_ALREADY_EXISTS = 183
+_kernel32 = None
+
+
+def _win32():
+    """kernel32 with every prototype declared once.
+
+    Explicit argtypes/restype on all calls: without them, 64-bit HANDLEs
+    are truncated to 32-bit ints by ctypes' default int marshaling (the
+    exact bug class fixed for GetProcessMemoryInfo in PR #141).
+    """
+    global _kernel32
+    if _kernel32 is not None:
+        return _kernel32
+    import ctypes
+    from ctypes import wintypes
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateMutexW.restype = wintypes.HANDLE
+    k.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    k.CloseHandle.restype = wintypes.BOOL
+    k.CloseHandle.argtypes = (wintypes.HANDLE,)
+    k.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    k.QueryFullProcessImageNameW.argtypes = (
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    k.GetExitCodeProcess.restype = wintypes.BOOL
+    k.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    k.TerminateProcess.restype = wintypes.BOOL
+    k.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    _kernel32 = k
+    return k
 
 
 def acquire_single_instance(name: str = _MUTEX_NAME) -> bool:
@@ -46,12 +81,8 @@ def acquire_single_instance(name: str = _MUTEX_NAME) -> bool:
     if os.name != "nt":
         return True
     import ctypes
-    from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateMutexW.restype = wintypes.HANDLE
-    kernel32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
-
+    kernel32 = _win32()
     handle = kernel32.CreateMutexW(None, False, name)
     if not handle:
         # Could not even create the mutex (unexpected): fail open so a
@@ -110,15 +141,16 @@ def unregister_worker_pid(pid: int) -> None:
 
 
 def _is_python_process(pid: int) -> bool:
-    """PID-reuse guard: only ever terminate a process whose image is python."""
-    if os.name != "nt":
-        return True  # rely on the registry alone off-Windows
+    """PID-reuse guard: only ever terminate a process whose image is python.
+
+    Windows-only (reap_orphans no-ops elsewhere), so a positive image
+    check is always available; there is no trust-the-registry fallback.
+    """
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = _win32()
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-    kernel32.OpenProcess.restype = wintypes.HANDLE
     handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
         return False
@@ -135,18 +167,11 @@ def _is_python_process(pid: int) -> bool:
 
 
 def _pid_alive(pid: int) -> bool:
-    if os.name != "nt":
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = _win32()
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-    kernel32.OpenProcess.restype = wintypes.HANDLE
     handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
         return False
@@ -161,19 +186,10 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _terminate(pid: int) -> bool:
-    if os.name != "nt":
-        try:
-            import signal
-            os.kill(pid, signal.SIGKILL)
-            return True
-        except OSError:
-            return False
     import ctypes
-    from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = _win32()
     PROCESS_TERMINATE = 0x0001
-    kernel32.OpenProcess.restype = wintypes.HANDLE
     handle = kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
     if not handle:
         return False
@@ -193,6 +209,12 @@ def reap_orphans() -> list:
     python (PID reuse). Returns the list of pids terminated.
     """
     reaped = []
+    if os.name != "nt":
+        # Reaping is Windows-only: the spawn-orphan problem it solves is
+        # Windows-specific, and without QueryFullProcessImageName there
+        # is no safe positive PID-reuse check - never guess-kill.
+        logger.debug("instance guard: orphan reaping is Windows-only; skipping")
+        return reaped
     with _registry_lock:
         path = _registry_path()
         data = _load_registry(path)
