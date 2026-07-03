@@ -3876,7 +3876,10 @@ class WhisperSync:
                                "No audio is arriving from the mic. Check the device; "
                                "the recording is still open.")
                         self._gpu_guard.log_external_event("mic_stall", age_s=round(age, 1))
-                elif age is not None and age <= _MIC_STALL_S:
+                else:
+                    # Healthy delivery OR not recording (age None): both
+                    # re-arm the notification for the next stall (review:
+                    # a stall in one recording must not mute the next).
                     self._mic_stall_notified = False
             except Exception:
                 logger.debug("mic stall check failed", exc_info=True)

@@ -240,6 +240,7 @@ class TranscriptionWorker:
         caller's existing crash handling respawns it.
         """
         gen = self._gen
+        process = self._process  # bind: a restart mid-wait must not be targeted
         request_id = self._next_id()
         pending = _PendingRequest()
         with gen.pending_lock:
@@ -259,15 +260,18 @@ class TranscriptionWorker:
             while not pending.done.wait(_STALL_CHECK_S):
                 last = pending.last_ping
                 if last is not None and (time.monotonic() - last) > STALL_AFTER_S:
-                    with self._gen.pending_lock:
-                        self._gen.pending.pop(request_id, None)
+                    # Use the gen/process bound at registration: a worker
+                    # restarted mid-wait must never have its NEW healthy
+                    # process killed or its pending map touched (review).
+                    with gen.pending_lock:
+                        gen.pending.pop(request_id, None)
                     logger.error(
                         f"Worker wedged: no liveness ping for {STALL_AFTER_S:.0f}s "
                         f"(request {request_id}); killing worker"
                     )
-                    if self._process is not None and self._process.is_alive():
-                        self._process.kill()
-                        self._process.join(timeout=3)
+                    if process is not None and process.is_alive():
+                        process.kill()
+                        process.join(timeout=3)
                     raise WorkerCrashedError(
                         "Worker stopped responding during transcription and was "
                         "terminated (no liveness ping). Audio is preserved on disk."
