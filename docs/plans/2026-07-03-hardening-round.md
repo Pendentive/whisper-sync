@@ -20,7 +20,7 @@
 | 8 | Finish executor migration (remaining stray spawns) | architecture-validation A3 | MERGED (#161) |
 | 4 | Device-loss and wedged-worker stall detection | hardware-resilience H2+H4 | PENDING |
 | 5 | Overlay dictation disk-first | hardware-resilience H3 | MERGED (#162) |
-| 7 | State machine transition table | architecture-validation A1 | PENDING |
+| 7 | State machine transition table | architecture-validation A1 | IN PIPELINE |
 | 6 | __main__.py decomposition by workflow | architecture-validation A2 | PENDING |
 
 Execution order: 2, 9, 1, 3, 11+10, 8, 4, 5, 7, 6. Owner approved the
@@ -130,3 +130,15 @@ in one place, not a branching if/then system and not a framework.
   pipeline protocol is in CONTRIBUTING.md; production validation of the
   running app (docs/testing.md, five signals) still awaits the owner
   updating via tray > Settings > Update > Labs/dev.
+
+- **2026-07-03 (item 7)**: MODE_TRANSITIONS flat table in
+  state_manager.py, validated in exactly one place (_apply_locked),
+  warn-then-allow: an unexpected transition applies but logs loudly, so
+  flows the table missed surface during a soak period without breaking
+  production; tighten to reject after the log stays clean. Table derived
+  from the actual emit sites (all 7 modes). Self-transitions silent.
+  Folding the stray flags (_feature_suggest_active, _updating,
+  _flash_active) into AppState is DEFERRED to item 6: those flags are
+  toggled at 15+ sites inside the code the decomposition will move, so
+  folding them first would create double churn. 4 new tests including
+  the full legal-matrix sweep.
