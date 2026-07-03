@@ -414,7 +414,7 @@ class MeetingJob:
             suppress = self.app.cfg.get("suppress_llm_warning", False)
             if not suppress:
                 from . import config
-                dont_show = self.app._show_llm_unavailable()
+                dont_show = self.app.dialogs.show_llm_unavailable()
                 if dont_show:
                     self.app.cfg["suppress_llm_warning"] = True
                     config.save(self.app.cfg.snapshot())

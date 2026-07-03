@@ -302,7 +302,7 @@ class WhisperSync:
             secs = int(duration % 60)
             name = self.dialogs.ask_recovery_name(wav_path, f"{mins}m {secs}s")
             if name is ABORT:
-                logger.info(f"Recovery skipped for {wav_path} — file preserved")
+                logger.info(f"Recovery skipped for {wav_path} - file preserved")
                 continue
             # Move to local-transcriptions (month-based, MMDD_HHMM naming)
             from datetime import datetime as _dt, timedelta as _td

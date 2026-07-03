@@ -87,7 +87,7 @@ class MeetingDialogs:
         """Show a popup to name the meeting and select diarization method.
 
         Returns:
-            _ABORT: user clicked Discard
+            ABORT: user clicked Discard
             (str, True, str|None): user clicked Save & Summarize (name, summarize, diarize_method)
             (str, False, str|None): user clicked Save (name, summarize, diarize_method)
         """
@@ -278,7 +278,7 @@ class MeetingDialogs:
 
         return result[0]
 
-    def ask_speaker_confirmation(self, identification_result: dict) -> dict | None:
+    def ask_speaker_confirmation(self, identification_result: dict) -> dict | tuple | None:
         """Show speaker confirmation dialog.
 
         Returns:
@@ -315,7 +315,7 @@ class MeetingDialogs:
                     in_speakers_table = True
                     continue
                 if in_speakers_table and line.startswith("##"):
-                    break  # Hit next section — stop parsing
+                    break  # Hit next section - stop parsing
                 if in_speakers_table and line.startswith("| ") and "ID" not in line and "---" not in line:
                     parts = [p.strip() for p in line.split("|") if p.strip()]
                     if len(parts) >= 2:
@@ -699,7 +699,7 @@ class MeetingDialogs:
         return result[0]
 
     def ask_recovery_name(self, wav_path: str, duration_str: str):
-        """Show a dialog to name a recovered meeting. Returns name string or _ABORT."""
+        """Show a dialog to name a recovered meeting. Returns name string or ABORT."""
         result = [ABORT]
 
         def _show(_proot):
@@ -755,5 +755,4 @@ class MeetingDialogs:
         if result[0] is ABORT:
             return ABORT
 
-        name = result[0] or ""
-        return "".join(c if c.isalnum() or c in " -_" else "" for c in name).strip().replace(" ", "-")
+        return sanitize_name(result[0] or "")

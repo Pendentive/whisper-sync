@@ -8,7 +8,6 @@ in-class methods returned ABORT/None).
 """
 
 import unittest
-from unittest import mock
 
 from whisper_sync.meeting_dialogs import (
     ABORT, MeetingDialogs, sanitize_name,
