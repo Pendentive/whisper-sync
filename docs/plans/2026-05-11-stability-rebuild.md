@@ -394,3 +394,21 @@ Repo convention: unittest + fake modules in `sys.modules` (see
   should start from production evidence: the heartbeat `rss=NMB`
   time series and
   crash-free run duration on the updated build.
+
+- **2026-06-11 (production validation checklist)**: the rebuild is
+  code-complete; what remains is evidence from the updated running app
+  (tray > Settings > Update > Labs/dev > restart; the long-running
+  instance was on stale build e1982a7 throughout the rebuild). Signals
+  to check after real use:
+  1. Clean exits: no tkinter `__del__` access violations or 0x80000003
+     fatals in the logs (the dominant pre-rebuild crash family).
+  2. Real word counts and speaker counts in meeting completion toasts
+     (the stage_finalize stats bug fixed in #141).
+  3. Flat `rss=NMB` heartbeat series across a 1h+ meeting (speaker disk
+     streaming, #139) and across many dictations (idle GC, #137).
+  4. Laptop 4-mic array dictation works (channel ladder + downmix,
+     #143); dictation auto-stops with a toast at dictation_max_minutes.
+  5. Worker kill/respawn recovery still works (kill the worker process;
+     the app should detect and respawn per the Phase 6 protocol).
+  Report findings here in the progress log; future stability work
+  starts from this evidence, not from new refactors.
