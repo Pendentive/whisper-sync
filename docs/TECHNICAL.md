@@ -10,7 +10,8 @@ Everything below is for developers modifying this app or for an AI assistant (li
 
 | File | Purpose | Key Classes/Functions |
 |------|---------|----------------------|
-| `__main__.py` | **App entry point.** Tray icon, hotkey listener, recording lifecycle, crash recovery. | `WhisperSync` class --`run()`, `_on_hotkey()`, `_start_dictation()`, `_start_meeting()`, `_do_transcribe()`, `_paste_result()`, `_recover_from_crash()` |
+| `__main__.py` | **App entry point.** Tray icon, hotkey wiring, meeting lifecycle, menu, settings, updates. Workflows are being extracted into flow modules (hardening item 6). | `WhisperSync` class --`run()`, `toggle_meeting()`, `_start_meeting()`, `_stop_meeting()`, `_build_menu()`, `main()` |
+| `dictation_flow.py` | **Dictation workflow.** Normal, feature-suggest, and overlay dictation; auto-stop cap, discard, crash recovery, recent history. Feature routing lives in `AppState.feature_suggest`. | `DictationFlow` class --`toggle()`, `toggle_feature_suggest()`, `discard()`, `recover_dictation()`, `recover_feature()`, `recent_history()` |
 | `capture.py` | **Audio recording.** Multi-stream mic + speaker loopback via WASAPI. | `AudioRecorder` class --`start()`, `stop()`, `_mic_callback()`, `_speaker_callback()`, `start_streaming()`, `stop_streaming()` |
 | `transcribe.py` | **WhisperX engine.** Model loading, transcription, alignment, diarization. Two paths: fast (dictation) and full (meeting). | `transcribe_fast(audio_np, model)` -- in-memory numpy to text; `transcribe(audio_path, diarize, model)` -- file-based full pipeline; `_load_model()`, `_load_align_model()` |
 | `worker.py` | **Subprocess entry point.** Runs transcription in isolated process (crash safety). Receives requests via Queue, returns results. | `worker_main()` -- event loop handling `transcribe_fast`, `transcribe`, `reload_model`, `shutdown` requests |
@@ -50,6 +51,7 @@ Everything below is for developers modifying this app or for an AI assistant (li
 
 ```
 __main__.py (entry point, UI, hotkeys)
+├── dictation_flow.py (dictation workflow component)
 ├── config.py (settings)
 ├── paths.py (directories)
 ├── logger.py (logging)
@@ -77,8 +79,8 @@ benchmark.py (standalone utility)
 
 ```
 User presses Ctrl+Shift+Space
-  -> __main__._on_hotkey("dictation")
-  -> __main__._start_dictation()
+  -> dictation_flow.DictationFlow.toggle()
+  -> dictation_flow.DictationFlow._start()
     -> capture.AudioRecorder.start() [mic only, records to numpy array]
     -> User presses hotkey again
     -> capture.AudioRecorder.stop() -> numpy audio data
@@ -97,7 +99,7 @@ User presses Ctrl+Shift+Space
 
 ```
 User presses Ctrl+Shift+M
-  -> __main__._on_hotkey("meeting")
+  -> __main__.toggle_meeting()
   -> __main__._start_meeting()
     -> Prompts for meeting name (popup dialog)
     -> capture.AudioRecorder.start() [mic + speaker loopback]

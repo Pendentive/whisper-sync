@@ -62,6 +62,15 @@ class AppState:
     dictation_overlay: bool = False
     """True while dictation is active during a meeting."""
 
+    feature_suggest: bool = False
+    """True while the active dictation records a feature suggestion.
+
+    Folded in from __main__'s old _feature_suggest_active flag (hardening
+    item 6): set atomically with DICTATION_STARTED, cleared by the
+    completion/discard/idle emit, so routing intent is inspectable in the
+    same snapshot as the mode.
+    """
+
     speaker_ok: bool = True
     """Speaker loopback health (outer ring indicator)."""
 

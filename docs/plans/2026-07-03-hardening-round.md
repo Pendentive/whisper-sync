@@ -179,6 +179,35 @@ in one place, not a branching if/then system and not a framework.
   Production validation (docs/testing.md five signals + gpu-guard.jsonl
   correlation) still awaits the owner updating the running app.
 
+- **2026-07-03 (item 6 opened, fresh session)**: hygiene sub-task first
+  (#168): tests/__init__.py points WS_LOG_DIR + WS_DATA_DIR at a temp
+  dir before any whisper_sync import, so test runs no longer pollute
+  the live app log / worker-pids.json / gpu-guard.jsonl (the tray app
+  runs FROM this checkout). Seam lives in the package init, not
+  conftest, because the venv suite runs under unittest. Soak check on
+  MODE_TRANSITIONS: zero "Unexpected mode transition" warnings in all
+  app logs, BUT the running app predates #164, so the soak clock only
+  starts once the owner restarts onto current dev - warn-to-reject
+  stays deferred past this round.
+
+- **2026-07-03 (item 6, extraction 1)**: dictation flow extracted to
+  dictation_flow.py (~700 lines out of __main__.py: toggles, start/
+  stop, auto-stop cap, overlay dictation, discard, crash recovery,
+  feature formatting, recent history). _feature_suggest_active FOLDED
+  into AppState.feature_suggest: intent passes down as a parameter and
+  enters state atomically with DICTATION_STARTED, clearing on the
+  completion/discard/idle emit - the old set-then-unwind pattern (15+
+  sites) is gone. Duplicated overlay bookkeeping (backup path vs
+  fallback path) collapsed into _deliver_overlay. Heavy deps (capture,
+  backup_worker, paste) import lazily so the flow is testable on the
+  dependency-light system python - 20 unit tests the god-class made
+  impossible, incl. the feature-flag lifecycle and the overlay
+  fallback. DEVIATION from the closing-entry list: _flash_active stays
+  a UI-owned animation gate (moves out with the menu extraction, not
+  into AppState - a cosmetic flash gate in the event log would push
+  out useful history); _updating folds during the lifecycle
+  extraction as planned.
+
 - **2026-07-03 (production bugs, owner-reported)**: two real bugs from
   field use, both fixed. (1) PIPELINE ABORT AFTER TRANSCRIPTION: every
   past-week meeting had transcript.json but no flatten/speakers/minutes.
