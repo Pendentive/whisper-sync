@@ -22,10 +22,7 @@ from .executors import DICTATION, submit_or_spawn
 from .logger import logger, set_console_level
 from .meeting_dialogs import (style_window, flat_button, center_window,
                               run_modal)
-from .model_status import get_model_status, download_model
 from .notifications import notify
-from .state_manager import ERROR, MODEL_READY, MODEL_DOWNLOADING
-
 HOTKEY_OPTIONS = [
     "ctrl+shift+space",
     "ctrl+alt+space",
@@ -316,7 +313,6 @@ class TrayMenu:
         ]
 
         # Device (compute) selection
-        current_device = self.app.cfg.get("device", "auto")
         # Build per-option labels with GPU name from worker (avoids torch import in main process)
         device_options = []
         gpu_name = self.app.worker.gpu_name if self.app.worker else None
@@ -365,7 +361,6 @@ class TrayMenu:
 
         # --- Notifications submenu ---
         from .notifications import DEFAULT_TOAST_EVENTS
-        _toast_events = self.app.cfg.get("toast_events", list(DEFAULT_TOAST_EVENTS))
         _notification_options = [
             ("meeting_completed", "Meeting Complete"),
             ("error", "Errors"),
@@ -410,7 +405,6 @@ class TrayMenu:
         primary_label = DIARIZE_METHODS.get(primary_method, primary_method)
 
         # --- Whisper mode ---
-        incognito_on = self.app.cfg.get("incognito", False)
         incognito_items = [
             pystray.MenuItem(
                 "Whisper Mode",
@@ -892,81 +886,3 @@ class TrayMenu:
                 lambda m=model_name: self.app.worker.reload_model(m),
                 native=True,
             )
-
-    def _model_menu_items(self) -> list:
-        import pystray  # lazy: not installed on the CI system python
-        """Build model status menu items."""
-        meeting_status = get_model_status(self.app.cfg["model"])
-        dict_model = self.app.cfg.get("dictation_model", self.app.cfg["model"])
-        dict_status = get_model_status(dict_model)
-        items = []
-
-        # Meeting model
-        m_label = f"Meeting Model: {self.app.cfg['model']}"
-        if meeting_status["model_downloaded"]:
-            m_label += f" ({meeting_status['model_size']})"
-        else:
-            m_label += " (not downloaded)"
-        items.append(pystray.MenuItem(m_label, None, enabled=False))
-
-        # Dictation model
-        d_label = f"Dictation Model: {dict_model}"
-        if dict_status["model_downloaded"]:
-            d_label += f" ({dict_status['model_size']})"
-        else:
-            d_label += " (not downloaded)"
-        items.append(pystray.MenuItem(d_label, None, enabled=False))
-
-        # Word timing model (used to sync words to exact timestamps)
-        align_label = "Word Timing: " + ("ready" if meeting_status["alignment_downloaded"] else "not downloaded")
-        items.append(pystray.MenuItem(align_label, None, enabled=False))
-
-        # GPU / Device
-        device_pref = self.app.cfg.get("device", "auto")
-        if device_pref == "cpu":
-            gpu_label = "Device: CPU (forced)"
-        elif meeting_status["cuda_available"]:
-            gpu_label = f"GPU: {meeting_status['cuda_device']}"
-        else:
-            gpu_label = "GPU: None (CPU mode)"
-        items.append(pystray.MenuItem(gpu_label, None, enabled=False))
-        items.append(pystray.MenuItem(f"CPU: {self._cpu_name}", None, enabled=False))
-
-        # Download if missing
-        needs_download = (
-            not meeting_status["model_downloaded"]
-            or not dict_status["model_downloaded"]
-            or not meeting_status["alignment_downloaded"]
-        )
-        if needs_download:
-            items.append(pystray.MenuItem(
-                "Download Models Now",
-                menu_callback(self._download_model),
-            ))
-
-        return items
-
-    def _download_model(self):
-        """Download model in background thread with icon feedback."""
-        if self.app.state.current.mode is not None:
-            return
-
-        self.app.state.emit(MODEL_DOWNLOADING, mode="transcribing", data={"model_name": self.app.cfg["model"]})
-
-        def _do_download():
-            try:
-                ok = download_model(self.app.cfg["model"])
-                if ok:
-                    logger.info("Model download complete")
-                    self.app.state.emit(MODEL_READY, mode="done", data={"model_name": self.app.cfg["model"]})
-                else:
-                    logger.error("Model download failed")
-                    self.app.state.emit(ERROR, mode="error", data={"message": "Model download failed"})
-            except Exception as e:
-                logger.error(f"Model download error: {e}")
-                self.app.state.emit(ERROR, mode="error", data={"message": "Model download failed"})
-            self._schedule_idle(3)
-            self.app._refresh_menu()
-
-        threading.Thread(target=_do_download, daemon=True).start()
-
