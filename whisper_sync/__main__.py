@@ -1,9 +1,7 @@
 """WhisperSync entry point — tray icon + hotkey listener."""
 
-import faulthandler
 import logging
 import os
-import queue
 import sys
 import threading
 import warnings
@@ -26,7 +24,6 @@ warnings.filterwarnings("ignore", message="std\\(\\): degrees of freedom is <= 0
 logging.getLogger("lightning.pytorch.utilities.migration.utils").setLevel(logging.ERROR)
 logging.getLogger("whisperx.vads.pyannote").setLevel(logging.WARNING)
 logging.getLogger("whisperx.diarize").setLevel(logging.WARNING)
-from datetime import datetime
 from pathlib import Path
 
 import keyboard
@@ -34,13 +31,13 @@ import pystray
 
 from . import config
 from .config_store import ConfigStore
-from .executors import DICTATION, IO, submit_or_spawn
+from .executors import IO, submit_or_spawn
 from .idle_reset import schedule_idle_reset
-from .capture import AudioRecorder, get_default_devices, get_host_apis, list_devices
+from .capture import AudioRecorder
 from .icons import (idle_icon, build_icon, resolve_icon_key, ICON_REGISTRY,
-                     IconAnimator)
+                     FlashController)
 from .logger import logger, get_log_path, set_console_level
-from .model_status import get_model_status, download_model, bootstrap_models
+from .model_status import bootstrap_models
 from .paths import (get_install_root,
                      get_data_dir, get_dictation_log_dir,
                      get_legacy_config_path, get_legacy_speaker_config_path,
@@ -55,52 +52,13 @@ from .crash_diagnostics import install_excepthook, check_previous_crash, install
 from . import lifecycle
 from .heartbeat import Heartbeat
 from .notifications import notify, ToastListener
-from .state_manager import (
-    StateManager, ERROR, MODEL_READY, MODEL_DOWNLOADING,
-)
+from .state_manager import StateManager
 from .dictation_flow import DictationFlow
 from .meeting_flow import MeetingFlow
-from .meeting_dialogs import (MeetingDialogs, style_window, flat_button,
-                              center_window, run_modal)
+from .tray_menu import TrayMenu
+from .github_tray import GitHubTray
+from .meeting_dialogs import MeetingDialogs
 from .dialog_dispatcher import DialogDispatcher
-
-HOTKEY_OPTIONS = [
-    "ctrl+shift+space",
-    "ctrl+alt+space",
-    "ctrl+shift+d",
-    "ctrl+alt+d",
-    "ctrl+shift+r",
-    "ctrl+alt+r",
-    "ctrl+shift+m",
-    "ctrl+alt+m",
-    "ctrl+shift+t",
-    "ctrl+alt+t",
-]
-
-FEATURE_HOTKEY_OPTIONS = [
-    "ctrl+shift+alt+f",
-    "ctrl+shift+alt+s",
-    "ctrl+shift+alt+r",
-    "ctrl+alt+f",
-]
-
-PASTE_OPTIONS = ["clipboard", "keystrokes"]
-
-MODEL_OPTIONS = {
-    "tiny": "~75 MB",
-    "base": "~150 MB",
-    "small": "~500 MB",
-    "medium": "~1.5 GB",
-    "large-v2": "~3 GB",
-    "large-v3": "~3 GB",
-}
-
-CLICK_ACTIONS = {
-    "meeting": "Toggle Meeting",
-    "dictation": "Toggle Dictation",
-    "none": "None",
-}
-
 
 def _get_cpu_name() -> str:
     """Get CPU model name via PowerShell CIM on Windows, platform.processor() fallback."""
@@ -136,14 +94,11 @@ class WhisperSync:
         self._menu_refresher = None  # MenuRefresher, created in run()
         self._lock = threading.RLock()
         self._tray_lock = threading.Lock()  # Serialize all tray icon/title updates (pystray not thread-safe)
-        self._api_filter = "Windows WASAPI"  # None = show all
         self._gpu_guard = GpuGuard(self.cfg, notify=notify)
         dictation_model = self._gpu_guard.effective_model(
             self.cfg.get("dictation_model", self.cfg["model"]))
         self.worker = TranscriptionWorker(self.cfg, preload_model=dictation_model)
         self._backup = BackupTranscriber(self.cfg)
-        self._github_poller = None
-        self._github_prs = []
         # Single long-lived thread for ALL tkinter dialogs. tk.Tk() must not
         # be created on rotating worker threads; doing so corrupts Win32 heap
         # state and crashes the next GC cycle (fatal exception 0x80000003).
@@ -155,10 +110,9 @@ class WhisperSync:
         # worker threads concurrently (see session_stats.py).
         from .session_stats import SessionStats
         self._stats = SessionStats()
-        # Flash gate: lock-guarded check-and-set (Event.is_set()+set() alone
-        # is not atomic; two hotkey threads could both observe False).
-        self._flash_lock = threading.Lock()
-        self._flash_active = threading.Event()
+        # Re-entry-gated icon flashes (icons.FlashController); flows call
+        # the _yellow_flash/_flash_queued delegates below.
+        self._flash = FlashController(lambda: self.tray, self._tray_lock)
         # Dictation workflow component (dictation_flow.py): dictation,
         # overlay, feature-suggest, discard, recovery, history. The app
         # remains the wiring surface (hardening item 6).
@@ -169,6 +123,9 @@ class WhisperSync:
         # Meeting workflow component (meeting_flow.py): record/save/
         # post-process pipeline, recovery, rename and minutes helpers.
         self.meetings = MeetingFlow(self)
+        # Tray menu + settings component and GitHub PR status glue.
+        self.menu = TrayMenu(self)
+        self.github = GitHubTray(self)
 
     @staticmethod
     def _migrate_data():
@@ -231,20 +188,10 @@ class WhisperSync:
                 self.tray.update_menu()
 
     def _yellow_flash(self):
-        """Universal loading/queuing signal: two quick yellow flashes (150ms on/off/on)."""
-        # Lock-guarded check-and-set: the old getattr-default pattern (and
-        # a bare Event is_set/set pair) raced concurrent hotkey threads -
-        # both could observe "not flashing" and both start animations.
-        with self._flash_lock:
-            if self._flash_active.is_set():
-                return
-            self._flash_active.set()
-        animator = IconAnimator(self.tray, lock=self._tray_lock)
-        animator.flash(count=2, interval_ms=150)
-        # Reset after the animation completes (~600ms) on the shared
-        # scheduler instead of spawning a sleep thread per flash.
-        from .scheduler import scheduler
-        scheduler.call_later(0.7, self._flash_active.clear, label="flash-reset")
+        self._flash.yellow()
+
+    def _flash_queued(self):
+        self._flash.queued()
 
     # --- Click dispatch ---
 
@@ -277,26 +224,10 @@ class WhisperSync:
         """
         schedule_idle_reset(self.state, seconds, blink)
 
-    def _flash_queued(self):
-        """Rapid amber flash to indicate dictation is queued behind a meeting stage."""
-        animator = IconAnimator(self.tray, lock=self._tray_lock)
-        animator.flash_between("queued", "transcribing", count=2, interval_ms=150)
-
     def _can_record(self) -> bool:
         """Can we start a new recording? Allowed if idle or just transcribing in background."""
         mode = self.state.current.mode if self.state else None
         return mode is None or mode in ("transcribing", "done", "error")
-
-    @staticmethod
-    def _truncate_path(p: Path, max_len: int = 40) -> str:
-        """Truncate a path for display in menus."""
-        s = str(p)
-        if len(s) <= max_len:
-            return s
-        parts = p.parts
-        if len(parts) <= 2:
-            return s
-        return f".../{'/'.join(parts[-2:])}"
 
     def _output_dir(self) -> Path:
         p = Path(self.cfg["output_dir"])
@@ -304,475 +235,6 @@ class WhisperSync:
             # Relative paths resolve from repo root
             p = get_install_root() / p
         return p
-
-    # --- Menu ---
-
-    def _fmt_hotkey(self, key: str) -> str:
-        return key.replace("+", " + ").title()
-
-    @staticmethod
-    def _cb(fn, *bound_args):
-        """Create a pystray-compatible callback (icon, item) that calls fn(*bound_args).
-
-        pystray passes (icon, item) as 2 positional args which would override
-        lambda default keyword args. This closure avoids that problem.
-        """
-        def _handler(_icon, _item):
-            fn(*bound_args)
-        return _handler
-
-    def _copy_dictation(self, text: str):
-        """Copy a dictation's full text to clipboard."""
-        import pyperclip
-        pyperclip.copy(text)
-
-    def _open_dictation_logs(self):
-        """Open the dictation logs folder in Explorer."""
-        from .paths import get_dictation_log_dir
-        log_dir = get_dictation_log_dir()
-        if log_dir.exists():
-            import subprocess
-            subprocess.Popen(["explorer", str(log_dir)])
-        else:
-            logger.info("No dictation logs folder found")
-
-    def _build_recent_dictations_menu(self):
-        """Build the Recent Dictations submenu items."""
-        history = self.dictation.recent_history()
-        if not history:
-            return pystray.Menu(
-                pystray.MenuItem("No dictations yet", None, enabled=False),
-            )
-        items = []
-        for entry in reversed(history):
-            full_text = entry["text"]
-            preview = full_text[:40]
-            if len(full_text) > 40:
-                preview += "..."
-            label = f"[{entry['timestamp']}] {preview}\t{entry['chars']} chars"
-            items.append(
-                pystray.MenuItem(label, self._cb(self._copy_dictation, full_text))
-            )
-        items.append(pystray.Menu.SEPARATOR)
-        items.append(
-            pystray.MenuItem("Open Logs", self._cb(self._open_dictation_logs))
-        )
-        items.append(
-            pystray.MenuItem("Clear History", self._cb(self.dictation.clear_history))
-        )
-        return pystray.Menu(*items)
-
-    def _build_meetings_menu(self):
-        """Build the Meetings submenu showing recent meetings with speaker status."""
-        import json as _json
-
-        output_dir = self._output_dir()
-        meeting_folders = []
-
-        # Scan all week folders for meeting directories with transcript.json
-        # NOTE: Do NOT parse transcript.json here. Reading JSON files during
-        # menu builds (which run on background threads) triggers fatal access
-        # violations when Python's garbage collector runs concurrently.
-        # Instead, check for transcript-readable.txt as a lightweight indicator.
-        for week_dir in sorted(output_dir.iterdir(), reverse=True):
-            if not week_dir.is_dir() or week_dir.name.startswith("."):
-                continue
-            for meeting_dir in sorted(week_dir.iterdir(), reverse=True):
-                if not meeting_dir.is_dir():
-                    continue
-                json_path = meeting_dir / "transcript.json"
-                if json_path.exists():
-                    readable = meeting_dir / "transcript-readable.txt"
-                    minutes = meeting_dir / "minutes.md"
-                    if minutes.exists():
-                        status = "Complete"
-                    elif readable.exists():
-                        status = "Transcribed"
-                    else:
-                        status = "Processing"
-                    meeting_folders.append((meeting_dir, status))
-                    if len(meeting_folders) >= 10:
-                        break
-            if len(meeting_folders) >= 10:
-                break
-
-        if not meeting_folders:
-            return pystray.Menu(
-                pystray.MenuItem("No meetings found", None, enabled=False),
-            )
-
-        items = []
-        for meeting_dir, status in meeting_folders:
-            label = f"{meeting_dir.name}\t{status}"
-            items.append(
-                pystray.MenuItem(
-                    label,
-                    self._cb(self.meetings.recover_meeting_speakers, meeting_dir),
-                )
-            )
-        return pystray.Menu(*items)
-
-    def _build_menu(self):
-        devices = list_devices(api_filter=self._api_filter)
-        dict_hk = self._fmt_hotkey(self.cfg["hotkeys"]["dictation_toggle"])
-        meet_hk = self._fmt_hotkey(self.cfg["hotkeys"]["meeting_toggle"])
-        use_sys = self.cfg.get("use_system_devices", True)
-
-        # --- Resolve effective devices (config or system default) ---
-        defaults = get_default_devices(api_filter=self._api_filter)
-        eff_mic = defaults["input"] if use_sys else (self.cfg.get("mic_device") or defaults["input"])
-        eff_spk = defaults["output"] if use_sys else (self.cfg.get("speaker_device") or defaults["output"])
-
-        # --- Device submenus ---
-        mic_items = [
-            pystray.MenuItem(
-                f"{d['name']} (system)" if d["id"] == defaults["input"] else d["name"],
-                self._cb(self._set_device, "mic_device", d["id"]),
-                checked=lambda item, d=d, em=eff_mic: d["id"] == em,
-                radio=True,
-                enabled=not use_sys,
-            )
-            for d in devices["inputs"]
-        ]
-        speaker_items = [
-            pystray.MenuItem(
-                f"{d['name']} (system)" if d["id"] == defaults["output"] else d["name"],
-                self._cb(self._set_device, "speaker_device", d["id"]),
-                checked=lambda item, d=d, es=eff_spk: d["id"] == es,
-                radio=True,
-                enabled=not use_sys,
-            )
-            for d in devices["outputs"]
-        ]
-
-        # --- Device filter submenu ---
-        apis = get_host_apis()
-        filter_label = f"Device Filter\t{self._api_filter or 'All'}"
-        filter_items = [
-            pystray.MenuItem(
-                "All",
-                self._cb(self._set_api_filter, None),
-                checked=lambda item: self._api_filter is None,
-                radio=True,
-            )
-        ] + [
-            pystray.MenuItem(
-                a["name"],
-                self._cb(self._set_api_filter, a["name"]),
-                checked=lambda item, a=a: self._api_filter == a["name"],
-                radio=True,
-            )
-            for a in apis
-        ]
-
-        # --- Settings submenus ---
-        dictation_hk_items = [
-            pystray.MenuItem(
-                hk,
-                self._cb(self._set_hotkey, "dictation_toggle", hk),
-                checked=lambda item, hk=hk: self.cfg["hotkeys"]["dictation_toggle"] == hk,
-                radio=True,
-            )
-            for hk in HOTKEY_OPTIONS
-        ]
-        meeting_hk_items = [
-            pystray.MenuItem(
-                hk,
-                self._cb(self._set_hotkey, "meeting_toggle", hk),
-                checked=lambda item, hk=hk: self.cfg["hotkeys"]["meeting_toggle"] == hk,
-                radio=True,
-            )
-            for hk in HOTKEY_OPTIONS
-        ]
-        feature_hk_items = [
-            pystray.MenuItem(
-                hk,
-                self._cb(self._set_hotkey, "feature_suggest", hk),
-                checked=lambda item, hk=hk: self.cfg["hotkeys"].get("feature_suggest", "ctrl+shift+alt+f") == hk,
-                radio=True,
-            )
-            for hk in FEATURE_HOTKEY_OPTIONS
-        ]
-        paste_items = [
-            pystray.MenuItem(
-                method,
-                self._cb(self._set_paste_method, method),
-                checked=lambda item, m=method: self.cfg["paste_method"] == m,
-                radio=True,
-            )
-            for method in PASTE_OPTIONS
-        ]
-        dictation_model_items = [
-            pystray.MenuItem(
-                f"{name} ({size})",
-                self._cb(self._set_model, "dictation_model", name),
-                checked=lambda item, n=name: self.cfg.get("dictation_model", self.cfg["model"]) == n,
-                radio=True,
-            )
-            for name, size in MODEL_OPTIONS.items()
-        ]
-        meeting_model_items = [
-            pystray.MenuItem(
-                f"{name} ({size})",
-                self._cb(self._set_model, "model", name),
-                checked=lambda item, n=name: self.cfg["model"] == n,
-                radio=True,
-            )
-            for name, size in MODEL_OPTIONS.items()
-        ]
-        left_click_items = [
-            pystray.MenuItem(
-                label,
-                self._cb(self._set_click, "left_click", action),
-                checked=lambda item, a=action: self.cfg.get("left_click", "meeting") == a,
-                radio=True,
-            )
-            for action, label in CLICK_ACTIONS.items()
-        ]
-        middle_click_items = [
-            pystray.MenuItem(
-                label,
-                self._cb(self._set_click, "middle_click", action),
-                checked=lambda item, a=action: self.cfg.get("middle_click", "dictation") == a,
-                radio=True,
-            )
-            for action, label in CLICK_ACTIONS.items()
-        ]
-
-        # Device (compute) selection
-        current_device = self.cfg.get("device", "auto")
-        # Build per-option labels with GPU name from worker (avoids torch import in main process)
-        device_options = []
-        gpu_name = self.worker.gpu_name if self.worker else None
-        auto_suffix = f"\t{gpu_name}" if gpu_name else "\tCPU -- no GPU detected"
-        device_options.append(("auto", f"Auto{auto_suffix}"))
-        gpu_suffix = f"\t{gpu_name}" if gpu_name else "\tnot available"
-        device_options.append(("gpu", f"GPU{gpu_suffix}"))
-        device_options.append(("cpu", "CPU"))
-        device_items = [
-            pystray.MenuItem(
-                label,
-                self._cb(self._set_compute_device, dev),
-                checked=lambda item, d=dev: self.cfg.get("device", "auto") == d,
-                radio=True,
-            )
-            for dev, label in device_options
-        ]
-
-        # --- Always Available Dictation ---
-        backup_device_cfg = self.cfg.get("backup_device", "auto")
-        backup_model_cfg = self.cfg.get("backup_model", "base")
-        backup_model_options = ["tiny", "base", "small"]
-        backup_device_options = [
-            ("auto", "Auto"),
-            ("gpu", "GPU"),
-            ("cpu", "CPU"),
-        ]
-        backup_device_items = [
-            pystray.MenuItem(
-                label,
-                self._cb(self._set_backup_device, dev),
-                checked=lambda item, d=dev: self.cfg.get("backup_device", "auto") == d,
-                radio=True,
-            )
-            for dev, label in backup_device_options
-        ]
-        backup_model_items = [
-            pystray.MenuItem(
-                f"{name} ({MODEL_OPTIONS.get(name, '')})",
-                self._cb(self._set_backup_model, name),
-                checked=lambda item, n=name: self.cfg.get("backup_model", "base") == n,
-                radio=True,
-            )
-            for name in backup_model_options
-        ]
-
-        # --- Notifications submenu ---
-        from .notifications import DEFAULT_TOAST_EVENTS
-        _toast_events = self.cfg.get("toast_events", list(DEFAULT_TOAST_EVENTS))
-        _notification_options = [
-            ("meeting_completed", "Meeting Complete"),
-            ("error", "Errors"),
-            ("pr_status_changed", "PR Status"),
-            ("dictation_completed", "Dictation Complete"),
-        ]
-        notification_items = [
-            pystray.MenuItem(
-                label,
-                self._cb(self._toggle_toast_event, evt),
-                checked=lambda item, e=evt: e in self.cfg.get("toast_events", list(DEFAULT_TOAST_EVENTS)),
-            )
-            for evt, label in _notification_options
-        ]
-
-        # --- Diarization (Speaker Detection) submenu ---
-        from .transcribe import DIARIZE_METHODS
-        _diarize_slots = [
-            ("diarize_primary", "Primary"),
-            ("diarize_fallback", "Fallback"),
-            ("diarize_last_resort", "Last Resort"),
-        ]
-        diarize_sub_items = []
-        for slot_key, slot_label in _diarize_slots:
-            current_method = self.cfg.get(slot_key, "balanced_mix")
-            slot_items = [
-                pystray.MenuItem(
-                    DIARIZE_METHODS.get(method_id, method_id),
-                    self._cb(self._set_diarize_method, slot_key, method_id),
-                    checked=lambda item, m=method_id, sk=slot_key: self.cfg.get(sk, "balanced_mix") == m,
-                    radio=True,
-                )
-                for method_id in DIARIZE_METHODS
-            ]
-            diarize_sub_items.append(
-                pystray.MenuItem(
-                    f"{slot_label}\t{DIARIZE_METHODS.get(current_method, current_method)}",
-                    pystray.Menu(*slot_items),
-                )
-            )
-        primary_method = self.cfg.get("diarize_primary", "balanced_mix")
-        primary_label = DIARIZE_METHODS.get(primary_method, primary_method)
-
-        # --- Whisper mode ---
-        incognito_on = self.cfg.get("incognito", False)
-        incognito_items = [
-            pystray.MenuItem(
-                "Whisper Mode",
-                lambda: self._toggle_incognito(),
-                checked=lambda item: self.cfg.get("incognito", False),
-            ),
-            pystray.MenuItem("  RAM only dictation, no disk, no logs", None, enabled=False),
-        ]
-
-        # Left-click fires the default menu item
-        left_action = self.cfg.get("left_click", "meeting")
-        return pystray.Menu(
-            pystray.MenuItem("Meetings", self._build_meetings_menu()),
-            pystray.MenuItem("Recent Dictations", self._build_recent_dictations_menu()),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem(f"Dictation\t{dict_hk}", lambda: self._on_left_click() if left_action == "dictation" else self.dictation.toggle(),
-                             default=left_action == "dictation"),
-            pystray.MenuItem(f"Meeting\t{meet_hk}", lambda: self._on_left_click() if left_action == "meeting" else self.meetings.toggle(),
-                             default=left_action == "meeting"),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Mic Input\tsystem", None, enabled=False)
-            if use_sys else
-            pystray.MenuItem("Mic Input", pystray.Menu(*mic_items)),
-            pystray.MenuItem("Speaker Output\tsystem", None, enabled=False)
-            if use_sys else
-            pystray.MenuItem("Speaker Output", pystray.Menu(*speaker_items)),
-            pystray.MenuItem(
-                "Always Use System Devices",
-                self._cb(self._toggle_system_devices),
-                checked=lambda item: self.cfg.get("use_system_devices", True),
-            ),
-            pystray.MenuItem(filter_label, pystray.Menu(*filter_items)),
-            pystray.Menu.SEPARATOR,
-            *self._github_menu_items(),
-            pystray.MenuItem("Open Output Folder", lambda: self._open_output_folder()),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Settings", pystray.Menu(
-                pystray.MenuItem(f"Dictation Hotkey\t{self.cfg['hotkeys']['dictation_toggle']}",
-                                 pystray.Menu(*dictation_hk_items)),
-                pystray.MenuItem(f"Meeting Hotkey\t{self.cfg['hotkeys']['meeting_toggle']}",
-                                 pystray.Menu(*meeting_hk_items)),
-                pystray.MenuItem(f"Feature Suggest Hotkey\t{self.cfg['hotkeys'].get('feature_suggest', 'ctrl+shift+alt+f')}",
-                                 pystray.Menu(*feature_hk_items)),
-                pystray.MenuItem(f"Paste Method\t{self.cfg['paste_method']}",
-                                 pystray.Menu(*paste_items)),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem(f"Left Click\t{CLICK_ACTIONS.get(self.cfg.get('left_click', 'meeting'), 'meeting')}",
-                                 pystray.Menu(*left_click_items)),
-                pystray.MenuItem(f"Middle Click\t{CLICK_ACTIONS.get(self.cfg.get('middle_click', 'dictation'), 'dictation')}",
-                                 pystray.Menu(*middle_click_items)),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem(f"Dictation Model\t{self.cfg.get('dictation_model', self.cfg['model'])}",
-                                 pystray.Menu(*dictation_model_items)),
-                pystray.MenuItem(f"Meeting Model\t{self.cfg['model']}",
-                                 pystray.Menu(*meeting_model_items)),
-                pystray.MenuItem(f"Device\t{self._get_device_label()}",
-                                 pystray.Menu(*device_items)),
-                pystray.MenuItem("Always Available Dictation", pystray.Menu(
-                    pystray.MenuItem(
-                        "Enabled",
-                        lambda: self._toggle_always_available_dictation(),
-                        checked=lambda item: self.cfg.get("always_available_dictation", True),
-                    ),
-                    pystray.MenuItem(f"Backup Device\t{backup_device_cfg}",
-                                     pystray.Menu(*backup_device_items)),
-                    pystray.MenuItem(f"Backup Model\t{backup_model_cfg}",
-                                     pystray.Menu(*backup_model_items)),
-                )),
-                pystray.MenuItem(f"Diarization (Speaker Detection)\t{primary_label}",
-                                 pystray.Menu(*diarize_sub_items)),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem("Change Output Folder...",
-                                 lambda: self._change_output_folder()),
-                pystray.MenuItem(f"  {self._truncate_path(self._output_dir())}",
-                                 None, enabled=False),
-                pystray.MenuItem(f"Log Window\t{self.cfg.get('log_window', 'normal')}", pystray.Menu(
-                    pystray.MenuItem("Off",
-                                     self._cb(self._set_log_level, "off"),
-                                     checked=lambda item: self.cfg.get("log_window") == "off",
-                                     radio=True),
-                    pystray.MenuItem("Normal",
-                                     self._cb(self._set_log_level, "normal"),
-                                     checked=lambda item: self.cfg.get("log_window", "normal") == "normal",
-                                     radio=True),
-                    pystray.MenuItem("Detailed -- includes transcriptions",
-                                     self._cb(self._set_log_level, "detailed"),
-                                     checked=lambda item: self.cfg.get("log_window") == "detailed",
-                                     radio=True),
-                    pystray.MenuItem("Verbose -- full debug output",
-                                     self._cb(self._set_log_level, "verbose"),
-                                     checked=lambda item: self.cfg.get("log_window") == "verbose",
-                                     radio=True),
-                )),
-                pystray.MenuItem("Weekly Stats", self._build_session_stats_menu()),
-                pystray.MenuItem("Notifications", pystray.Menu(*notification_items)),
-                pystray.Menu.SEPARATOR,
-                *incognito_items,
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem("Update", pystray.Menu(
-                    pystray.MenuItem("Stable\tmain", self._cb(self._update, "main")),
-                    pystray.MenuItem("Labs\tdev", self._cb(self._update, "dev")),
-                )),
-                pystray.MenuItem("Restart", lambda: self._restart()),
-                pystray.MenuItem("Quit", lambda: self.quit()),
-            )),
-        )
-
-    # --- Actions ---
-
-    def _toggle_toast_event(self, event_type: str):
-        from .notifications import DEFAULT_TOAST_EVENTS
-        events = self.cfg.get("toast_events", list(DEFAULT_TOAST_EVENTS))
-        if event_type in events:
-            events.remove(event_type)
-        else:
-            events.append(event_type)
-        self.cfg["toast_events"] = events
-        self._save_and_refresh()
-
-    def _toggle_incognito(self):
-        self.cfg["incognito"] = not self.cfg.get("incognito", False)
-        state = "on" if self.cfg["incognito"] else "off"
-        logger.info(f"Whisper mode: {state}")
-        self._save_and_refresh()
-        # #40: Toast warning when incognito toggles
-        try:
-            if self.cfg["incognito"]:
-                notify(
-                    "Whisper Mode Active",
-                    "RAM only. No disk, no logs, no recovery.",
-                )
-            else:
-                notify(
-                    "Whisper Mode Off",
-                    "Dictation data will be saved to disk",
-                )
-        except Exception:
-            pass  # toast is best-effort
 
     def _refresh_menu(self):
         """Request a debounced menu rebuild. Safe from any thread.
@@ -785,585 +247,6 @@ class WhisperSync:
         refresher = getattr(self, "_menu_refresher", None)
         if refresher is not None and self.tray is not None:
             refresher.request()
-
-    def _save_and_refresh(self):
-        config.save(self.cfg.snapshot())
-        self._refresh_menu()
-
-    # --- GitHub PR Status ---
-
-    def _start_github_poller(self):
-        """Start the GitHub PR status poller if configured."""
-        repo = self.cfg.get("github_repo")
-        if not repo:
-            return
-
-        from .github_status import GitHubPoller
-        interval = self.cfg.get("github_poll_interval", 300)
-
-        def _on_change(old_prs, new_prs):
-            self._github_prs = new_prs
-            self._refresh_menu()
-            if not self.cfg.get("github_notifications", True):
-                return
-            # Notify on actionable changes
-            repo = self.cfg.get("github_repo", "")
-            old_map = {pr.number: pr.review_state for pr in old_prs}
-            for pr in new_prs:
-                old_state = old_map.get(pr.number)
-                if old_state == pr.review_state:
-                    continue
-                if pr.review_state == "clean":
-                    self._notify(
-                        f"PR #{pr.number} ready to merge",
-                        pr.title,
-                        buttons=[
-                            {"label": "Merge", "action": lambda _pr=pr: self._merge_pr(repo, _pr.number)},
-                            {"label": "View on GitHub", "action": lambda _pr=pr: self._open_pr_url(_pr.url)},
-                        ],
-                    )
-                elif pr.review_state == "suggestions":
-                    self._notify(
-                        f"PR #{pr.number}: {pr.suggestion_count} suggestion(s)",
-                        pr.title,
-                        buttons=[
-                            {"label": "View on GitHub", "action": lambda _pr=pr: self._open_pr_url(_pr.url)},
-                        ],
-                    )
-                elif pr.review_state == "human-review":
-                    self._notify(
-                        f"PR #{pr.number} flagged for human review",
-                        pr.title,
-                        buttons=[
-                            {"label": "View on GitHub", "action": lambda _pr=pr: self._open_pr_url(_pr.url)},
-                        ],
-                    )
-
-        def _on_initial_poll(old_prs, new_prs):
-            """First poll — update menu regardless of change detection."""
-            _on_change(old_prs, new_prs)
-
-        def _on_feature_scan(open_prs, merged_prs):
-            from . import feature_lifecycle
-            feature_lifecycle.scan_open_prs(open_prs)
-            feature_lifecycle.scan_merged_prs(merged_prs)
-
-        self._github_poller = GitHubPoller(
-            repo=repo, interval=interval, on_change=_on_change,
-            on_feature_scan=_on_feature_scan,
-        )
-        self._github_poller.start()
-        if self._github_poller.state.available:
-            # Refresh menu after the first poll completes: a scheduler
-            # step chain (1s cadence, 30 tries) instead of a sleeping
-            # thread. Each step is a cheap flag check.
-            from .scheduler import scheduler as _sched
-
-            def _first_poll_step(remaining: int):
-                if self._github_poller.state.last_poll > 0:
-                    self._github_prs = self._github_poller.state.prs
-                    self._refresh_menu()
-                    return
-                if remaining > 0:
-                    _sched.call_later(1.0, lambda: _first_poll_step(remaining - 1),
-                                      label="github-first-poll")
-
-            _first_poll_step(30)
-
-    def _notify(self, title: str, body: str = "", *, buttons=None, on_click=None):
-        """Show a Windows toast notification via windows-toasts."""
-        notify(title, body, buttons=buttons, on_click=on_click)
-
-    def _github_menu_items(self) -> list:
-        """Build menu items for GitHub PR status."""
-        repo = self.cfg.get("github_repo")
-        if not repo or not self._github_poller or not self._github_poller.state.available:
-            return []
-
-        prs = self._github_prs
-        if not prs:
-            # No PRs — clicking opens GitHub pulls page
-            return [pystray.MenuItem(
-                "GitHub\tno open PRs",
-                self._cb(self._open_pr_url, f"https://github.com/{repo}/pulls"),
-            )]
-
-        label = f"GitHub\t{len(prs)} open PR{'s' if len(prs) != 1 else ''}"
-        pr_items = []
-        for pr in prs:
-            status_label = {
-                "pending": "awaiting review",
-                "clean": "ready to merge",
-                "suggestions": f"{pr.suggestion_count} suggestion{'s' if pr.suggestion_count != 1 else ''}",
-                "human-review": "needs review",
-            }.get(pr.review_state, "unknown")
-
-            pr_display = f"#{pr.number}: {pr.title[:35]} — {status_label}"
-
-            # Build submenu based on state
-            sub = [pystray.MenuItem("View on GitHub", self._cb(self._open_pr_url, pr.url))]
-
-            if pr.review_state == "clean":
-                sub.append(pystray.MenuItem("Merge", self._cb(self._merge_pr, repo, pr.number)))
-            elif pr.review_state == "suggestions":
-                sub.append(pystray.MenuItem("View Suggestions", self._cb(self._open_pr_url, pr.url)))
-
-            pr_items.append(pystray.MenuItem(pr_display, pystray.Menu(*sub)))
-
-        pr_items.append(pystray.Menu.SEPARATOR)
-        pr_items.append(pystray.MenuItem("Check now", lambda: self._github_poller.poll_now()))
-
-        return [pystray.MenuItem(label, pystray.Menu(*pr_items))]
-
-    def _open_pr_url(self, url: str):
-        """Open a GitHub URL in the default browser."""
-        import webbrowser
-        if url:
-            webbrowser.open(url)
-
-    def _merge_pr(self, repo: str, pr_number: int):
-        """Merge a PR via gh CLI.
-
-        NOTE: This method may be called from a toast notification thread
-        (via notifications.py button callbacks). The threading is handled
-        in notifications.py -- this method itself is blocking.
-        """
-        import subprocess as _sp
-        from .executors import native_call
-        try:
-            with native_call("gh-merge"):
-                result = _sp.run(
-                    ["gh", "pr", "merge", str(pr_number), "--repo", repo,
-                     "--squash", "--delete-branch"],
-                    capture_output=True, text=True, timeout=30,
-                )
-            if result.returncode == 0:
-                logger.info(f"PR #{pr_number} merged successfully")
-                self._notify("PR merged", f"PR #{pr_number} merged to main")
-                # Refresh after merge
-                if self._github_poller:
-                    self._github_poller.poll_now()
-            else:
-                logger.warning(f"PR #{pr_number} merge failed: {result.stderr.strip()}")
-                self._notify("Merge failed", f"PR #{pr_number} merge failed -- check logs")
-        except Exception as e:
-            logger.warning(f"PR merge error: {e}")
-
-    def _show_error_popup(self, title: str, message: str):
-        """Show a tkinter error dialog with the given message.
-
-        Fire-and-forget: callers don't wait for the popup to close. We still
-        run on the dispatcher thread to keep all tk.Tk() creation on a single
-        consistent thread; we just don't block our caller. A small worker
-        thread bridges the call so this method returns immediately as before.
-        """
-        def _show(_proot):
-            from tkinter import messagebox
-            # parent=persistent root: no Tk/Tcl interpreter churn.
-            messagebox.showerror(f"WhisperSync: {title}", message, parent=_proot)
-
-        def _dispatch():
-            try:
-                self._dialog_dispatcher.run(_show, label="error_popup", wants_root=True)
-            except Exception:
-                logger.exception("error popup failed: %s", title)
-
-        threading.Thread(target=_dispatch, daemon=True).start()
-
-    def _open_output_folder(self):
-        import subprocess
-        out = self._output_dir()
-        out.mkdir(parents=True, exist_ok=True)
-        subprocess.Popen(["explorer.exe", str(out)])
-
-    def _change_output_folder(self):
-        """Show folder picker, optionally move existing files, update config."""
-        import shutil
-
-        current = self._output_dir()
-        result = [None]  # None=cancelled, (Path, bool)=(new_path, move_files)
-
-        def _show(_proot):
-            import tkinter as tk
-            from tkinter import filedialog
-
-            new_dir = filedialog.askdirectory(
-                title="Choose output folder for recordings",
-                initialdir=str(current) if current.exists() else str(Path.home()),
-                parent=_proot,
-            )
-
-            if not new_dir or Path(new_dir) == current:
-                return
-
-            new_path = Path(new_dir)
-            # Check if current folder has files to move
-            has_files = current.exists() and any(current.iterdir())
-
-            if not has_files:
-                result[0] = (new_path, False)
-                return
-
-            # Ask about moving files. Run inline (we are already on the
-            # dispatcher thread, so the dispatcher's reentrancy guard makes
-            # this a same-thread call rather than a deadlock).
-            move_result = [None]
-
-            def _show_move_dialog(_mroot):
-                dlg = tk.Toplevel(_mroot)
-                dlg.title("WhisperSync")
-                style_window(dlg)
-                dlg.geometry("440x150")
-
-                bg = "#1e1e2e"
-                fg = "#cdd6f4"
-                fg_dim = "#6c7086"
-                accent = "#89b4fa"
-
-                tk.Label(dlg, text="Move Existing Recordings?",
-                         font=("Segoe UI", 11, "bold"), bg=bg, fg=fg).pack(pady=(14, 4))
-                tk.Label(dlg, text=f"Move files from current folder to new location?",
-                         font=("Segoe UI", 9), bg=bg, fg=fg_dim).pack(pady=(0, 4))
-                tk.Label(dlg, text=f"{current}",
-                         font=("Segoe UI", 8), bg=bg, fg=fg_dim).pack()
-                tk.Label(dlg, text=f"→ {new_path}",
-                         font=("Segoe UI", 8), bg=bg, fg=accent).pack(pady=(0, 6))
-
-                btn_frame = tk.Frame(dlg, bg=bg)
-                btn_frame.pack(pady=(6, 10))
-
-                def _move():
-                    move_result[0] = True
-                    dlg.destroy()
-
-                def _keep():
-                    move_result[0] = False
-                    dlg.destroy()
-
-                def _cancel():
-                    move_result[0] = None
-                    dlg.destroy()
-
-                dlg.bind("<Escape>", lambda e: _cancel())
-
-                flat_button(btn_frame, "Move Files", _move,
-                                  bg=accent, fg="#1e1e2e", hover_bg="#74c7ec",
-                                  bold=True).pack(side=tk.RIGHT, padx=6)
-                flat_button(btn_frame, "Keep in Place", _keep).pack(side=tk.RIGHT, padx=6)
-                flat_button(btn_frame, "Cancel", _cancel,
-                                  fg="#f38ba8").pack(side=tk.RIGHT, padx=6)
-
-                center_window(dlg)
-                dlg.protocol("WM_DELETE_WINDOW", _cancel)
-                run_modal(_mroot, dlg)
-
-            # Same-thread call via dispatcher (reentrancy guard runs inline).
-            try:
-                self._dialog_dispatcher.run(_show_move_dialog, label="change_output_move_dialog", wants_root=True)
-            except Exception:
-                logger.exception("change-output move dialog crashed")
-                move_result[0] = None
-
-            if move_result[0] is None:
-                return
-
-            result[0] = (new_path, move_result[0])
-
-        try:
-            self._dialog_dispatcher.run(_show, label="change_output_folder", wants_root=True)
-        except Exception:
-            logger.exception("change-output dialog crashed")
-            return
-
-        if result[0] is None:
-            return
-
-        new_path, move_files = result[0]
-
-        if move_files:
-            try:
-                new_path.mkdir(parents=True, exist_ok=True)
-                for item in current.iterdir():
-                    dest = new_path / item.name
-                    if not dest.exists():
-                        shutil.move(str(item), str(dest))
-                    else:
-                        logger.warning(f"Skipped (already exists): {item.name}")
-                logger.info(f"Moved recordings from {current} → {new_path}")
-            except Exception as e:
-                logger.error(f"Failed to move files: {e}")
-                self._show_error_popup("Move Failed", f"Could not move files:\n{e}")
-                return
-
-        self.cfg["output_dir"] = str(new_path)
-        self._save_and_refresh()
-        logger.info(f"Output folder changed to: {new_path}")
-
-    def _build_session_stats_menu(self):
-        """Build weekly stats submenu with today and wk columns."""
-        s = self._stats.snapshot()
-        uptime = datetime.now() - s["session_start"]
-        hours, remainder = divmod(int(uptime.total_seconds()), 3600)
-        minutes = remainder // 60
-        avg_dict_time = s["total_dictation_time"] / s["dictations"] if s["dictations"] else 0
-
-        week = weekly_stats.get_current_week()
-        lifetime = weekly_stats.get_lifetime()
-        weekly_avg = weekly_stats.get_weekly_average("total_dictation_time")
-
-        def _row(label, today_val, week_val):
-            """Format with tab for Windows menu column alignment."""
-            return f"{label}\t{today_val} - {week_val}"
-
-        items = [
-            pystray.MenuItem(f"Uptime\t{hours}h {minutes}m", None, enabled=False),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem(_row("Dictations", s['dictations'], week.get('dictations', 0)), None, enabled=False),
-            pystray.MenuItem(_row("Avg dictation", f"{avg_dict_time:.1f}s", f"{weekly_avg:.1f}s"), None, enabled=False),
-            pystray.MenuItem(_row("Chars", f"{s['total_dictation_chars']:,}", f"{week.get('total_dictation_chars', 0):,}"), None, enabled=False),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem(_row("Meetings", s['meetings'], week.get('meetings', 0)), None, enabled=False),
-            pystray.MenuItem(_row("Meeting time", f"{s['total_meeting_seconds'] // 60}m", f"{week.get('total_meeting_seconds', 0) // 60}m"), None, enabled=False),
-            pystray.MenuItem(_row("Meeting words", f"{s['total_meeting_words']:,}", f"{week.get('total_meeting_words', 0):,}"), None, enabled=False),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem(_row("Features", s['feature_suggestions'], week.get('feature_suggestions', 0)), None, enabled=False),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem(f"Lifetime dictations\t{lifetime.get('dictations', 0):,}", None, enabled=False),
-            pystray.MenuItem(f"Lifetime meetings\t{lifetime.get('meetings', 0):,}", None, enabled=False),
-        ]
-        return pystray.Menu(*items)
-
-    def _set_log_level(self, tier: str):
-        self.cfg["log_window"] = tier
-        set_console_level(tier)
-        self._save_and_refresh()
-        logger.info(f"Log window set to: {tier}")
-
-    def _set_api_filter(self, api_name: str | None):
-        self._api_filter = api_name
-        self._refresh_menu()
-
-    def _set_device(self, key: str, device_id: int):
-        self.cfg[key] = device_id
-        self._save_and_refresh()
-
-    def _toggle_system_devices(self):
-        self.cfg["use_system_devices"] = not self.cfg.get("use_system_devices", True)
-        self._save_and_refresh()
-
-    def _set_hotkey(self, key: str, hotkey: str):
-        old = self.cfg["hotkeys"].get(key)
-        if old == hotkey:
-            return
-        self.cfg.set_nested("hotkeys", key, hotkey)
-        self._save_and_refresh()
-        self._restart()
-
-    def _set_paste_method(self, method: str):
-        self.cfg["paste_method"] = method
-        self._save_and_refresh()
-
-    def _set_click(self, key: str, action: str):
-        self.cfg[key] = action
-        self._save_and_refresh()
-
-    def _set_compute_device(self, device: str):
-        """Switch compute device (auto/gpu/cpu) and restart the worker."""
-        old = self.cfg.get("device", "auto")
-        if old == device:
-            return
-
-        # Check if the resolved device is actually changing
-        # e.g. Auto->GPU when auto already uses GPU = no restart needed
-        def _resolve(d):
-            if d in ("gpu", "cuda"):
-                return "cuda"
-            if d == "cpu":
-                return "cpu"
-            # auto: check if GPU available
-            try:
-                import torch
-                return "cuda" if torch.cuda.is_available() else "cpu"
-            except ImportError:
-                return "cpu"
-
-        old_resolved = _resolve(old)
-        new_resolved = _resolve(device)
-
-        self.cfg["device"] = device
-        self._save_and_refresh()
-
-        if old_resolved == new_resolved:
-            logger.info(f"Device setting: {old} -> {device} (same hardware, no restart)")
-            return
-
-        logger.info(f"Switching device: {old} -> {device} ({old_resolved} -> {new_resolved})")
-        self.worker.update_config(self.cfg)
-        _previous_device = old
-        def _do_restart():
-            self.worker.restart()
-            logger.info(f"Worker restarted on {new_resolved}")
-            # #39: Toast confirming device switch with Switch Back button
-            try:
-                def _switch_back(prev=_previous_device):
-                    self._set_compute_device(prev)
-                notify(
-                    "Device switched",
-                    f"Now using {new_resolved}",
-                    buttons=[{"label": "Switch Back", "action": _switch_back}],
-                )
-            except Exception:
-                pass  # toast is best-effort
-        threading.Thread(target=_do_restart, daemon=True).start()
-
-    def _get_device_label(self) -> str:
-        """Return display string for the active resolved device."""
-        device_setting = self.cfg.get("device", "auto")
-        gpu = self.worker.gpu_name if self.worker else None
-        if device_setting == "cpu":
-            return "CPU"
-        elif device_setting in ("gpu", "cuda"):
-            return gpu if gpu else "GPU"
-        else:  # auto
-            if gpu:
-                return f"Auto ({gpu})"
-            return "Auto (CPU)"
-
-    def _toggle_always_available_dictation(self):
-        self.cfg["always_available_dictation"] = not self.cfg.get("always_available_dictation", True)
-        state = "enabled" if self.cfg["always_available_dictation"] else "disabled"
-        logger.info(f"Always Available Dictation: {state}")
-        if not self.cfg["always_available_dictation"]:
-            self._backup.stop()
-        self._save_and_refresh()
-
-    def _set_backup_device(self, device: str):
-        if self.cfg.get("backup_device", "auto") == device:
-            return
-        self.cfg["backup_device"] = device
-        logger.info(f"Backup device: {device}", extra={"secondary": True})
-        self._backup.stop()
-        self._backup.preload()
-        self._save_and_refresh()
-
-    def _set_backup_model(self, model_name: str):
-        if self.cfg.get("backup_model", "base") == model_name:
-            return
-        self.cfg["backup_model"] = model_name
-        logger.info(f"Backup model: {model_name}", extra={"secondary": True})
-        self._backup.stop()
-        self._backup.preload()
-        self._save_and_refresh()
-
-    def _set_diarize_method(self, slot_key: str, method_id: str):
-        """Set a diarization slot, swapping with any slot that already has this method."""
-        from .transcribe import DIARIZE_METHODS
-        with self.cfg.transaction():
-            current = self.cfg.get(slot_key, "balanced_mix")
-            if current == method_id:
-                return
-            # Find if another slot already uses this method and swap
-            all_slots = ["diarize_primary", "diarize_fallback", "diarize_last_resort"]
-            for other_slot in all_slots:
-                if other_slot != slot_key and self.cfg.get(other_slot, "balanced_mix") == method_id:
-                    self.cfg[other_slot] = current  # swap
-                    break
-            self.cfg[slot_key] = method_id
-        label = DIARIZE_METHODS.get(method_id, method_id)
-        logger.info(f"Diarization {slot_key}: {label}", extra={"secondary": True})
-        self._save_and_refresh()
-
-    def _set_model(self, key: str, model_name: str):
-        logger.info(f"Setting {key} = {model_name}")
-        if self.cfg.get(key) == model_name:
-            return
-        self.cfg[key] = model_name
-        self._save_and_refresh()
-        # Reload model in the appropriate worker subprocess
-        if key == "dictation_model":
-            # DICTATION lane: a reload and a dictation cannot run
-            # concurrently anyway, so serializing them is the semantics.
-            submit_or_spawn(
-                DICTATION, "dictation-model-reload",
-                lambda m=model_name: self.worker.reload_model(m),
-                native=True,
-            )
-
-    def _model_menu_items(self) -> list:
-        """Build model status menu items."""
-        meeting_status = get_model_status(self.cfg["model"])
-        dict_model = self.cfg.get("dictation_model", self.cfg["model"])
-        dict_status = get_model_status(dict_model)
-        items = []
-
-        # Meeting model
-        m_label = f"Meeting Model: {self.cfg['model']}"
-        if meeting_status["model_downloaded"]:
-            m_label += f" ({meeting_status['model_size']})"
-        else:
-            m_label += " (not downloaded)"
-        items.append(pystray.MenuItem(m_label, None, enabled=False))
-
-        # Dictation model
-        d_label = f"Dictation Model: {dict_model}"
-        if dict_status["model_downloaded"]:
-            d_label += f" ({dict_status['model_size']})"
-        else:
-            d_label += " (not downloaded)"
-        items.append(pystray.MenuItem(d_label, None, enabled=False))
-
-        # Word timing model (used to sync words to exact timestamps)
-        align_label = "Word Timing: " + ("ready" if meeting_status["alignment_downloaded"] else "not downloaded")
-        items.append(pystray.MenuItem(align_label, None, enabled=False))
-
-        # GPU / Device
-        device_pref = self.cfg.get("device", "auto")
-        if device_pref == "cpu":
-            gpu_label = "Device: CPU (forced)"
-        elif meeting_status["cuda_available"]:
-            gpu_label = f"GPU: {meeting_status['cuda_device']}"
-        else:
-            gpu_label = "GPU: None (CPU mode)"
-        items.append(pystray.MenuItem(gpu_label, None, enabled=False))
-        items.append(pystray.MenuItem(f"CPU: {self._cpu_name}", None, enabled=False))
-
-        # Download if missing
-        needs_download = (
-            not meeting_status["model_downloaded"]
-            or not dict_status["model_downloaded"]
-            or not meeting_status["alignment_downloaded"]
-        )
-        if needs_download:
-            items.append(pystray.MenuItem(
-                "Download Models Now",
-                self._cb(self._download_model),
-            ))
-
-        return items
-
-    def _download_model(self):
-        """Download model in background thread with icon feedback."""
-        if self.state.current.mode is not None:
-            return
-
-        self.state.emit(MODEL_DOWNLOADING, mode="transcribing", data={"model_name": self.cfg["model"]})
-
-        def _do_download():
-            try:
-                ok = download_model(self.cfg["model"])
-                if ok:
-                    logger.info("Model download complete")
-                    self.state.emit(MODEL_READY, mode="done", data={"model_name": self.cfg["model"]})
-                else:
-                    logger.error("Model download failed")
-                    self.state.emit(ERROR, mode="error", data={"message": "Model download failed"})
-            except Exception as e:
-                logger.error(f"Model download error: {e}")
-                self.state.emit(ERROR, mode="error", data={"message": "Model download failed"})
-            self._schedule_idle(3)
-            self._refresh_menu()
-
-        threading.Thread(target=_do_download, daemon=True).start()
 
     _updating = False  # Guard against concurrent update clicks
 
@@ -1622,7 +505,7 @@ class WhisperSync:
             "whisper-sync",
             idle_icon(),
             "WhisperSync: Idle",
-            menu=self._build_menu(),
+            menu=self.menu.build(),
         )
 
         # Debounced single-owner menu refresh (see tray_refresh.py). All
@@ -1630,7 +513,7 @@ class WhisperSync:
         # runs on the scheduler thread and swaps under _tray_lock.
         from .tray_refresh import MenuRefresher
         self._menu_refresher = MenuRefresher(
-            build_menu=self._build_menu,
+            build_menu=self.menu.build,
             apply_menu=lambda m: self._update_tray(menu=m),
         )
 
@@ -1710,7 +593,7 @@ class WhisperSync:
         threading.Thread(target=_wait_worker, daemon=True).start()
 
         # Start GitHub PR status polling if configured
-        self._start_github_poller()
+        self.github.start()
 
         # Periodic flush for persistent weekly stats
         self._stats_flush_stop = threading.Event()
@@ -1832,8 +715,7 @@ class WhisperSync:
             keyboard.unhook_all()
             self.worker.stop()
             self._backup.stop()
-            if self._github_poller:
-                self._github_poller.stop()
+            self.github.stop()
             try:
                 if getattr(self, "_idle_collector", None) is not None:
                     self._idle_collector.stop()
