@@ -107,7 +107,6 @@ def _schedule_clipboard_restore(previous: dict | str | None) -> None:
         return
 
     def _restore():
-        time.sleep(_RESTORE_DELAY)
         try:
             if isinstance(previous, dict):
                 ct = _get_clipboard_thread()
@@ -121,7 +120,17 @@ def _schedule_clipboard_restore(previous: dict | str | None) -> None:
         except Exception:
             logger.debug("Clipboard restore failed", exc_info=True)
 
-    threading.Thread(target=_restore, daemon=True).start()
+    # Deferred via the scheduler instead of a sleeping thread. The
+    # restore itself can block up to the clipboard-thread handoff
+    # timeout, so the timer only enqueues it onto IO - scheduler jobs
+    # must stay short.
+    from .executors import IO, submit_or_spawn
+    from .scheduler import scheduler
+    scheduler.call_later(
+        _RESTORE_DELAY,
+        lambda: submit_or_spawn(IO, "clipboard-restore", _restore),
+        label="clipboard-restore",
+    )
 
 
 def paste_clipboard(text: str, *, restore: bool = True) -> None:
