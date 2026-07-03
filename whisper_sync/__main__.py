@@ -645,6 +645,21 @@ class WhisperSync:
             self._overlay_recorder = None
             self._feature_suggest_active = False
             return
+        # Disk-first like normal dictation (hardware-resilience H3):
+        # overlay audio was the last RAM-only capture path, so a crash
+        # mid-overlay lost it. Incognito intentionally stays RAM-only.
+        self._overlay_wav_path = None
+        if not self.cfg.get("incognito", False):
+            log_dir = self._dictation_log_dir()
+            log_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            prefix = "feature_" if self._feature_suggest_active else ""
+            self._overlay_wav_path = log_dir / f"overlay_{prefix}{ts}.wav"
+            try:
+                self._overlay_recorder.start_streaming(self._overlay_wav_path)
+            except Exception as e:
+                logger.warning("Overlay disk streaming disabled: %s", e)
+                self._overlay_wav_path = None
         logger.info("Dictation during meeting: recording started", extra={"secondary": True})
         self.state.emit(DICTATION_STARTED, dictation_overlay=True)
 
@@ -665,6 +680,8 @@ class WhisperSync:
 
         overlay_audio = audio["mic"]
         self._overlay_recorder = None
+        overlay_wav = getattr(self, "_overlay_wav_path", None)
+        self._overlay_wav_path = None
 
         # Capture feature flag before spawning background thread
         with self._lock:
@@ -676,9 +693,11 @@ class WhisperSync:
         def _process_overlay():
             import time as _time
 
+            transcribed = False
             t0 = _time.perf_counter()
             try:
                 text = self._backup.transcribe(overlay_audio)
+                transcribed = True
                 t1 = _time.perf_counter()
                 duration = t1 - t0
                 char_count = len(text) if text else 0
@@ -744,6 +763,7 @@ class WhisperSync:
                         self.cfg.get("dictation_model", self.cfg["model"]))
                     timeout = 180
                     text = self.worker.transcribe_fast(overlay_audio, model_override=dictation_model, timeout=timeout)
+                    transcribed = True
                     if text:
                         paste(text, self.cfg["paste_method"], restore=not self.cfg.get("incognito", False))
                     t1 = _time.perf_counter()
@@ -775,6 +795,12 @@ class WhisperSync:
                         log_dictation_result(text or "", duration, delivery, char_count, secondary=True)
                 except Exception as fallback_err:
                     logger.error(f"Overlay dictation fallback also failed: {fallback_err}", extra={"secondary": True})
+
+            if overlay_wav:
+                if transcribed:
+                    self._safe_unlink(overlay_wav)
+                else:
+                    logger.info(f"Overlay dictation audio preserved at: {overlay_wav}", extra={"secondary": True})
 
         submit_or_spawn(DICTATION, "overlay-process", _process_overlay)
 
@@ -1117,6 +1143,10 @@ class WhisperSync:
             if _overlay and self._overlay_recorder:
                 self._overlay_recorder.stop()
                 self._overlay_recorder = None
+                discarded_wav = getattr(self, "_overlay_wav_path", None)
+                self._overlay_wav_path = None
+                if discarded_wav:
+                    self._safe_unlink(discarded_wav)
                 logger.info("Overlay dictation discarded (left-click)", extra={"secondary": True})
                 self.state.emit(DICTATION_DISCARDED, dictation_overlay=False)
                 return
