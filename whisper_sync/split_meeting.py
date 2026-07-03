@@ -189,6 +189,38 @@ def split_meeting(source_folder: Path, split_points: list[float], names: list[st
     # Determine output parent (same month folder as source)
     parent = source_folder.parent
 
+    # Pre-flight destination checks (2026-07-03 production bug): portion
+    # [1] starts at t=0, so its MMDD_HHMM prefix equals the source's -
+    # reusing the source's name made dest == source and copy2 crashed on
+    # a same-file copy (and exist_ok would have clobbered any unrelated
+    # existing folder silently). Compute every destination first, reject
+    # duplicates and collisions with EXISTING folders, then rename the
+    # source aside so a portion may legitimately reuse its name.
+    dests = []
+    for (start_sec, _end_sec), name in zip(ranges, names):
+        p_start = original_start + timedelta(seconds=start_sec)
+        wk = f"{p_start.strftime('%m')}-w{(p_start.day - 1) // 7 + 1}"
+        fname = f"{p_start.strftime('%m%d_%H%M')}_{name}"
+        dests.append(parent.parent / wk / fname)
+    if len({str(d).lower() for d in dests}) != len(dests):
+        raise ValueError(f"Duplicate destination folders in split: {[d.name for d in dests]}")
+    for d in dests:
+        if d.exists() and d.resolve() != source_folder.resolve():
+            raise FileExistsError(
+                f"Destination already exists: {d} - refusing to overwrite an "
+                "existing meeting; pick a different name"
+            )
+
+    staging = source_folder.with_name(source_folder.name + ".splitting")
+    if staging.exists():
+        raise FileExistsError(
+            f"Leftover staging folder from a previous run: {staging} - "
+            "inspect/remove it first"
+        )
+    os.rename(str(source_folder), str(staging))
+    wav_path = staging / "recording.wav"
+    json_path = staging / "transcript.json"
+
     print(f"Source: {source_folder.name} ({total_duration / 60:.1f} min)")
     print(f"Original recorded: {original_start.strftime('%Y-%m-%d %H:%M')} - {original_mtime.strftime('%H:%M')}")
     print(f"Splitting into {len(ranges)} meetings:")
@@ -279,14 +311,14 @@ def split_meeting(source_folder: Path, split_points: list[float], names: list[st
                 all_ok = False
 
     if not all_ok:
-        print("\nVerification FAILED — original folder preserved for recovery.")
-        print(f"Original: {source_folder}")
+        print("\nVerification FAILED - original folder preserved for recovery.")
+        print(f"Original (staged): {staging}")
         return
 
-    # --- Remove original folder ---
+    # --- Remove original folder (staged copy) ---
     import shutil as _shutil
-    _shutil.rmtree(str(source_folder))
-    print(f"\nOriginal folder removed: {source_folder}")
+    _shutil.rmtree(str(staging))
+    print(f"\nOriginal folder removed: {staging}")
 
     # Rebuild INDEX.md files
     try:

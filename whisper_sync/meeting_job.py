@@ -22,6 +22,26 @@ from pathlib import Path
 logger = logging.getLogger("whisper_sync.meeting_job")
 
 
+def group_speaker_previews(segments) -> dict:
+    """{speaker: [utterance texts]} from a transcript segments list.
+
+    Tolerant of malformed input (None, non-list, segments without
+    speaker/text) - preview material must never abort the pipeline.
+    """
+    grouped: dict = {}
+    if not isinstance(segments, list):
+        return grouped
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        speaker = seg.get("speaker") or "UNKNOWN"
+        grouped.setdefault(str(speaker), []).append(text)
+    return grouped
+
+
 class MeetingJob:
     """A meeting recording with its own state and processing steps."""
 
@@ -172,10 +192,15 @@ class MeetingJob:
         self.app._stats.record_meeting(int(duration), words)
         weekly_stats.record_meeting(int(duration), words)
 
-        # Speaker segment previews
-        segments = self.transcript_result.get("speaker_segments")
-        if segments:
-            log_transcript_preview("", speakers=segments)
+        # Speaker segment previews. Grouped here from the raw segments:
+        # passing the segments LIST straight to log_transcript_preview
+        # (which expects {speaker: [utterances]}) raised AttributeError
+        # and aborted the whole job after transcription - transcript.json
+        # existed but flatten/speakers/minutes never ran (2026-07-03
+        # production bug; regression from #141's speaker_segments alias).
+        previews = group_speaker_previews(self.transcript_result.get("segments"))
+        if previews:
+            log_transcript_preview("", speakers=previews)
 
         # Cache LLM availability for later steps
         self.llm_ok = self.app._is_claude_cli_available()

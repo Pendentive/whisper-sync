@@ -321,5 +321,37 @@ class StepFlattenAndCompleteTests(unittest.TestCase):
         )
 
 
+class SpeakerPreviewTests(unittest.TestCase):
+    """Regression for the 2026-07-03 pipeline-abort bug: preview material
+    must be grouped correctly and must never be able to kill a job."""
+
+    def test_group_speaker_previews_shapes_dict(self):
+        from whisper_sync.meeting_job import group_speaker_previews
+        segments = [
+            {"speaker": "Alice", "text": " Hello. ", "start": 0, "end": 1},
+            {"speaker": "Bob", "text": "Hi.", "start": 1, "end": 2},
+            {"speaker": "Alice", "text": "Bye.", "start": 2, "end": 3},
+        ]
+        self.assertEqual(
+            group_speaker_previews(segments),
+            {"Alice": ["Hello.", "Bye."], "Bob": ["Hi."]},
+        )
+
+    def test_group_speaker_previews_tolerates_garbage(self):
+        from whisper_sync.meeting_job import group_speaker_previews
+        self.assertEqual(group_speaker_previews(None), {})
+        self.assertEqual(group_speaker_previews("not a list"), {})
+        self.assertEqual(group_speaker_previews(
+            [None, {}, {"text": "   "}, {"text": "x"}]), {"UNKNOWN": ["x"]})
+
+    def test_log_transcript_preview_never_raises_on_wrong_shape(self):
+        # The exact production failure: a segments LIST passed where a
+        # dict was expected aborted the job after transcription.
+        from whisper_sync.logger import log_transcript_preview
+        log_transcript_preview("", speakers=[{"speaker": "A", "text": "hi"}])
+        log_transcript_preview("", speakers={"A": object()})  # non-iterable utterances
+        log_transcript_preview("some text", speakers=None)
+
+
 if __name__ == "__main__":
     unittest.main()
