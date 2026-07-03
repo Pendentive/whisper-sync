@@ -3814,6 +3814,12 @@ class WhisperSync:
         try:
             self.tray.run()
         finally:
+            # Unregister power notifications first: teardown must not
+            # race an OS callback firing into half-shutdown state.
+            try:
+                self._power_listener.stop()
+            except Exception:
+                logger.debug("power listener stop failed", exc_info=True)
             # Flush persistent stats before shutdown
             try:
                 self._stats_flush_stop.set()
