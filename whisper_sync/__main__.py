@@ -3791,9 +3791,43 @@ class WhisperSync:
         from .scheduler import scheduler as _sched
         self._gpu_guard.start(_sched, IO)
 
+        # Suspend/resume awareness (hardware-resilience spec H1): both
+        # transitions land in gpu-guard.jsonl for crash-time correlation,
+        # and resume verifies the CUDA worker survived sleep, restarting
+        # it off-thread if not. Callbacks run on an OS thread: keep them
+        # to a log write + an IO offload.
+        from .power_events import PowerEventListener
+
+        def _on_suspend():
+            self._gpu_guard.log_external_event(
+                "system_suspend",
+                recording=self.recorder.is_recording,
+                transcribing=bool(self.state and self.state.current.meeting_transcribing),
+            )
+
+        def _on_resume():
+            def _check():
+                self._gpu_guard.log_external_event("system_resume")
+                if not self.worker.is_alive():
+                    logger.warning("Worker did not survive suspend/resume; restarting")
+                    self.worker.restart()
+                    notify("WhisperSync recovered",
+                           "Transcription engine restarted after sleep.")
+            submit_or_spawn(IO, "resume-check", _check)
+
+        self._power_listener = PowerEventListener(
+            on_suspend=_on_suspend, on_resume=_on_resume)
+        self._power_listener.start()
+
         try:
             self.tray.run()
         finally:
+            # Unregister power notifications first: teardown must not
+            # race an OS callback firing into half-shutdown state.
+            try:
+                self._power_listener.stop()
+            except Exception:
+                logger.debug("power listener stop failed", exc_info=True)
             # Flush persistent stats before shutdown
             try:
                 self._stats_flush_stop.set()
