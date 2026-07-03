@@ -8,6 +8,7 @@ allowing dictation requests to be processed between meeting stages.
 """
 
 import faulthandler
+import threading
 import os
 import queue
 import sys
@@ -15,6 +16,9 @@ import traceback
 from pathlib import Path
 
 import numpy as np
+
+# Liveness ping cadence during meeting transcriptions (see _start_pinger).
+PING_INTERVAL_S = 10.0
 
 
 def _drain_priority(request_queue, response_queue, transcribe_fast_fn, preload_fn):
@@ -163,6 +167,26 @@ def worker_main(request_queue, response_queue, cfg_snapshot: dict,
         """Check for priority requests. Returns True if shutdown requested."""
         return _drain_priority(request_queue, response_queue, transcribe_fast, preload)
 
+    def _start_pinger(req_id):
+        """Liveness pings while a long transcription runs (H4).
+
+        The manager treats prolonged ping silence as a wedged worker.
+        The pinger proves the PROCESS is responsive; a driver-level hang
+        freezes it together with the compute, which is exactly the
+        wanted signal.
+        """
+        stop = threading.Event()
+
+        def _ping():
+            while not stop.wait(PING_INTERVAL_S):
+                try:
+                    response_queue.put({"type": "ping", "request_id": req_id})
+                except Exception:
+                    break
+
+        threading.Thread(target=_ping, daemon=True, name="transcribe-pinger").start()
+        return stop
+
     # Main request loop
     while True:
         try:
@@ -189,6 +213,7 @@ def worker_main(request_queue, response_queue, cfg_snapshot: dict,
                 })
             continue
 
+        _stop_ping = _start_pinger(req_id) if req_type == "transcribe" else None
         try:
             if req_type == "transcribe_fast":
                 audio_np = np.load(request["audio_path"], allow_pickle=False)
@@ -285,3 +310,6 @@ def worker_main(request_queue, response_queue, cfg_snapshot: dict,
                 "traceback": traceback.format_exc(),
                 "request_id": req_id,
             })
+        finally:
+            if _stop_ping is not None:
+                _stop_ping.set()

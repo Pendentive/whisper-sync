@@ -11,6 +11,7 @@ import queue
 import threading
 import time
 import unittest
+from unittest import mock
 
 from whisper_sync.worker_manager import TranscriptionWorker, WorkerCrashedError
 
@@ -246,6 +247,84 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertIsNone(pending.response, "failure marker must be set")
         reader.join(timeout=2.0)
         self.assertFalse(reader.is_alive(), "reader must exit on closed queue")
+
+
+class StallDetectionTests(unittest.TestCase):
+    """Wedged-worker detection (H4): ping silence kills; no pings ever
+    preserves the pure unbounded contract (4f3b307)."""
+
+    def setUp(self):
+        import whisper_sync.worker_manager as wm
+        self._wm = wm
+        self._patches = [
+            mock.patch.object(wm, "STALL_AFTER_S", 0.3),
+            mock.patch.object(wm, "_STALL_CHECK_S", 0.05),
+        ]
+        for p_ in self._patches:
+            p_.start()
+            self.addCleanup(p_.stop)
+
+    def tearDown(self):
+        if hasattr(self, "w") and self.w._process is not None:
+            self.w._process.alive = False
+
+    def test_ping_refreshes_slot_without_completing(self):
+        self.w = w = _make_worker()
+        results = {}
+        t = threading.Thread(
+            target=lambda: results.update(
+                ok=w._request({"type": "transcribe"}, timeout=None)),
+            daemon=True,
+        )
+        t.start()
+        rid = w._request_q.get(timeout=2.0)["request_id"]
+        # Keep pinging past several stall windows; request must survive.
+        for _ in range(12):
+            w._response_q.put({"type": "ping", "request_id": rid})
+            time.sleep(0.05)
+        self.assertTrue(t.is_alive(), "pinged request must not be killed")
+        w._response_q.put({"type": "result", "result": {"x": 1}, "request_id": rid})
+        t.join(timeout=2.0)
+        self.assertEqual(results["ok"]["result"], {"x": 1})
+
+    def test_ping_silence_kills_wedged_worker(self):
+        from whisper_sync.worker_manager import WorkerCrashedError
+        self.w = w = _make_worker()
+        errors = []
+
+        def _call():
+            try:
+                w._request({"type": "transcribe"}, timeout=None)
+            except WorkerCrashedError as e:
+                errors.append(e)
+
+        t = threading.Thread(target=_call, daemon=True)
+        t.start()
+        rid = w._request_q.get(timeout=2.0)["request_id"]
+        w._response_q.put({"type": "ping", "request_id": rid})  # arms detection
+        # ...then silence longer than STALL_AFTER_S.
+        t.join(timeout=5.0)
+        self.assertEqual(len(errors), 1, "silent-after-ping worker must be killed")
+        self.assertTrue(w._process.killed)
+
+    def test_no_pings_ever_keeps_unbounded_wait(self):
+        # A worker build without the pinger must never be stall-killed:
+        # the wait stays unbounded until the answer arrives.
+        self.w = w = _make_worker()
+        results = {}
+        t = threading.Thread(
+            target=lambda: results.update(
+                ok=w._request({"type": "transcribe"}, timeout=None)),
+            daemon=True,
+        )
+        t.start()
+        rid = w._request_q.get(timeout=2.0)["request_id"]
+        time.sleep(0.6)  # well past STALL_AFTER_S with zero pings
+        self.assertTrue(t.is_alive(), "ping-less worker must not be stall-killed")
+        self.assertFalse(w._process.killed)
+        w._response_q.put({"type": "result", "result": {}, "request_id": rid})
+        t.join(timeout=2.0)
+        self.assertIn("ok", results)
 
 
 if __name__ == "__main__":

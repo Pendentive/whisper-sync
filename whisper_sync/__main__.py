@@ -3854,6 +3854,35 @@ class WhisperSync:
             on_suspend=_on_suspend, on_resume=_on_resume)
         self._power_listener.start()
 
+        # Mic stall monitor (hardware-resilience H2): while recording, a
+        # device that silently stops delivering buffers (USB unplug,
+        # Bluetooth drop) previously produced an empty recording with no
+        # warning until stop. Detection notifies immediately; the stream
+        # keeps running in case the device returns (a mid-recording
+        # reopen is deferred - see the hardening plan).
+        _MIC_STALL_S = 5.0
+
+        def _mic_stall_check():
+            try:
+                age = self.recorder.seconds_since_last_mic_buffer()
+                if age is not None and age > _MIC_STALL_S:
+                    if not getattr(self, "_mic_stall_notified", False):
+                        self._mic_stall_notified = True
+                        logger.warning(
+                            f"Mic delivered no audio for {age:.0f}s while recording "
+                            "(device lost?)"
+                        )
+                        notify("Microphone stopped",
+                               "No audio is arriving from the mic. Check the device; "
+                               "the recording is still open.")
+                        self._gpu_guard.log_external_event("mic_stall", age_s=round(age, 1))
+                elif age is not None and age <= _MIC_STALL_S:
+                    self._mic_stall_notified = False
+            except Exception:
+                logger.debug("mic stall check failed", exc_info=True)
+
+        _sched.call_every(2.0, _mic_stall_check, label="mic-stall-check")
+
         try:
             self.tray.run()
         finally:

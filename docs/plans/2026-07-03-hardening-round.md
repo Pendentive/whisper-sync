@@ -18,7 +18,7 @@
 | 11 | Docs truth and navigation pass | testing-and-docs-cleanup D1-D5 | MERGED (#159) |
 | 10 | docs/testing.md single testing entry point | testing-and-docs-cleanup T2-T4 | MERGED (#159) |
 | 8 | Finish executor migration (remaining stray spawns) | architecture-validation A3 | MERGED (#161) |
-| 4 | Device-loss and wedged-worker stall detection | hardware-resilience H2+H4 | PENDING |
+| 4 | Device-loss and wedged-worker stall detection | hardware-resilience H2+H4 | IN PIPELINE |
 | 5 | Overlay dictation disk-first | hardware-resilience H3 | MERGED (#162) |
 | 7 | State machine transition table | architecture-validation A1 | PENDING |
 | 6 | __main__.py decomposition by workflow | architecture-validation A2 | PENDING |
@@ -130,3 +130,16 @@ in one place, not a branching if/then system and not a framework.
   pipeline protocol is in CONTRIBUTING.md; production validation of the
   running app (docs/testing.md, five signals) still awaits the owner
   updating via tray > Settings > Update > Labs/dev.
+
+- **2026-07-03 (item 4)**: H4 - worker emits a liveness ping every 10s
+  during meeting transcriptions (pinger thread in the worker process);
+  the manager's unbounded wait wakes every 15s and, ONLY once a first
+  ping proved this build pings, treats 90s of silence as a wedged
+  process: kill + WorkerCrashedError (feeds the GPU guard ladder).
+  Ping-less workers keep the pure unbounded contract (4f3b307). H2 -
+  callbacks stamp every delivered buffer and surface PortAudio status
+  flags once; a 2s scheduler check notifies the user when the mic goes
+  silent >5s mid-recording and logs a mic_stall event to
+  gpu-guard.jsonl. DEFERRED from H2: automatic mid-recording stream
+  reopen (needs the format-ladder rework; detection ships first) and
+  loopback-stream stall coverage (mic is the critical channel).

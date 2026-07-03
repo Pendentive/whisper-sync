@@ -53,11 +53,12 @@ def _reconstruct_error(response: dict) -> Exception:
 class _PendingRequest:
     """A response slot one caller waits on; completed by the reader thread."""
 
-    __slots__ = ("done", "response")
+    __slots__ = ("done", "response", "last_ping")
 
     def __init__(self):
         self.done = threading.Event()
         self.response: dict | None = None  # None after done => worker died
+        self.last_ping: float | None = None  # monotonic time of latest ping
 
 
 class _WorkerGeneration:
@@ -76,6 +77,18 @@ class _WorkerGeneration:
         self.pending_lock = threading.Lock()
         self.ready_event = threading.Event()
         self.ready_ok = False
+
+
+# Wedged-worker detection (hardware-resilience H4): during an unbounded
+# meeting transcription the worker emits a liveness ping every 10s
+# (worker.PING_INTERVAL_S). Once at least one ping has arrived (proving
+# this worker build pings at all - anything older keeps the pure
+# unbounded contract of 4f3b307), silence longer than STALL_AFTER_S
+# means the whole process is wedged (the classic hung-driver symptom):
+# kill it and raise WorkerCrashedError instead of hanging the meeting
+# pipeline forever. Audio is disk-first, so nothing is lost.
+STALL_AFTER_S = 90.0
+_STALL_CHECK_S = 15.0
 
 
 class TranscriptionWorker:
@@ -185,6 +198,14 @@ class TranscriptionWorker:
                 continue
 
             rid = msg.get("request_id")
+            if mtype == "ping":
+                # Liveness ping during a long transcription (H4): refresh
+                # the slot's timestamp, never complete it.
+                with gen.pending_lock:
+                    slot = gen.pending.get(rid)
+                if slot is not None:
+                    slot.last_ping = time.monotonic()
+                continue
             with gen.pending_lock:
                 pending = gen.pending.pop(rid, None)
             if pending is not None:
@@ -232,7 +253,26 @@ class TranscriptionWorker:
                 gen.pending.pop(request_id, None)
             raise
 
-        if not pending.done.wait(timeout):
+        if timeout is None:
+            # Unbounded wait with wedge detection: wake periodically and
+            # check ping staleness. Armed only after the first ping.
+            while not pending.done.wait(_STALL_CHECK_S):
+                last = pending.last_ping
+                if last is not None and (time.monotonic() - last) > STALL_AFTER_S:
+                    with self._gen.pending_lock:
+                        self._gen.pending.pop(request_id, None)
+                    logger.error(
+                        f"Worker wedged: no liveness ping for {STALL_AFTER_S:.0f}s "
+                        f"(request {request_id}); killing worker"
+                    )
+                    if self._process is not None and self._process.is_alive():
+                        self._process.kill()
+                        self._process.join(timeout=3)
+                    raise WorkerCrashedError(
+                        "Worker stopped responding during transcription and was "
+                        "terminated (no liveness ping). Audio is preserved on disk."
+                    )
+        elif not pending.done.wait(timeout):
             with gen.pending_lock:
                 gen.pending.pop(request_id, None)
             logger.error(
