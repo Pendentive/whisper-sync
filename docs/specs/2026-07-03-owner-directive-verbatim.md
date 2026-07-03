@@ -9,8 +9,9 @@ case at `D:\0x74_case_handoff\` (analysis machine). Key facts from that
 case for repo readers without drive access: June 25-28 2026, five BSODs,
 all 0x3B SYSTEM_SERVICE_EXCEPTION with exception 0xC0000094 (integer
 divide by zero) in nvlddmkm.sys (NVIDIA driver build dated May 19 2026)
-at the identical offset nvlddmkm+0x74342A, process context csrss.exe -
-a deterministic driver bug. The subsequent forced shutdowns produced a
+at the identical offset nvlddmkm+0x74342A, process context csrss.exe.
+The case file concludes from the identical offset across all five dumps
+that this is a deterministic driver bug rather than random corruption. The subsequent forced shutdowns produced a
 dirty registry hive, a June 28 restore point captured it, and a July 1
 System Restore installed it, causing a 0x74 BAD_SYSTEM_CONFIG_INFO boot
 failure (repaired offline July 1). The owner suspects this application's
