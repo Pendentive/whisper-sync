@@ -126,6 +126,24 @@ jobs:
                 continue;
               }
 
+              // Require the test suite to have PASSED on the head commit.
+              // The Tests workflow (tests.yml) runs the system suite on
+              // every PR; a missing or failed run blocks the merge. Named
+              // check runs are matched by the job name 'system-suite'.
+              const { data: checkData } = await github.rest.checks.listForRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: prData.head.sha,
+                per_page: 100
+              });
+              const testRuns = checkData.check_runs.filter(c => c.name === 'system-suite');
+              const testsPassed = testRuns.some(c => c.conclusion === 'success');
+              if (!testsPassed) {
+                const state = testRuns.length === 0 ? 'has not run' : 'has not passed';
+                console.log(`PR #${prNumber}: test suite ${state} on head ${prData.head.sha}; skipping`);
+                continue;
+              }
+
               // Check for unresolved Copilot review threads.
               //
               // Why thread state and not commit_id matching: when a push fixes
