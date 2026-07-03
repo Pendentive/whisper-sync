@@ -12,15 +12,20 @@ from pathlib import Path
 from unittest import mock
 
 
+class _StubDialogs:
+    """Stand-in for the MeetingDialogs component on the app."""
+
+    def ask_speaker_confirmation(self, id_result):
+        # Default: skip confirmation (user clicked cancel).
+        return None
+
+
 class _StubApp:
     """Minimal stand-in for the WhisperSync application object."""
 
     def __init__(self):
         self._current_meeting_json_path = None
-
-    def _ask_speaker_confirmation(self, id_result):
-        # Default: skip confirmation (user clicked cancel).
-        return None
+        self.dialogs = _StubDialogs()
 
 
 def _make_job(steps):
@@ -181,9 +186,14 @@ class StepSpeakerIdFailsafeTests(unittest.TestCase):
         # identify_speakers succeeds, but the confirmation dialog raises.
         # The step must still complete; placeholder map should be applied
         # since speakers_confirmed never got set by the confirmation path.
-        class _BoomApp(_StubApp):
-            def _ask_speaker_confirmation(self, id_result):
+        class _BoomDialogs(_StubDialogs):
+            def ask_speaker_confirmation(self, id_result):
                 raise RuntimeError("tkinter heap corruption")
+
+        class _BoomApp(_StubApp):
+            def __init__(self):
+                super().__init__()
+                self.dialogs = _BoomDialogs()
 
         fake, writes = _install_fake_speakers_module()
         with mock.patch.dict(sys.modules, {"whisper_sync.speakers": fake}):
@@ -202,9 +212,14 @@ class StepSpeakerIdFailsafeTests(unittest.TestCase):
         # transcript dict to avoid background-thread json.load (0x80000003
         # crash). Therefore step_speaker_id must NOT release the dict.
         # Confirmed-write path.
-        class _AcceptApp(_StubApp):
-            def _ask_speaker_confirmation(self, id_result):
+        class _AcceptDialogs(_StubDialogs):
+            def ask_speaker_confirmation(self, id_result):
                 return {"SPEAKER_00": "Alice"}
+
+        class _AcceptApp(_StubApp):
+            def __init__(self):
+                super().__init__()
+                self.dialogs = _AcceptDialogs()
 
         fake, writes = _install_fake_speakers_module()
         with mock.patch.dict(sys.modules, {"whisper_sync.speakers": fake}):

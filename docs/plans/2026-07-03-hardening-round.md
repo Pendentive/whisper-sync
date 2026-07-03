@@ -208,6 +208,24 @@ in one place, not a branching if/then system and not a framework.
   out useful history); _updating folds during the lifecycle
   extraction as planned.
 
+- **2026-07-03 (item 6, extraction 1 merged, #169)**: review caught a
+  REAL latent bug the move exposed: the feature hotkey during a normal
+  overlay dictation fell through to _start_overlay and would have
+  replaced the live overlay recorder (double-opened mic). Predates the
+  extraction; now ignored like the dictation-in-progress case, with a
+  regression test pinning recorder identity.
+
+- **2026-07-03 (item 6, extraction 2a)**: meeting dialogs extracted to
+  meeting_dialogs.py (~730 lines: ask_meeting_name,
+  ask_speaker_confirmation incl. deep-ID rerun, ask_recovery_name,
+  show_llm_unavailable, plus module-level styling helpers and the ABORT
+  sentinel shared with the remaining flows). meeting_job now calls
+  app.dialogs.ask_speaker_confirmation. Extraction 2 is split 2a
+  (dialogs, mechanical) / 2b (meeting flow logic) to keep each PR
+  reviewable. 9 new tests pin sanitize_name and the abort-on-crash
+  contract for every dialog (a Tk failure must never abort a meeting
+  save or hang the caller).
+
 - **2026-07-03 (production bugs, owner-reported)**: two real bugs from
   field use, both fixed. (1) PIPELINE ABORT AFTER TRANSCRIPTION: every
   past-week meeting had transcript.json but no flatten/speakers/minutes.
