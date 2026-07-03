@@ -17,7 +17,7 @@
 | 3 | Sleep/resume power event handling | hardware-resilience H1 | PENDING |
 | 11 | Docs truth and navigation pass | testing-and-docs-cleanup D1-D5 | PENDING |
 | 10 | docs/testing.md single testing entry point | testing-and-docs-cleanup T2-T4 | PENDING |
-| 8 | Finish executor migration (remaining stray spawns) | architecture-validation A3 | PENDING |
+| 8 | Finish executor migration (remaining stray spawns) | architecture-validation A3 | IN PIPELINE |
 | 4 | Device-loss and wedged-worker stall detection | hardware-resilience H2+H4 | PENDING |
 | 5 | Overlay dictation disk-first | hardware-resilience H3 | PENDING |
 | 7 | State machine transition table | architecture-validation A1 | PENDING |
@@ -67,3 +67,14 @@ in one place, not a branching if/then system and not a framework.
   meeting pipeline worker crash. Model seam: effective_model() at the 6
   dictation_model computations and meeting_job step_transcribe
   (model_override). 17 tests. System suite 164; venv 36.
+
+- **2026-07-03 (item 8)**: remaining stray spawns migrated: feature
+  recovery format + deep speaker-ID (IO, native-gauged), meeting WAV
+  save+enqueue (IO), github first-poll waiter (scheduler step chain
+  replaces a sleeping thread), dictation model reload (DICTATION lane -
+  reloads and dictations cannot overlap anyway), paste clipboard restore
+  (scheduler delayed job). NOT migrated, deliberate: the error-popup
+  dialog spawn (a modal dialog can block for minutes and would starve
+  the serial IO lane; the dialog dispatcher already single-owns Tk),
+  startup recovery transcription, and the documented once-per-session
+  threads (download/update/restart/quit) plus long-lived loops.

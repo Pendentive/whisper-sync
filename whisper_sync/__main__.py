@@ -851,11 +851,11 @@ class WhisperSync:
                 entry_id = feature_log.append_raw(text, 0)
                 logger.info(f"Feature suggestion recovered to feature log: {entry_id}")
                 # Format via Claude CLI in background
-                threading.Thread(
-                    target=self._format_feature_async,
-                    args=(text, entry_id),
-                    daemon=True,
-                ).start()
+                submit_or_spawn(
+                    IO, "feature-format",
+                    lambda t=text, e=entry_id: self._format_feature_async(t, e),
+                    native=True,
+                )
                 notify("Feature recovered", f"{len(text)} chars saved to feature log")
 
             def _do_cancel():
@@ -1891,7 +1891,7 @@ class WhisperSync:
                             _deep_running[0] = False
                         root.after(0, _err)
 
-                threading.Thread(target=_run_deep, daemon=True).start()
+                submit_or_spawn(IO, "speaker-id-deep", _run_deep, native=True)
 
             def _confirm():
                 if _closing[0]:
@@ -2060,7 +2060,7 @@ class WhisperSync:
                 self.state.emit(ERROR, meeting_transcribing=False, mode="error", data={"message": str(e), "recoverable": False})
                 self._schedule_idle(3)
 
-        threading.Thread(target=_save_and_enqueue, daemon=True).start()
+        submit_or_spawn(IO, "meeting-save-enqueue", _save_and_enqueue)
 
     def _post_process_worker(self):
         """Process meeting job steps sequentially.
@@ -2875,16 +2875,21 @@ class WhisperSync:
         )
         self._github_poller.start()
         if self._github_poller.state.available:
-            # Refresh menu after first poll completes
-            def _wait_first_poll():
-                import time
-                for _ in range(30):  # Wait up to 30s for first poll
-                    time.sleep(1)
-                    if self._github_poller.state.last_poll > 0:
-                        self._github_prs = self._github_poller.state.prs
-                        self._refresh_menu()
-                        break
-            threading.Thread(target=_wait_first_poll, daemon=True).start()
+            # Refresh menu after the first poll completes: a scheduler
+            # step chain (1s cadence, 30 tries) instead of a sleeping
+            # thread. Each step is a cheap flag check.
+            from .scheduler import scheduler as _sched
+
+            def _first_poll_step(remaining: int):
+                if self._github_poller.state.last_poll > 0:
+                    self._github_prs = self._github_poller.state.prs
+                    self._refresh_menu()
+                    return
+                if remaining > 0:
+                    _sched.call_later(1.0, lambda: _first_poll_step(remaining - 1),
+                                      label="github-first-poll")
+
+            _first_poll_step(30)
 
     def _notify(self, title: str, body: str = "", *, buttons=None, on_click=None):
         """Show a Windows toast notification via windows-toasts."""
@@ -3297,10 +3302,13 @@ class WhisperSync:
         self._save_and_refresh()
         # Reload model in the appropriate worker subprocess
         if key == "dictation_model":
-            threading.Thread(
-                target=lambda: self.worker.reload_model(model_name),
-                daemon=True,
-            ).start()
+            # DICTATION lane: a reload and a dictation cannot run
+            # concurrently anyway, so serializing them is the semantics.
+            submit_or_spawn(
+                DICTATION, "dictation-model-reload",
+                lambda m=model_name: self.worker.reload_model(m),
+                native=True,
+            )
 
     def _model_menu_items(self) -> list:
         """Build model status menu items."""
