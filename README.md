@@ -102,7 +102,7 @@ For the full design, see [docs/specs/2026-03-24-governance-learning-loop-design.
 | Requirement | Details |
 |-------------|---------|
 | **OS** | Windows 10 or 11 |
-| **Python** | 3.11 or newer (3.13 recommended) |
+| **Python** | 3.10 or newer (3.13 recommended) |
 | **GPU** | NVIDIA with CUDA support recommended (RTX 20/30/40/50 series, GTX 10-series). CPU-only mode available but 5-10x slower. |
 | **VRAM** | 2 GB minimum (tiny/base models), 4 GB+ recommended, 8 GB+ for large-v3 |
 | **Disk** | ~200 MB base install + model sizes (see table below) |
