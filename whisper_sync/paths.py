@@ -1,6 +1,7 @@
 """Central path resolution for repo mode."""
 
 import json
+import os
 from pathlib import Path
 
 _PKG_DIR = Path(__file__).parent
@@ -89,8 +90,15 @@ def get_data_dir() -> Path:
     """Return output_dir/.whispersync/, creating it if needed.
 
     This is the single source of truth for where user data lives.
+    WS_DATA_DIR overrides the resolved location (set by tests/__init__.py
+    so test runs never write worker-pids.json / gpu-guard.jsonl into
+    the live data dir).
     """
-    p = _resolve_output_dir() / ".whispersync"
+    override = os.environ.get("WS_DATA_DIR")
+    if override:
+        p = Path(override)
+    else:
+        p = _resolve_output_dir() / ".whispersync"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
