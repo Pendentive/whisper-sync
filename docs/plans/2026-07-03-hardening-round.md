@@ -11,9 +11,9 @@
 
 | # | Item | Spec | Status |
 |---|------|------|--------|
-| 2 | In-app single-instance lock + orphan worker reaping | gpu-guard-spec B4 | IN PIPELINE |
-| 9 | CI runs the system test suite on every PR | testing-and-docs-cleanup T1 | PENDING |
-| 1 | GPU Guard: VRAM watchdog, model downgrade ladder, event log | gpu-guard-spec B1-B3 | PENDING |
+| 2 | In-app single-instance lock + orphan worker reaping | gpu-guard-spec B4 | MERGED (#156) |
+| 9 | CI runs the system test suite on every PR | testing-and-docs-cleanup T1 | MERGED (#157) |
+| 1 | GPU Guard: VRAM watchdog, model downgrade ladder, event log | gpu-guard-spec B1-B3 | IN PIPELINE |
 | 3 | Sleep/resume power event handling | hardware-resilience H1 | PENDING |
 | 11 | Docs truth and navigation pass | testing-and-docs-cleanup D1-D5 | PENDING |
 | 10 | docs/testing.md single testing entry point | testing-and-docs-cleanup T2-T4 | PENDING |
@@ -45,3 +45,25 @@ in one place, not a branching if/then system and not a framework.
   and unkillable-pid retry. Toggle gpu_guard_single_instance (default
   true). 10 tests (real named mutex on Windows; all process seams faked
   for reap logic).
+
+- **2026-07-03 (item 2 merged, #156)**: after review, all Win32 calls
+  prototyped via a single _win32() accessor (HANDLE-truncation class from
+  PR #141) and orphan reaping made Windows-only (no safe positive
+  PID-reuse check elsewhere; never guess-kill).
+
+- **2026-07-03 (item 9 merged, #157)**: tests.yml runs the system suite
+  on windows-latest per PR; auto-merge requires the system-suite check
+  to succeed on the head commit (plus checks: read permission - Copilot
+  catch). Verified: check runs attach to the PR head sha; the suite
+  passed green on its first CI run.
+
+- **2026-07-03 (item 1)**: gpu_guard.py + vram_probe.py per spec B1-B3.
+  Deviations from spec, both deliberate: no gpu_guard_allow_cpu_floor
+  key (forcing device per request needs a worker restart path; the
+  ladder floor is the smallest model instead - CPU floor deferred), and
+  watermark hysteresis added (a persistently low reading arms ONE step,
+  not one per poll; re-arm requires recovery above the watermark).
+  Escalation triggers: low-VRAM watermark, dictation worker crash,
+  meeting pipeline worker crash. Model seam: effective_model() at the 6
+  dictation_model computations and meeting_job step_transcribe
+  (model_override). 17 tests. System suite 164; venv 36.

@@ -146,6 +146,10 @@ Three layers prevent CUDA out-of-memory crashes:
 
 Override with `"batch_size": 8` in `config.json`. Set `"batch_size": "auto"` to re-enable adaptive sizing.
 
+### GPU Guard (VRAM watchdog + model downgrade)
+
+`gpu_guard.py` polls device-wide free VRAM (providers in `vram_probe.py`: pynvml if installed, else nvidia-smi; a new GPU vendor is a new provider function, nothing else changes). Below `gpu_guard_low_vram_mb` free (default 750), one downgrade step is armed for the NEXT transcription; worker crashes escalate immediately. The downgrade ladder (`gpu_guard_ladder`, default large-v3 > medium > small > base) is sticky for the session and never upgrades a caller that asked for a smaller model. Every event (arm, recovery, floor, probe-unavailable) appends a timestamped JSON line to `<data_dir>/gpu-guard.jsonl` - the artifact for correlating GPU pressure with Windows crash/BSOD times, and the machine-readable surface for external tooling. Master toggle: `gpu_guard` (default true); disabled or no-provider means fully inert.
+
 ### Meeting Recording -- Disk-Only Audio
 
 Meeting recordings use **disk-only** audio capture for the mic channel. The mic callback streams audio to a WAV file on disk in real-time and does NOT accumulate audio in RAM (controlled by the `disk_only` flag in `start_streaming()`). The speaker loopback channel, however, still accumulates audio in RAM via `_speaker_data` for resampling and stereo merging at stop time. Dictation mode uses RAM for both channels (recordings are short).

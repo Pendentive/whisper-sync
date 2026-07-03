@@ -30,6 +30,8 @@ _VALID_KEYS = {
     "diarize_primary", "diarize_fallback", "diarize_last_resort",
     "dictation_max_minutes",
     "gpu_guard_single_instance",
+    "gpu_guard", "gpu_guard_low_vram_mb", "gpu_guard_poll_seconds",
+    "gpu_guard_ladder", "gpu_guard_probe",
 }
 
 
