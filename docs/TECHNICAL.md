@@ -19,7 +19,7 @@ Everything below is for developers modifying this app or for an AI assistant (li
 | `config.py` | **Config manager.** Loads `config.defaults.json`, deep-merges with user `config.json` overrides. | `load()` returns merged dict; `save(overrides)` writes config.json |
 | `paths.py` | **Path resolver.** Repo mode path resolution, model cache dir, output dir. | `get_install_root()`, `get_model_cache()`, `get_default_output_dir()` |
 | `model_status.py` | **Model management.** Download, cache validation, bootstrap (auto-download tiny+base, prompt for larger). | `get_model_status(name)` returns bool; `download_model(name)` downloads to HF cache; `bootstrap_models(config)` -- first-run setup |
-| `icons.py` | **Tray icon generator.** Creates colored 64x64 PNG circles with labels. No external assets needed. | `_circle_icon(color, label)` returns PIL Image |
+| `icons.py` | **Tray icon generator.** Declarative ICON_REGISTRY of IconSpec entries rendered by `build_icon()`; three-ring composition + IconAnimator (scheduler-driven flashes). No external assets needed. | `build_icon(ICON_REGISTRY[key])` returns PIL Image |
 | `paste.py` | **Text output.** Routes transcribed text to clipboard+Ctrl+V or simulated keystrokes. | `paste(text, method)`, `paste_clipboard(text)`, `paste_keystrokes(text)` |
 | `flatten.py` | **Transcript converter.** JSON to readable speaker-attributed text (~90% token reduction). | `flatten(transcript_path)` writes `transcript-readable.txt`; `PAUSE_THRESHOLD = 2.0` seconds |
 | `dictation_log.py` | **Dictation history.** Appends entries to daily markdown log files. | `append(text, duration)` writes to `<output_dir>/.whispersync/dictation-logs/YYYY-MM-DD.md` |

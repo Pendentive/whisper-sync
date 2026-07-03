@@ -10,7 +10,7 @@ Local speech-to-text for Windows. GPU-accelerated transcription with speaker dia
 - **`docs/plans/`** - Implementation plans for major features
 - **`.claude/rules/audio-pipeline.md`** - Stereo recording, diarization tiers, VRAM management, worker model
 - **`.claude/rules/ui-patterns.md`** - Tray menu ordering, dialog conventions, pystray limitations
-- **`.claude/rules/testing.md`** - Manual test checklist for all modes
+- **`.claude/rules/testing.md`** - Manual hardware-in-the-loop checklist (automated suites: docs/testing.md; system suite runs in CI per PR)
 - **`.github/governance/policy.yaml`** - Auto-merge policy, path protection, review thresholds
 
 ### Note for AI Agents

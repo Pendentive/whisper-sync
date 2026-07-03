@@ -1,6 +1,6 @@
 # Testing Rules
 
-No automated test suite exists. All verification is manual.
+Automated suites exist and run in CI (see docs/testing.md for the full map: 160+ system tests per PR, venv/real-data suites locally). This file is the MANUAL verification checklist that complements them - hardware-in-the-loop checks no automated test covers.
 
 ## Setup
 

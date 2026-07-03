@@ -1,5 +1,7 @@
 # GitHub Status in WhisperSync Tray — Feature Spec
 
+> Status: SHIPPED (2026-03; github_status.py + tray menu integration).
+
 **Goal:** Surface GitHub PR status (reviews, suggestions, auto-merges) directly in the WhisperSync tray icon without leaving the app or checking GitHub.
 
 ## Architecture

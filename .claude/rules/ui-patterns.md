@@ -2,7 +2,7 @@
 
 ## Tray Menu
 
-The tray menu is built in `_build_menu()` and refreshed via `_refresh_menu()`. Menu ordering is intentional and must be preserved:
+The tray menu is built in `_build_menu()`; `_refresh_menu()` requests a rebuild through the debounced single-owner MenuRefresher (300ms coalescing, #138). Menu ordering is intentional and must be preserved:
 
 1. Recent Dictations (submenu)
 2. Separator
@@ -29,7 +29,7 @@ This is a pystray convention. The tab character triggers right-alignment in the 
 
 ## Pystray Limitations
 
-- `pystray` does not support dynamic menu updates without full menu rebuild. `_refresh_menu()` replaces the entire menu via `self.tray.update_menu()`.
+- `pystray` does not support dynamic menu updates without full menu rebuild. Refresh requests coalesce in MenuRefresher, which replaces the entire menu via `self.tray.update_menu()` on its debounce.
 - Menu item callbacks must be simple lambdas or bound methods. Complex state changes must be dispatched to background threads.
 - Enabled/disabled state is set at construction time via the `enabled` parameter.
 - Separators are `pystray.Menu.SEPARATOR`.

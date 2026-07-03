@@ -94,7 +94,7 @@ If you are unsure whether a file should be committed, check `.gitignore`.
 
 ## Testing
 
-There is no automated test suite yet. Before submitting a PR, manually verify:
+Automated tests run on every PR (tests.yml; see [docs/testing.md](docs/testing.md) for all suites and commands). Before submitting a PR that touches audio, transcription, or the tray, additionally verify manually:
 
 1. **Dictation mode** -- press Ctrl+Shift+Space, speak for 3-5 seconds, press again. Text should paste into the focused window.
 2. **Meeting mode** -- press Ctrl+Shift+M, speak for 10+ seconds, press again. Transcript should be saved to disk.

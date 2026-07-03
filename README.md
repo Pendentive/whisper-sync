@@ -20,7 +20,7 @@ Runs as a system tray icon on Windows.
 - **Always-available dictation** -- dictate during active meeting recording without interruption
 - **Tiered log window** -- Off / Normal / Detailed / Verbose with ANSI color coding
 - **CPU/GPU device selection** -- Auto-detect, force GPU, or force CPU via tray menu
-- **Dual-ring tray icon** -- inner circle = mic status, outer ring = speaker/loopback status
+- **Three-ring tray icon** -- inner dot = backup/overlay dictation, inner circle = mic status, outer ring = speaker/loopback status (canonical table: .claude/rules/ui-patterns.md)
 - **Incognito mode** -- RAM-only dictation; no transcription text logged or saved to disk
 - **Persistent dictation history** -- last 10 dictations in tray menu, survives restarts
 - **Session stats** -- dictation/meeting counts, averages, and uptime for the current session
@@ -49,7 +49,7 @@ Models download once on first run and are cached locally. Subsequent launches lo
 
 WhisperSync uses a **3-tier diarization cascade** for stereo recordings (mic + system audio captured as separate channels):
 
-**Tier 1: Per-channel transcription + confidence fusion (~95% of meetings)**
+**Per-channel transcription + confidence fusion** (highest quality; the shipped default order is `balanced_mix` first - see `diarize_primary` in config and .claude/rules/audio-pipeline.md for the authoritative method order)
 - The stereo recording is split into mic channel and loopback channel
 - Each channel is transcribed independently with WhisperX
 - Segments are merged using energy-based confidence scoring
@@ -63,7 +63,7 @@ WhisperSync uses a **3-tier diarization cascade** for stereo recordings (mic + s
 - Used for mono recordings (single-channel mic, no loopback)
 - Standard PyAnnote diarization on the raw audio
 
-The cascade selects the highest-confidence tier automatically. Stereo recordings almost always resolve at Tier 1 because channel separation provides a strong speaker signal without relying on voice embeddings.
+The cascade falls through in the configured order (`diarize_primary` > `diarize_fallback` > `diarize_last_resort`, default balanced_mix > per_channel > raw_audio). Channel separation provides a strong speaker signal without relying on voice embeddings.
 
 ---
 
@@ -88,6 +88,13 @@ WhisperSync includes an agentic governance system that improves its own developm
 
 For the full design, see [docs/specs/2026-03-24-governance-learning-loop-design.md](docs/specs/2026-03-24-governance-learning-loop-design.md).
 
+## For Contributors
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) - branch naming, the PR pipeline (Copilot review + CI test gate + auto-merge), commit format
+- [docs/development.md](docs/development.md) - setup, debugging, running the test suites
+- [docs/testing.md](docs/testing.md) - the single testing entry point: automated suites, manual checklist, where results are recorded
+- [docs/plans/2026-07-03-hardening-round.md](docs/plans/2026-07-03-hardening-round.md) - current project state (the stability rebuild that preceded it: [docs/plans/2026-05-11-stability-rebuild.md](docs/plans/2026-05-11-stability-rebuild.md))
+
 ---
 
 ## System Requirements
@@ -95,7 +102,7 @@ For the full design, see [docs/specs/2026-03-24-governance-learning-loop-design.
 | Requirement | Details |
 |-------------|---------|
 | **OS** | Windows 10 or 11 |
-| **Python** | 3.10 or newer (3.13 recommended) |
+| **Python** | 3.11 or newer (3.13 recommended) |
 | **GPU** | NVIDIA with CUDA support recommended (RTX 20/30/40/50 series, GTX 10-series). CPU-only mode available but 5-10x slower. |
 | **VRAM** | 2 GB minimum (tiny/base models), 4 GB+ recommended, 8 GB+ for large-v3 |
 | **Disk** | ~200 MB base install + model sizes (see table below) |
@@ -146,7 +153,7 @@ Speaker diarization requires a free Hugging Face token. Skip this for dictation-
 
 ### Tray Icon
 
-A dual-ring icon appears in your system tray. Inner circle = mic state, outer ring = speaker/loopback state.
+A three-ring icon appears in your system tray. Inner dot = overlay/backup dictation, inner circle = mic state, outer ring = speaker/loopback state (full table in .claude/rules/ui-patterns.md).
 
 | Inner Circle | State |
 |--------------|-------|
@@ -204,7 +211,7 @@ If a meeting fails mid-pipeline (for example the speaker confirmation dialog cra
 | **medium** | ~1.5 GB | ~0.7s | ~33s | ~4 GB |
 | **large-v3** | ~3 GB | ~1.2s | ~39s | ~8 GB |
 
-*Benchmarked on RTX 3090 with float16. Run `python -m whisper_sync.benchmark` to test your hardware.*
+*Benchmarked 2026-03 on RTX 3090 with float16; figures are indicative, not current. Run `python -m whisper_sync.benchmark` to measure your hardware.*
 
 ---
 
