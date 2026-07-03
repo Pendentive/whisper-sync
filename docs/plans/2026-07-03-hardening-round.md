@@ -19,7 +19,7 @@
 | 10 | docs/testing.md single testing entry point | testing-and-docs-cleanup T2-T4 | MERGED (#159) |
 | 8 | Finish executor migration (remaining stray spawns) | architecture-validation A3 | MERGED (#161) |
 | 4 | Device-loss and wedged-worker stall detection | hardware-resilience H2+H4 | PENDING |
-| 5 | Overlay dictation disk-first | hardware-resilience H3 | IN PIPELINE |
+| 5 | Overlay dictation disk-first | hardware-resilience H3 | MERGED (#162) |
 | 7 | State machine transition table | architecture-validation A1 | PENDING |
 | 6 | __main__.py decomposition by workflow | architecture-validation A2 | PENDING |
 
@@ -110,3 +110,23 @@ in one place, not a branching if/then system and not a framework.
   design. Meeting-stop overlay cancellation cleans the temp like the
   normal-dictation path. Also fixes the stale paste.py docstring flagged
   post-merge on #161.
+
+- **2026-07-03 (item 5 merged, #162)**: review caught that stop() closes
+  streams but not the mic writer; both overlay endpoints now call
+  stop_streaming() before delete-or-preserve.
+
+- **2026-07-03 (session checkpoint)**: 8 of 11 items shipped this
+  session (PRs #156-#162 plus intake #155). REMAINING, in order:
+  item 7 (state machine transition table - flat data dict of
+  mode -> allowed next modes checked in ONE place inside StateManager,
+  warn-then-allow first, then enforce; fold _feature_suggest_active,
+  _updating, _flash_active into AppState; owner constraint: simple and
+  reliable, no branching system, no framework), item 4 (device-loss +
+  wedged-worker stall detection, hardware-resilience H2+H4: callback
+  status flags, no-buffer stall detector with one reopen attempt,
+  worker progress pings during unbounded meeting transcribes), item 6
+  (__main__.py decomposition by workflow, architecture-validation A2 -
+  largest, do last). A fresh session resumes from this doc alone; the
+  pipeline protocol is in CONTRIBUTING.md; production validation of the
+  running app (docs/testing.md, five signals) still awaits the owner
+  updating via tray > Settings > Update > Labs/dev.
