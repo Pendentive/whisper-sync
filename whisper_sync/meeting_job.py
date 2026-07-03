@@ -263,7 +263,7 @@ class MeetingJob:
             if id_result and id_result.get("speaker_map"):
                 try:
                     self.app._current_meeting_json_path = json_path
-                    confirmation = self.app._ask_speaker_confirmation(id_result)
+                    confirmation = self.app.dialogs.ask_speaker_confirmation(id_result)
                     if confirmation:
                         if isinstance(confirmation, tuple):
                             confirmed_map, boundaries = confirmation
@@ -414,7 +414,7 @@ class MeetingJob:
             suppress = self.app.cfg.get("suppress_llm_warning", False)
             if not suppress:
                 from . import config
-                dont_show = self.app._show_llm_unavailable()
+                dont_show = self.app.dialogs.show_llm_unavailable()
                 if dont_show:
                     self.app.cfg["suppress_llm_warning"] = True
                     config.save(self.app.cfg.snapshot())
