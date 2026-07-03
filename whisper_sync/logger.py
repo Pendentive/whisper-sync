@@ -221,6 +221,8 @@ def log_transcript_preview(text: str, speakers: dict = None) -> None:
     try:
         if speakers and hasattr(speakers, "items"):
             for speaker, utterances in speakers.items():
+                if isinstance(utterances, str):
+                    utterances = [utterances]  # one utterance, not characters
                 for utt in list(utterances)[:1]:  # First utterance per speaker
                     preview = utt[:80] + ("..." if len(utt) > 80 else "")
                     logger.log(TRANSCRIPT, f"        [{speaker}] {preview}")

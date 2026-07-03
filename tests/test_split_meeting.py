@@ -128,6 +128,23 @@ class PreflightTests(_SplitHarness):
                         "existing folder must never be clobbered")
         self.assertTrue(source.exists(), "source untouched on pre-flight failure")
 
+    def test_mid_split_failure_rolls_staging_back(self):
+        # Regression for PR review: an unexpected error inside the split
+        # loop must rename the staged source back to its original name.
+        from unittest import mock
+        import whisper_sync.split_meeting as sm
+        source = self._make_source("Original")
+        with mock.patch.object(sm, "trim_wav_inplace",
+                               side_effect=RuntimeError("disk full")):
+            with self.assertRaises(RuntimeError):
+                split_meeting(source, [2.0], ["PartA", "PartB"])
+        self.assertTrue(source.exists(), "source must be restored on failure")
+        self.assertTrue((source / "transcript.json").exists())
+        self.assertFalse(
+            source.with_name(source.name + ".splitting").exists(),
+            "staging must not linger after rollback",
+        )
+
     def test_leftover_staging_folder_rejected(self):
         source = self._make_source("Original")
         staging = source.with_name(source.name + ".splitting")

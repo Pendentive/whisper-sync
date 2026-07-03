@@ -221,6 +221,19 @@ def split_meeting(source_folder: Path, split_points: list[float], names: list[st
     wav_path = staging / "recording.wav"
     json_path = staging / "transcript.json"
 
+    def _rollback_staging(exc):
+        """Best-effort undo of the staging rename after a mid-split error."""
+        try:
+            if not source_folder.exists():
+                os.rename(str(staging), str(source_folder))
+                print(f"Split failed ({exc}); original restored: {source_folder}")
+            else:
+                print(f"Split failed ({exc}); original preserved at: {staging} "
+                      f"(could not rename back - {source_folder.name} exists)")
+        except OSError as rb:
+            print(f"Split failed ({exc}); rollback also failed ({rb}); "
+                  f"original data is intact at: {staging}")
+
     print(f"Source: {source_folder.name} ({total_duration / 60:.1f} min)")
     print(f"Original recorded: {original_start.strftime('%Y-%m-%d %H:%M')} - {original_mtime.strftime('%H:%M')}")
     print(f"Splitting into {len(ranges)} meetings:")
@@ -236,49 +249,56 @@ def split_meeting(source_folder: Path, split_points: list[float], names: list[st
         _spec.loader.exec_module(_mod)
         flatten_transcript = _mod.flatten
 
-    for i, ((start_sec, end_sec), name) in enumerate(zip(ranges, names)):
-        portion_start = original_start + timedelta(seconds=start_sec)
-        portion_end = original_start + timedelta(seconds=end_sec)
-        duration = end_sec - start_sec
+    # Any unexpected failure inside the split loop rolls the staging
+    # rename back (review: the original must never be stranded under
+    # a .splitting name the pipeline does not know).
+    try:
+        for i, ((start_sec, end_sec), name) in enumerate(zip(ranges, names)):
+            portion_start = original_start + timedelta(seconds=start_sec)
+            portion_end = original_start + timedelta(seconds=end_sec)
+            duration = end_sec - start_sec
 
-        # Build folder name: MMDD_HHMM_name inside MM-wN week folder
-        week_dir = f"{portion_start.strftime('%m')}-w{(portion_start.day - 1) // 7 + 1}"
-        folder_name = f"{portion_start.strftime('%m%d_%H%M')}_{name}"
-        dest_folder = parent.parent / week_dir / folder_name
+            # Build folder name: MMDD_HHMM_name inside MM-wN week folder
+            week_dir = f"{portion_start.strftime('%m')}-w{(portion_start.day - 1) // 7 + 1}"
+            folder_name = f"{portion_start.strftime('%m%d_%H%M')}_{name}"
+            dest_folder = parent.parent / week_dir / folder_name
 
-        print(f"\n  [{i + 1}] {folder_name}")
-        print(f"      {portion_start.strftime('%H:%M')} - {portion_end.strftime('%H:%M')} ({duration / 60:.1f} min)")
+            print(f"\n  [{i + 1}] {folder_name}")
+            print(f"      {portion_start.strftime('%H:%M')} - {portion_end.strftime('%H:%M')} ({duration / 60:.1f} min)")
 
-        # Create folder
-        dest_folder.mkdir(parents=True, exist_ok=True)
+            # Create folder
+            dest_folder.mkdir(parents=True, exist_ok=True)
 
-        # Copy original WAV (preserves some OS metadata as baseline)
-        dest_wav = dest_folder / "recording.wav"
-        shutil.copy2(str(wav_path), str(dest_wav))
+            # Copy original WAV (preserves some OS metadata as baseline)
+            dest_wav = dest_folder / "recording.wav"
+            shutil.copy2(str(wav_path), str(dest_wav))
 
-        # Trim to this portion
-        trim_wav_inplace(str(dest_wav), start_sec, end_sec)
+            # Trim to this portion
+            trim_wav_inplace(str(dest_wav), start_sec, end_sec)
 
-        # Set correct Windows file times:
-        #   creation time = original file creation time (when recording started)
-        #   modification time = portion end time (so mtime - wav_duration = portion start)
-        set_file_times(str(dest_wav), original_ctime, portion_end)
-        print(f"      WAV: {os.path.getsize(str(dest_wav)) / 1024 / 1024:.1f} MB, "
-              f"ctime preserved, mtime={portion_end.strftime('%H:%M')}")
+            # Set correct Windows file times:
+            #   creation time = original file creation time (when recording started)
+            #   modification time = portion end time (so mtime - wav_duration = portion start)
+            set_file_times(str(dest_wav), original_ctime, portion_end)
+            print(f"      WAV: {os.path.getsize(str(dest_wav)) / 1024 / 1024:.1f} MB, "
+                  f"ctime preserved, mtime={portion_end.strftime('%H:%M')}")
 
-        # Split transcript
-        portion_transcript = split_transcript(transcript, start_sec, end_sec)
-        dest_json = dest_folder / "transcript.json"
-        with open(dest_json, "w") as f:
-            json.dump(portion_transcript, f, indent=2)
-        print(f"      Transcript: {len(portion_transcript['segments'])} segments")
+            # Split transcript
+            portion_transcript = split_transcript(transcript, start_sec, end_sec)
+            dest_json = dest_folder / "transcript.json"
+            with open(dest_json, "w") as f:
+                json.dump(portion_transcript, f, indent=2)
+            print(f"      Transcript: {len(portion_transcript['segments'])} segments")
 
-        # Flatten
-        try:
-            readable = flatten_transcript(str(dest_json))
-            print(f"      Flattened: {readable}")
-        except Exception as e:
-            print(f"      Flatten failed (non-fatal): {e}")
+            # Flatten
+            try:
+                readable = flatten_transcript(str(dest_json))
+                print(f"      Flattened: {readable}")
+            except Exception as e:
+                print(f"      Flatten failed (non-fatal): {e}")
+    except Exception as exc:
+        _rollback_staging(exc)
+        raise
 
     # --- Verify all splits ---
     print("\nVerifying splits...")
