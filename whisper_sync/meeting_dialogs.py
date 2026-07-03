@@ -630,8 +630,10 @@ class MeetingDialogs:
 
                     except Exception as e:
                         logger.warning(f"Deep identify failed: {e}")
-                        def _err():
-                            progress_label.configure(text=f"Failed: {str(e)[:60]}")
+                        def _err(msg=str(e)[:60]):
+                            # bind now: 'e' is unbound once the except
+                            # block exits, and _err runs later via after()
+                            progress_label.configure(text=f"Failed: {msg}")
                             _rebind_buttons()
                             _deep_running[0] = False
                         root.after(0, _err)

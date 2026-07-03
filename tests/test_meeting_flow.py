@@ -175,6 +175,8 @@ class StartStopTests(_FlowHarness):
         self.assertEqual(self.flow._post_queue.qsize(), 1)
         job = self.flow._post_queue.get_nowait()
         self.assertEqual(job.name, "standup")
+        self.assertIs(job.app, self.app,
+                      "job must get the app, not the flow (review catch)")
         state = self.app.state.current
         self.assertIsNone(state.mode, "mode released for the next recording")
         self.assertTrue(state.meeting_transcribing)

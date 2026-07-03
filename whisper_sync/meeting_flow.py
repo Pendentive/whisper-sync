@@ -22,7 +22,7 @@ from pathlib import Path
 from .executors import IO, submit_or_spawn
 from .flatten import flatten as flatten_transcript
 from .logger import logger
-from .meeting_dialogs import ABORT
+from .meeting_dialogs import ABORT, sanitize_name
 from .meeting_job import MeetingJob
 from .notifications import notify
 from .rebuild_index import rebuild_root_index
@@ -182,7 +182,7 @@ class MeetingFlow:
                 wav_path = meeting_dir / "recording.wav"
 
                 # Speaker channel may arrive as a disk path (disk-streamed
-                # at target rate — the flat-RAM path) or as an in-memory
+                # at target rate - the flat-RAM path) or as an in-memory
                 # array (legacy/RAM fallback). Normalize to an array here;
                 # this read is the only transient large allocation left.
                 speaker_arr = None
@@ -215,7 +215,7 @@ class MeetingFlow:
 
                 # Enqueue for post-processing (transcription, speaker ID, etc.)
                 job = MeetingJob(
-                    app=self,
+                    app=self.app,
                     wav_path=wav_path,
                     meeting_dir=meeting_dir,
                     name=meeting_name,
@@ -675,7 +675,7 @@ class MeetingFlow:
         # Inject speaker context into prompt
         prompt_text = prompt_text.replace(
             "{SPEAKER_CONTEXT}",
-            speaker_context or "No speaker identification available — use context clues from the transcript."
+            speaker_context or "No speaker identification available - use context clues from the transcript."
         )
 
         # Build the full prompt: template + transcript
@@ -706,7 +706,7 @@ class MeetingFlow:
                 if result.stderr:
                     logger.debug(f"stderr: {result.stderr[:500]}")
         except FileNotFoundError:
-            logger.warning("Claude CLI not found — minutes generation skipped. Install: npm i -g @anthropic-ai/claude-code")
+            logger.warning("Claude CLI not found - minutes generation skipped. Install: npm i -g @anthropic-ai/claude-code")
         except _sp.TimeoutExpired:
             logger.warning("Claude CLI timed out generating minutes (5 min limit)")
 
