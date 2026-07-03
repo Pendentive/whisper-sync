@@ -14,6 +14,8 @@ try:
 except ImportError:
     pyaudio = None
 
+from time import monotonic as _monotonic
+
 from .logger import logger
 from .streaming_wav import StreamingWavWriter
 
@@ -211,6 +213,8 @@ class AudioRecorder:
         self._lock = threading.Lock()
         self._disk_only = False
         self._mic_writer: StreamingWavWriter | None = None
+        self._last_mic_buffer: float | None = None   # monotonic; H2 stall stamps
+        self._last_speaker_buffer: float | None = None
         self._speaker_writer: StreamingWavWriter | None = None
         # PyAudioWPatch loopback state
         self._pyaudio = None
@@ -227,6 +231,15 @@ class AudioRecorder:
         try:
             if not self._recording:
                 return
+            # Device-loss visibility (hardware-resilience H2): stamp every
+            # delivered buffer so a stall monitor can detect a device that
+            # silently stopped (USB unplug, Bluetooth drop), and surface
+            # PortAudio status flags (overflow/aborted) once instead of
+            # discarding them.
+            self._last_mic_buffer = _monotonic()
+            if status and not getattr(self, "_mic_status_logged", False):
+                self._mic_status_logged = True
+                logger.warning(f"mic stream status flagged (logged once): {status}")
 
             # Normalize to float32 in [-1, 1] regardless of what dtype the
             # device actually produced. Integer samples must be scaled
@@ -278,6 +291,10 @@ class AudioRecorder:
     def _speaker_callback(self, indata, frames, time_info, status):
         try:
             if self._recording:
+                self._last_speaker_buffer = _monotonic()
+                if status and not getattr(self, "_speaker_status_logged", False):
+                    self._speaker_status_logged = True
+                    logger.warning(f"speaker stream status flagged (logged once): {status}")
                 self._speaker_data.append(indata.copy())
                 if self._speaker_writer is not None:
                     self._speaker_writer.write(indata)
@@ -326,6 +343,13 @@ class AudioRecorder:
             else:
                 self._mic_resample_up = 1
                 self._mic_resample_down = 1
+            # Fresh stall/status baselines per recording (H2): a stale
+            # stamp from a previous session must not read as a stall, and
+            # log-once flags re-arm per session.
+            self._last_mic_buffer = None
+            self._last_speaker_buffer = None
+            self._mic_status_logged = False
+            self._speaker_status_logged = False
             self._recording = True
 
             if speaker_device is not None:
@@ -516,6 +540,17 @@ class AudioRecorder:
     @property
     def is_recording(self) -> bool:
         return self._recording
+
+    def seconds_since_last_mic_buffer(self) -> float | None:
+        """Age of the newest mic buffer, or None before the first one.
+
+        Only meaningful while recording; the stall monitor uses this to
+        detect a device that silently stopped delivering (H2).
+        """
+        last = self._last_mic_buffer
+        if last is None or not self._recording:
+            return None
+        return _monotonic() - last
 
     def start_streaming(self, mic_path, speaker_path=None, disk_only=False):
         """Open streaming WAV writers for crash safety during meeting recording.
