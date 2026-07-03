@@ -1,5 +1,7 @@
 # Speaker Fingerprinting Pipeline
 
+> Status: PARKED (see the paired plan; deferred until profiles validated).
+
 > Issue: #114
 > Component: speaker-id
 > Date: 2026-04-02

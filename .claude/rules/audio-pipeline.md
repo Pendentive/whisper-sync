@@ -54,7 +54,7 @@ Two-tier system, both using sonnet:
 
 Both modes detect meeting boundaries (farewell exchanges, pauses, new greetings). When boundaries are detected, the dialog offers to split the recording after speaker confirmation.
 
-Speaker identification timeout is 90s with 1 retry for light mode, 180s for deep mode. If identification fails, a manual entry dialog appears with empty fields and known speakers in autocomplete.
+Speaker identification timeout is 240s with no retry (see speakers.py; changed in #133). If identification fails, a manual entry dialog appears with empty fields and known speakers in autocomplete.
 
 The **Meetings** tray menu shows the 10 most recent meetings with speaker status. Clicking any meeting re-enters the speaker ID flow.
 

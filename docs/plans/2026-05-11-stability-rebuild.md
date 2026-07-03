@@ -1,8 +1,29 @@
 # WhisperSync Stability Rebuild — Architecture Review and Plan
 
-> Status: ACTIVE. This document persists context across Claude sessions.
-> Each implementation session appends to the Progress Log at the bottom.
+> Status: COMPLETE (all six phases shipped as PRs #137-#152; pipeline
+> fix #147; docs #145/#148/#151/#153/#154). This document persists
+> context across Claude sessions; the Progress Log at the bottom is the
+> historical record. Successor effort: docs/plans/2026-07-03-hardening-round.md.
 > Written 2026-05-11 after a full read of the runtime codebase (~8k lines).
+
+## Phase status (final)
+
+| Phase | Scope | Landed |
+|-------|-------|--------|
+| 1 | Scheduler, executors, idle GC | #137 |
+| 1b | Ephemeral thread migration | #150, #152 |
+| 2 | Debounced tray menu refresh | #138 |
+| 3 | Persistent Tk root (dialog churn) | #142 |
+| 4 | Memory: speaker disk streaming, RSS heartbeat, dictation cap | #139, #141 |
+| 5 | State: try_transition, SessionStats, ConfigStore | #144, #149 |
+| 6 | Single-reader worker protocol | #146 |
+
+## Open - awaiting production evidence
+
+The five-signal production validation checklist (see the final Progress
+Log entry) is still unfilled: it needs results from the UPDATED running
+app (tray > Settings > Update > Labs/dev > restart). Record findings in
+the Progress Log or the hardening-round doc.
 
 ## 1. What this app is
 

@@ -1,5 +1,7 @@
 # WhisperSync Automated Development Pipeline
 
+> Status: SHIPPED (2026-03; review-pr.yml, auto-merge.yml, governance-analysis.yml, review-logger.yml). Checklist below is historical; the live process is documented in CONTRIBUTING.md.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build an automated bug-report → fix → review → merge pipeline for WhisperSync using GitHub Actions, GitHub CLI, and AI agents.

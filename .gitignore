@@ -22,3 +22,6 @@ Thumbs.db
 # Temp files
 *.npy
 *.tmp
+
+# Local dev-machine marker, never shipped
+whisper_sync/.standalone

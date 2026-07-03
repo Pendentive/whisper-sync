@@ -1,5 +1,7 @@
 # WhisperSync Notification & State Management System
 
+> Status: SHIPPED (2026-03; state_manager.py). Line counts and code excerpts below reflect the codebase at design time.
+
 > **Date**: 2026-03-24
 > **Status**: Design
 > **Repo**: `https://github.com/Pendentive/whisper-sync`

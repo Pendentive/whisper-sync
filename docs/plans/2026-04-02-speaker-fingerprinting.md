@@ -1,5 +1,7 @@
 # Speaker Fingerprinting Pipeline - Implementation Plan
 
+> Status: PARKED (app integration deferred until voice profiles are validated; branch feat/speaker-fingerprinting holds the exploration).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a speaker fingerprinting system that extracts timing/vocabulary metrics from transcripts, uses Sonnet for matching with a 95% confidence gate, and auto-escalates to Opus for deep analysis with persistent profile updates.

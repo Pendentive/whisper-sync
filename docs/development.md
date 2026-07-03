@@ -4,7 +4,7 @@
 
 | Requirement | Details |
 |-------------|---------|
-| **Python** | 3.11 or newer (3.13 recommended) |
+| **Python** | 3.10 or newer (3.13 recommended) |
 | **NVIDIA GPU** | With CUDA support (RTX 20/30/40/50 series, GTX 10-series) |
 | **NVIDIA Drivers** | Up to date -- run `nvidia-smi` to verify |
 | **Git** | For cloning and contributing |
