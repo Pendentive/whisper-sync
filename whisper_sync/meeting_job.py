@@ -203,7 +203,7 @@ class MeetingJob:
             log_transcript_preview("", speakers=previews)
 
         # Cache LLM availability for later steps
-        self.llm_ok = self.app._is_claude_cli_available()
+        self.llm_ok = self.app.meetings.is_claude_cli_available()
 
     def step_speaker_id(self):
         """Identify and confirm speakers via Claude CLI + tkinter dialog.
@@ -428,7 +428,7 @@ class MeetingJob:
                 # Pass in-memory transcript dict to avoid background-thread
                 # json.load (0x80000003 crash). See speakers.write_speaker_map
                 # for the same rationale.
-                self.app._generate_minutes(
+                self.app.meetings.generate_minutes(
                     self.meeting_dir,
                     readable_file,
                     minutes_file,
@@ -455,7 +455,7 @@ class MeetingJob:
                         summary = line[len("> Summary:"):].strip()
                         break
                 if summary:
-                    self.app._ask_rename_suggestion(
+                    self.app.meetings.ask_rename_suggestion(
                         self.name or "meeting",
                         summary,
                         meeting_dir=self.meeting_dir,

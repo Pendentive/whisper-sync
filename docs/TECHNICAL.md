@@ -10,9 +10,10 @@ Everything below is for developers modifying this app or for an AI assistant (li
 
 | File | Purpose | Key Classes/Functions |
 |------|---------|----------------------|
-| `__main__.py` | **App entry point.** Tray icon, hotkey wiring, meeting lifecycle, menu, settings, updates. Workflows are being extracted into flow modules (hardening item 6). | `WhisperSync` class --`run()`, `toggle_meeting()`, `_start_meeting()`, `_stop_meeting()`, `_build_menu()`, `main()` |
+| `__main__.py` | **App entry point.** Tray icon, hotkey wiring, component composition, updates/quit lifecycle. Workflows are being extracted into flow modules (hardening item 6). | `WhisperSync` class --`run()`, `_update()`, `quit()`, `main()` |
 | `dictation_flow.py` | **Dictation workflow.** Normal, feature-suggest, and overlay dictation; auto-stop cap, discard, crash recovery, recent history. Feature routing lives in `AppState.feature_suggest`. | `DictationFlow` class --`toggle()`, `toggle_feature_suggest()`, `discard()`, `recover_dictation()`, `recover_feature()`, `recent_history()` |
 | `meeting_dialogs.py` | **Meeting dialog builders.** Tk dialogs (meeting name, speaker confirmation, recovery naming, LLM-unavailable) run on the DialogDispatcher; shared styling helpers + ABORT sentinel. | `MeetingDialogs` class --`ask_meeting_name()`, `ask_speaker_confirmation()`, `ask_recovery_name()`, `show_llm_unavailable()`; module helpers `sanitize_name()`, `flat_button()` |
+| `meeting_flow.py` | **Meeting workflow.** Toggle/start/stop, save-and-enqueue, sequential post-processing worker driving MeetingJob steps, crash recovery, rename suggestions, minutes generation. | `MeetingFlow` class --`toggle()`, `recover_meetings()`, `recover_meeting_speakers()`, `generate_minutes()`, `start_post_worker()`, `pipeline_idle()` |
 | `capture.py` | **Audio recording.** Multi-stream mic + speaker loopback via WASAPI. | `AudioRecorder` class --`start()`, `stop()`, `_mic_callback()`, `_speaker_callback()`, `start_streaming()`, `stop_streaming()` |
 | `transcribe.py` | **WhisperX engine.** Model loading, transcription, alignment, diarization. Two paths: fast (dictation) and full (meeting). | `transcribe_fast(audio_np, model)` -- in-memory numpy to text; `transcribe(audio_path, diarize, model)` -- file-based full pipeline; `_load_model()`, `_load_align_model()` |
 | `worker.py` | **Subprocess entry point.** Runs transcription in isolated process (crash safety). Receives requests via Queue, returns results. | `worker_main()` -- event loop handling `transcribe_fast`, `transcribe`, `reload_model`, `shutdown` requests |
@@ -54,6 +55,7 @@ Everything below is for developers modifying this app or for an AI assistant (li
 __main__.py (entry point, UI, hotkeys)
 ├── dictation_flow.py (dictation workflow component)
 ├── meeting_dialogs.py (meeting Tk dialogs)
+├── meeting_flow.py (meeting workflow component)
 ├── config.py (settings)
 ├── paths.py (directories)
 ├── logger.py (logging)

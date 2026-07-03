@@ -574,7 +574,7 @@ def write_speaker_map(
       0x80000003). The same pattern caused the build_meetings menu crashes
       fixed in commit 4f3b307. Both the post-processing pipeline
       (meeting_job.step_speaker_id) and the manual recovery flow
-      (__main__._recover_meeting_speakers) load the transcript on entry and
+      (meeting_flow.recover_meeting_speakers) load the transcript on entry and
       pass the dict through to satisfy this contract.
     - The disk-read fallback below is for genuine main-thread or
       single-threaded callers that do not already have the dict in memory.

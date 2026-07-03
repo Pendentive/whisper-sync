@@ -226,6 +226,29 @@ in one place, not a branching if/then system and not a framework.
   contract for every dialog (a Tk failure must never abort a meeting
   save or hang the caller).
 
+- **2026-07-03 (item 6, extraction 2a merged, #170)**: review caught a
+  REAL AttributeError: meeting_job.step_minutes still called the
+  removed app._show_llm_unavailable (would fire whenever Claude CLI is
+  missing at the minutes step). Lesson recorded: call-site sweeps for
+  an extraction must grep the WHOLE package, not just the file being
+  decomposed.
+
+- **2026-07-03 (item 6, extraction 2b)**: meeting flow extracted to
+  meeting_flow.py (~650 lines: toggle/start/stop, save-and-enqueue,
+  the sequential post-processing worker driving MeetingJob steps with
+  the typed error contract, orphaned-audio recovery, re-run speaker
+  ID, rename suggestions, minutes generation). Flow owns the post
+  queue, meeting start time, recovered-paths list, and the recovery
+  re-entry guard (the name-mangled lazy __init_recovery_guard is gone;
+  the set initializes in __init__). meeting_job routes
+  is_claude_cli_available / generate_minutes / ask_rename_suggestion
+  through app.meetings. _output_dir, _show_error_popup, _truncate_path
+  stay on the app (shared with menus until extraction 3). 17 new tests
+  cover the stop paths (save/abort/no-audio), the _run_meeting_job
+  error contract (worker crash -> guard trigger + restart; ffmpeg
+  missing -> actionable popup), _emit_error_safe mode preservation,
+  rename semantics (never clobbers), and the no-CLI name fallback.
+
 - **2026-07-03 (production bugs, owner-reported)**: two real bugs from
   field use, both fixed. (1) PIPELINE ABORT AFTER TRANSCRIPTION: every
   past-week meeting had transcript.json but no flatten/speakers/minutes.
