@@ -100,9 +100,6 @@ class TryTransitionTests(unittest.TestCase):
         self.assertEqual(len(sm.history), 1)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 class ModeTransitionTableTests(unittest.TestCase):
     """The flat MODE_TRANSITIONS table, checked only in _apply_locked.
 
