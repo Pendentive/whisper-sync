@@ -641,10 +641,11 @@ def stage_finalize(ctx: dict, result: dict, diarize_segments=None) -> dict:
             }
             for seg in result.get("segments", [])
         ]
-        # meeting_job.step_transcribe reads "speaker_segments" for the
-        # transcript preview log; same mismatched-key family as the stats
-        # above (it always read None before).
-        output["speaker_segments"] = output["segments"]
+        # NOTE: no "speaker_segments" alias. #141 aliased the raw
+        # segments list here for the preview log, but the preview expects
+        # {speaker: [utterances]} and the shape mismatch aborted meeting
+        # jobs right after transcription. meeting_job now groups previews
+        # from "segments" itself (group_speaker_previews).
         # Pass the full parsed transcript dict back to the calling process so
         # downstream steps (notably write_speaker_map) can mutate it in memory
         # rather than re-reading transcript.json on a background thread, which

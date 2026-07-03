@@ -215,14 +215,26 @@ def log_transcript_preview(text: str, speakers: dict = None) -> None:
     speakers: dict mapping speaker labels to list of sample utterances
               e.g. {"Colby": ["So the next improvement..."], "Dinesh": ["Yeah, the OAuth..."]}
     """
-    if speakers:
-        for speaker, utterances in speakers.items():
-            for utt in utterances[:1]:  # First utterance per speaker
-                preview = utt[:80] + ("..." if len(utt) > 80 else "")
-                logger.log(TRANSCRIPT, f"        [{speaker}] {preview}")
-    elif text:
-        preview = text[:200] + ("..." if len(text) > 200 else "")
-        logger.log(TRANSCRIPT, f"        {preview}")
+    # Preview logging must NEVER raise: a malformed speakers value once
+    # aborted the whole meeting pipeline (2026-07-03). Wrong shapes are
+    # logged at debug and otherwise ignored.
+    try:
+        if speakers and hasattr(speakers, "items"):
+            for speaker, utterances in speakers.items():
+                if isinstance(utterances, str):
+                    utterances = [utterances]  # one utterance, not characters
+                for utt in list(utterances)[:1]:  # First utterance per speaker
+                    preview = utt[:80] + ("..." if len(utt) > 80 else "")
+                    logger.log(TRANSCRIPT, f"        [{speaker}] {preview}")
+        elif speakers:
+            logger.debug(
+                f"transcript preview skipped: speakers is {type(speakers).__name__}, expected dict"
+            )
+        elif text:
+            preview = text[:200] + ("..." if len(text) > 200 else "")
+            logger.log(TRANSCRIPT, f"        {preview}")
+    except Exception:
+        logger.debug("transcript preview failed", exc_info=True)
 
 
 def get_log_path() -> Path:

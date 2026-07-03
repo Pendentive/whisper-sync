@@ -178,3 +178,26 @@ in one place, not a branching if/then system and not a framework.
   (or a flow needs fixing) BEFORE tightening warn-to-reject.
   Production validation (docs/testing.md five signals + gpu-guard.jsonl
   correlation) still awaits the owner updating the running app.
+
+- **2026-07-03 (production bugs, owner-reported)**: two real bugs from
+  field use, both fixed. (1) PIPELINE ABORT AFTER TRANSCRIPTION: every
+  past-week meeting had transcript.json but no flatten/speakers/minutes.
+  Root cause found in the 07-03 app log: #141 aliased speaker_segments
+  to the raw segments LIST; log_transcript_preview expects
+  {speaker: [utterances]}, raised AttributeError at the END of
+  step_transcribe, and the job aborted with the transcript already
+  saved. Fix: meeting_job groups previews itself
+  (group_speaker_previews, garbage-tolerant), the alias is removed from
+  stage_finalize, and log_transcript_preview can no longer raise at
+  all. Verified with WS_E2E on real audio. (2) SPLIT NAME COLLISION:
+  portion [1] starts at t=0 so its MMDD_HHMM prefix equals the
+  source's; reusing the source's name made dest == source (copy2
+  SameFileError; exist_ok would also silently clobber unrelated
+  folders). Fix: pre-flight destination checks (duplicates and existing
+  folders rejected BEFORE any write) + the source renames to
+  <name>.splitting during the split, so a portion may legitimately
+  reuse the original name. 8 new tests (5 split on synthetic wavs, 3
+  preview/logger). NOTE: the running tray app executes from this repo
+  checkout - it must be RESTARTED after this merges to load the fix,
+  and pytest runs pollute the live app log (logs/app), a hygiene item
+  for item 6's session.
