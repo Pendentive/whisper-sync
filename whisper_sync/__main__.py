@@ -670,6 +670,10 @@ class WhisperSync:
             return
 
         audio = self._overlay_recorder.stop()
+        # Finalize the streaming WAV (header + handle) so the file can be
+        # deleted on success or preserved intact on failure - stop() does
+        # not close the mic writer (same discipline as normal dictation).
+        self._overlay_recorder.stop_streaming()
         self.state.emit(DICTATION_COMPLETED, dictation_overlay=False)
 
         if "mic" not in audio:
@@ -1142,6 +1146,7 @@ class WhisperSync:
             _overlay = self.state.current.dictation_overlay if self.state else False
             if _overlay and self._overlay_recorder:
                 self._overlay_recorder.stop()
+                self._overlay_recorder.stop_streaming()
                 self._overlay_recorder = None
                 discarded_wav = getattr(self, "_overlay_wav_path", None)
                 self._overlay_wav_path = None
