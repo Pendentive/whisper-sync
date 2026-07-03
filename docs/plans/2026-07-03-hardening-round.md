@@ -13,10 +13,10 @@
 |---|------|------|--------|
 | 2 | In-app single-instance lock + orphan worker reaping | gpu-guard-spec B4 | MERGED (#156) |
 | 9 | CI runs the system test suite on every PR | testing-and-docs-cleanup T1 | MERGED (#157) |
-| 1 | GPU Guard: VRAM watchdog, model downgrade ladder, event log | gpu-guard-spec B1-B3 | IN PIPELINE |
-| 3 | Sleep/resume power event handling | hardware-resilience H1 | PENDING |
-| 11 | Docs truth and navigation pass | testing-and-docs-cleanup D1-D5 | PENDING |
-| 10 | docs/testing.md single testing entry point | testing-and-docs-cleanup T2-T4 | PENDING |
+| 1 | GPU Guard: VRAM watchdog, model downgrade ladder, event log | gpu-guard-spec B1-B3 | MERGED (#158) |
+| 3 | Sleep/resume power event handling | hardware-resilience H1 | IN PIPELINE |
+| 11 | Docs truth and navigation pass | testing-and-docs-cleanup D1-D5 | MERGED (#159) |
+| 10 | docs/testing.md single testing entry point | testing-and-docs-cleanup T2-T4 | MERGED (#159) |
 | 8 | Finish executor migration (remaining stray spawns) | architecture-validation A3 | PENDING |
 | 4 | Device-loss and wedged-worker stall detection | hardware-resilience H2+H4 | PENDING |
 | 5 | Overlay dictation disk-first | hardware-resilience H3 | PENDING |
@@ -67,3 +67,21 @@ in one place, not a branching if/then system and not a framework.
   meeting pipeline worker crash. Model seam: effective_model() at the 6
   dictation_model computations and meeting_job step_transcribe
   (model_override). 17 tests. System suite 164; venv 36.
+
+- **2026-07-03 (item 1 merged, #158)**: review hardening: providerless
+  machines fully inert (crash triggers included), invalid ladder config
+  falls back to default instead of IndexError. 16 tests.
+
+- **2026-07-03 (items 11+10 merged, #159)**: docs truth/navigation pass
+  + docs/testing.md entry point; review caught a real quality bug in the
+  committed retranscribe utility (transcription must run on the ORIGINAL
+  recording, balanced mono is diarization-only) plus a temp-file leak;
+  python floor aligned to installer truth (3.10).
+
+- **2026-07-03 (item 3)**: power_events.py using
+  RegisterSuspendResumeNotification with DEVICE_NOTIFY_CALLBACK (a
+  message-only window would never receive WM_POWERBROADCAST - broadcasts
+  do not reach HWND_MESSAGE windows). Suspend and resume land in
+  gpu-guard.jsonl via GpuGuard.log_external_event (one correlation
+  timeline); resume verifies the worker survived sleep and restarts it
+  off-thread with a toast if not. Callbacks stay cheap on the OS thread.
