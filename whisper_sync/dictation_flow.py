@@ -42,7 +42,7 @@ from .worker_manager import WorkerCrashedError
 HISTORY_LIMIT = 10
 
 
-def safe_unlink(path: Path, retries: int = 2, delay: float = 0.5):
+def safe_unlink(path: Path | None, retries: int = 2, delay: float = 0.5):
     """Delete a file, retrying on PermissionError (Windows file locking)."""
     import time
     for attempt in range(retries + 1):
@@ -117,6 +117,14 @@ class DictationFlow:
             # If already recording a feature suggestion, stop it
             if overlay and feature_active:
                 self._stop_overlay()
+                return
+            if overlay:
+                # A NORMAL overlay dictation is recording - ignore, exactly
+                # like the feature hotkey during a normal dictation below.
+                # Starting a second overlay here would overwrite
+                # _overlay_recorder and double-open the mic (review catch on
+                # the extraction; the bug predates it).
+                logger.debug("Feature suggest ignored - overlay dictation in progress")
                 return
             if mode == "dictation" and feature_active:
                 self._stop()

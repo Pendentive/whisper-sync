@@ -324,6 +324,18 @@ class OverlayDictationTests(_FlowHarness):
                          "fallback must queue on the main worker")
         self.paste.assert_called_once()
 
+    def test_feature_hotkey_ignored_during_normal_overlay(self):
+        # Review catch: starting a feature overlay while a NORMAL overlay
+        # dictation records would overwrite _overlay_recorder and
+        # double-open the mic. The hotkey must be a no-op instead.
+        self.flow.toggle()  # normal overlay recording
+        first_recorder = self.flow._overlay_recorder
+        self.flow.toggle_feature_suggest()
+        self.assertIs(self.flow._overlay_recorder, first_recorder,
+                      "overlay recorder must not be replaced")
+        self.assertTrue(first_recorder.is_recording)
+        self.assertFalse(self.app.state.current.feature_suggest)
+
     def test_discard_overlay(self):
         self.flow.toggle()
         self.flow.discard()
