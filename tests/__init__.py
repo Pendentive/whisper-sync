@@ -17,7 +17,9 @@ An explicitly set WS_LOG_DIR / WS_DATA_DIR is respected, so a developer
 can still point a test run at a specific location.
 """
 
+import atexit
 import os
+import shutil
 import tempfile
 
 _root = None
@@ -29,6 +31,11 @@ def _default_env(name: str, subdir: str) -> None:
         return
     if _root is None:
         _root = tempfile.mkdtemp(prefix="whispersync-tests-")
+        # Auto-created root only - an explicitly set WS_* path is the
+        # user's to manage. ignore_errors: the log FileHandler may still
+        # hold its file open at exit; leftover files are in the system
+        # temp dir and get reaped by the OS eventually.
+        atexit.register(shutil.rmtree, _root, ignore_errors=True)
     os.environ[name] = os.path.join(_root, subdir)
 
 

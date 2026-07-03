@@ -13,12 +13,14 @@ from whisper_sync import logger, paths
 
 
 class PathIsolationTests(unittest.TestCase):
-    def test_conftest_set_both_overrides(self):
+    def test_isolation_seam_set_both_overrides(self):
         self.assertTrue(os.environ.get("WS_LOG_DIR"))
         self.assertTrue(os.environ.get("WS_DATA_DIR"))
 
     def test_app_log_dir_is_redirected(self):
-        # logger resolves its dir at import time; conftest ran first.
+        # logger resolves its dir at import time; tests/__init__.py ran
+        # first (both runners import the tests package before any test
+        # module).
         self.assertEqual(logger._LOG_DIR, Path(os.environ["WS_LOG_DIR"]))
         repo_log_dir = Path(logger.__file__).parent / "logs" / "app"
         self.assertNotEqual(logger._LOG_DIR, repo_log_dir)
