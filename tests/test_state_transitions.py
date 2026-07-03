@@ -107,12 +107,26 @@ class ModeTransitionTableTests(unittest.TestCase):
     tests pin both halves of that contract plus the legal matrix.
     """
 
+    # Legal emit paths from the initial state (None) to each mode, so
+    # the matrix sweep sets up old modes through the PUBLIC API only.
+    _PATH_TO = {
+        None: [],
+        "dictation": ["dictation"],
+        "meeting": ["meeting"],
+        "saving": ["meeting", "saving"],
+        "transcribing": ["transcribing"],
+        "done": ["done"],
+        "error": ["error"],
+    }
+
     def test_every_table_entry_is_silent(self):
         from whisper_sync.state_manager import MODE_TRANSITIONS
         for old_mode, targets in MODE_TRANSITIONS.items():
             for new_mode in targets:
                 sm = _make_state()
-                sm._state.mode = old_mode
+                for step in self._PATH_TO[old_mode]:
+                    sm.emit(IDLE, mode=step)
+                self.assertEqual(sm.current.mode, old_mode, "setup path broken")
                 with self.assertNoLogs("whisper_sync.state", level="WARNING"):
                     sm.emit(IDLE, mode=new_mode)
                 self.assertEqual(sm.current.mode, new_mode)

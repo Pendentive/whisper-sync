@@ -107,7 +107,7 @@ class StateEvent:
 #                 while a background transcription owns the mode
 #   done/error -> idle; fast restarts into dictation/meeting; recovery
 #                 may re-enter transcribing from done
-MODE_TRANSITIONS: dict = {
+MODE_TRANSITIONS: dict[str | None, frozenset[str | None]] = {
     None: frozenset({"dictation", "meeting", "transcribing", "done", "error"}),
     "dictation": frozenset({"transcribing", "done", "error", None}),
     "meeting": frozenset({"saving", "done", "error", None}),
