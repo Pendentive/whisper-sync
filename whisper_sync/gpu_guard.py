@@ -189,6 +189,16 @@ class GpuGuard:
             return ladder[rung_index]
         return ladder[max(requested_index, rung_index)]
 
+    def log_external_event(self, event: str, **fields) -> None:
+        """Append a non-guard subsystem event to gpu-guard.jsonl.
+
+        Power transitions land here (hardware-resilience spec H1) so one
+        timeline holds everything needed to correlate GPU pressure and
+        sleep/wake against Windows crash times. Logged regardless of the
+        guard toggle - the timeline is diagnostic, not behavioral.
+        """
+        self._event(event, **fields)
+
     def status(self) -> dict:
         with self._lock:
             return {
