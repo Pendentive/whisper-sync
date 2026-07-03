@@ -204,3 +204,44 @@ The automatic VRAM-tier sizing:
 ```
 
 See the CUDA Version table in README.md for your GPU family's correct index URL.
+
+
+## Running the Test Suites
+
+Two suites, split by dependency weight:
+
+**System-python suite** (no numpy/sounddevice; protocol, state, scheduler,
+executors, config store, and all other pure-python modules; 141 tests as of
+2026-06-11). Requires pytest on the system python (one-time
+`python -m pip install pytest`); the tests themselves are plain
+unittest.TestCase, pytest is only the runner that makes the ignore list
+manageable:
+
+```powershell
+python -m pytest tests/ --ignore=tests/test_capture_recorder.py --ignore=tests/test_capture_open_input.py --ignore=tests/test_capture_speaker_streaming.py --ignore=tests/test_capture_mic_downmix.py --ignore=tests/test_real_meeting_data.py --ignore=tests/test_e2e_real_transcription.py -q
+```
+
+**Venv suite** (capture + real-data; needs the whisper-env with numpy and
+scipy; 36 tests):
+
+```powershell
+.\whisper-env\Scripts\python.exe -m unittest tests.test_real_meeting_data tests.test_capture_mic_downmix tests.test_capture_open_input tests.test_capture_recorder tests.test_capture_speaker_streaming
+```
+
+**Real-data harness**: `tests/test_real_meeting_data.py` discovers real
+meeting folders via the `WS_MEETINGS_DIR` env var (or a known sibling path)
+and proves `flatten()` reproduces the shipped `transcript-readable.txt`
+byte-for-byte. Tests skip cleanly when no meetings are present, so CI and
+fresh clones pass without private data. Never commit meeting data to this
+repo.
+
+**Opt-in end-to-end**: setting the `WS_E2E` env var to `1` runs the
+production worker subprocess on the smallest discovered real recording
+(about a minute of runtime). Run it after any change to the worker protocol
+or transcription pipeline:
+
+```powershell
+$env:WS_E2E = "1"; .\whisper-env\Scripts\python.exe -m unittest tests.test_e2e_real_transcription
+```
+
+(cmd.exe: `set WS_E2E=1` first; bash: `WS_E2E=1 python -m unittest ...`.)
