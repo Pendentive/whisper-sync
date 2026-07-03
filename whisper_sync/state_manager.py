@@ -93,6 +93,31 @@ class StateEvent:
 # StateManager
 # ---------------------------------------------------------------------------
 
+# Legal mode transitions (hardening round item 7, architecture spec A1).
+# A flat data table checked in exactly ONE place (_apply_locked) - by
+# owner directive this stays a table, not a branching system and not a
+# framework. Self-transitions (mode unchanged) are always silent.
+#
+#   idle(None) -> start dictation/meeting; recovery re-enters
+#                 transcribing; the done-blink re-enters done
+#   dictation  -> transcribing (processing) | done | error | idle (cancel)
+#   meeting    -> saving (stop) | error | idle (cancel)
+#   saving     -> transcribing | done | error | idle
+#   transcribing -> done | error | idle; dictation/meeting may START
+#                 while a background transcription owns the mode
+#   done/error -> idle; fast restarts into dictation/meeting; recovery
+#                 may re-enter transcribing from done
+MODE_TRANSITIONS: dict[str | None, frozenset[str | None]] = {
+    None: frozenset({"dictation", "meeting", "transcribing", "done", "error"}),
+    "dictation": frozenset({"transcribing", "done", "error", None}),
+    "meeting": frozenset({"saving", "done", "error", None}),
+    "saving": frozenset({"transcribing", "done", "error", None}),
+    "transcribing": frozenset({"dictation", "meeting", "done", "error", None}),
+    "done": frozenset({"dictation", "meeting", "transcribing", "error", None}),
+    "error": frozenset({"dictation", "meeting", None}),
+}
+
+
 class StateManager:
     """Observable state machine for WhisperSync.
 
@@ -171,6 +196,22 @@ class StateManager:
                       state_changes: dict):
         """Apply state changes and build the event. Caller holds the lock."""
         old = replace(self._state)
+        # Mode transition validation (hardening round item 7): the flat
+        # MODE_TRANSITIONS table is checked here and ONLY here. Currently
+        # warn-then-allow - an unexpected transition is applied but logged
+        # loudly, so real flows the table missed surface during the soak
+        # period without breaking production. Tighten to reject after the
+        # table has soaked clean.
+        if "mode" in state_changes:
+            new_mode = state_changes["mode"]
+            if new_mode != self._state.mode:
+                allowed = MODE_TRANSITIONS.get(self._state.mode, frozenset())
+                if new_mode not in allowed:
+                    _logger.warning(
+                        "Unexpected mode transition %r -> %r (event %s); "
+                        "not in MODE_TRANSITIONS - applying anyway (soak)",
+                        self._state.mode, new_mode, event_type,
+                    )
         # Warn on unknown state fields (catches typos at call sites)
         unknown_keys = [k for k in state_changes if not hasattr(self._state, k)]
         if unknown_keys:

@@ -100,5 +100,56 @@ class TryTransitionTests(unittest.TestCase):
         self.assertEqual(len(sm.history), 1)
 
 
+class ModeTransitionTableTests(unittest.TestCase):
+    """The flat MODE_TRANSITIONS table, checked only in _apply_locked.
+
+    Warn-then-allow soak: unexpected transitions apply but log. These
+    tests pin both halves of that contract plus the legal matrix.
+    """
+
+    # Legal emit paths from the initial state (None) to each mode, so
+    # the matrix sweep sets up old modes through the PUBLIC API only.
+    _PATH_TO = {
+        None: [],
+        "dictation": ["dictation"],
+        "meeting": ["meeting"],
+        "saving": ["meeting", "saving"],
+        "transcribing": ["transcribing"],
+        "done": ["done"],
+        "error": ["error"],
+    }
+
+    def test_every_table_entry_is_silent(self):
+        from whisper_sync.state_manager import MODE_TRANSITIONS
+        for old_mode, targets in MODE_TRANSITIONS.items():
+            for new_mode in targets:
+                sm = _make_state()
+                for step in self._PATH_TO[old_mode]:
+                    sm.emit(IDLE, mode=step)
+                self.assertEqual(sm.current.mode, old_mode, "setup path broken")
+                with self.assertNoLogs("whisper_sync.state", level="WARNING"):
+                    sm.emit(IDLE, mode=new_mode)
+                self.assertEqual(sm.current.mode, new_mode)
+
+    def test_unexpected_transition_warns_but_applies(self):
+        sm = _make_state()
+        sm.emit(MEETING_STARTED, mode="meeting")
+        with self.assertLogs("whisper_sync.state", level="WARNING") as logs:
+            sm.emit(DICTATION_STARTED, mode="dictation")  # meeting -> dictation: not legal
+        self.assertIn("Unexpected mode transition", logs.output[0])
+        self.assertEqual(sm.current.mode, "dictation", "soak mode still applies the change")
+
+    def test_self_transition_is_silent(self):
+        sm = _make_state()
+        sm.emit(MEETING_STARTED, mode="meeting")
+        with self.assertNoLogs("whisper_sync.state", level="WARNING"):
+            sm.emit(MEETING_STARTED, mode="meeting")
+
+    def test_emit_without_mode_never_validates(self):
+        sm = _make_state()
+        with self.assertNoLogs("whisper_sync.state", level="WARNING"):
+            sm.emit(IDLE, meeting_transcribing=True)
+
+
 if __name__ == "__main__":
     unittest.main()
