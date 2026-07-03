@@ -101,7 +101,7 @@ def _save_clipboard() -> dict[int, bytes] | str | None:
 def _schedule_clipboard_restore(previous: dict | str | None) -> None:
     """Restore *previous* clipboard contents after a short delay.
 
-    Runs in a daemon thread so it never blocks the caller.
+    Runs via a scheduler timer that enqueues onto the IO executor so it never blocks the caller.
     """
     if previous is None:
         return

@@ -17,9 +17,9 @@
 | 3 | Sleep/resume power event handling | hardware-resilience H1 | MERGED (#160) |
 | 11 | Docs truth and navigation pass | testing-and-docs-cleanup D1-D5 | MERGED (#159) |
 | 10 | docs/testing.md single testing entry point | testing-and-docs-cleanup T2-T4 | MERGED (#159) |
-| 8 | Finish executor migration (remaining stray spawns) | architecture-validation A3 | IN PIPELINE |
+| 8 | Finish executor migration (remaining stray spawns) | architecture-validation A3 | MERGED (#161) |
 | 4 | Device-loss and wedged-worker stall detection | hardware-resilience H2+H4 | PENDING |
-| 5 | Overlay dictation disk-first | hardware-resilience H3 | PENDING |
+| 5 | Overlay dictation disk-first | hardware-resilience H3 | IN PIPELINE |
 | 7 | State machine transition table | architecture-validation A1 | PENDING |
 | 6 | __main__.py decomposition by workflow | architecture-validation A2 | PENDING |
 
@@ -96,3 +96,17 @@ in one place, not a branching if/then system and not a framework.
   the serial IO lane; the dialog dispatcher already single-owns Tk),
   startup recovery transcription, and the documented once-per-session
   threads (download/update/restart/quit) plus long-lived loops.
+
+- **2026-07-03 (item 8 merged, #161)**: review moved the clipboard
+  restore off the scheduler thread (timer only enqueues onto IO). A
+  scripting mistake briefly committed unresolved conflict markers into
+  this doc; repaired in 6bfc97e - lesson: never chain git commands after
+  a resolution script without checking its exit status.
+
+- **2026-07-03 (item 5)**: overlay dictation now streams to disk
+  (overlay_ prefix in the dictation log dir, same naming family as
+  normal dictation), deleted after either transcription path succeeds,
+  preserved with a log line when both fail. Incognito stays RAM-only by
+  design. Meeting-stop overlay cancellation cleans the temp like the
+  normal-dictation path. Also fixes the stale paste.py docstring flagged
+  post-merge on #161.
