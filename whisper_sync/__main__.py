@@ -3818,6 +3818,22 @@ def main():
     gc.disable()
     logger.info("Cycle GC disabled; explicit gc.collect() at safe checkpoints")
 
+    # Single-instance guard + orphan reaping (gpu-guard spec B4). Runs
+    # before any model/worker spawn so a duplicate launch never doubles
+    # VRAM load and a previous crash's worker never survives us starting.
+    from .instance_guard import acquire_single_instance, reap_orphans
+    if config.load().get("gpu_guard_single_instance", True):
+        if not acquire_single_instance():
+            logger.info("Another WhisperSync instance is already running; exiting")
+            try:
+                notify("WhisperSync already running", "This launch will exit; the existing tray instance keeps running.")
+            except Exception:
+                pass
+            return
+        orphans = reap_orphans()
+        if orphans:
+            logger.info(f"Reaped {len(orphans)} orphan worker process(es): {orphans}")
+
     heartbeat = Heartbeat(logger, interval=60.0)
     try:
         lifecycle.log_startup_banner(logger)

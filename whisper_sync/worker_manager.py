@@ -126,6 +126,14 @@ class TranscriptionWorker:
             daemon=True,
         )
         self._process.start()
+        # Crash-survivable pid registry: if this parent dies uncleanly,
+        # the next app start reaps this worker instead of leaving a CUDA
+        # context orphaned until the next launcher run (instance_guard).
+        try:
+            from .instance_guard import register_worker_pid
+            register_worker_pid(self._process.pid, kind="transcription")
+        except Exception:
+            logger.debug("worker pid registration failed", exc_info=True)
         self._reader = threading.Thread(
             target=self._reader_loop,
             args=(self._process, self._response_q, self._gen),
@@ -385,6 +393,12 @@ class TranscriptionWorker:
             if self._process.is_alive():
                 self._process.kill()
                 self._process.join(timeout=3)
+        try:
+            from .instance_guard import unregister_worker_pid
+            if self._process.pid:
+                unregister_worker_pid(self._process.pid)
+        except Exception:
+            logger.debug("worker pid unregistration failed", exc_info=True)
         # Even if not alive, ensure the process object is reaped
         try:
             self._process.close()
