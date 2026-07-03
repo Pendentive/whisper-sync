@@ -29,6 +29,7 @@ _VALID_KEYS = {
     "toast_events",
     "diarize_primary", "diarize_fallback", "diarize_last_resort",
     "dictation_max_minutes",
+    "gpu_guard_single_instance",
 }
 
 

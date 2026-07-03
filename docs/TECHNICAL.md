@@ -150,9 +150,12 @@ Override with `"batch_size": 8` in `config.json`. Set `"batch_size": "auto"` to 
 
 Meeting recordings use **disk-only** audio capture for the mic channel. The mic callback streams audio to a WAV file on disk in real-time and does NOT accumulate audio in RAM (controlled by the `disk_only` flag in `start_streaming()`). The speaker loopback channel, however, still accumulates audio in RAM via `_speaker_data` for resampling and stereo merging at stop time. Dictation mode uses RAM for both channels (recordings are short).
 
-### Orphan Worker Cleanup
+### Orphan Worker Cleanup and Single Instance
 
-On Windows, `multiprocessing.spawn` workers can survive after the parent process dies. The `start.ps1` script kills orphans on every launch using parent PID matching and dead-parent detection.
+On Windows, `multiprocessing.spawn` workers can survive after the parent process dies. Two layers handle this:
+
+- **In-app (primary)**: `instance_guard.py` holds a named Win32 mutex for the process lifetime, so a second launch exits immediately with a toast instead of doubling VRAM load. Every spawned worker pid is recorded in `<data_dir>/worker-pids.json`; on startup (after winning the mutex) the app terminates any still-alive registered pid from a dead parent, with a python-image check guarding against PID reuse. Toggle: `gpu_guard_single_instance` (default `true`).
+- **Launcher (belt and braces)**: `start.ps1` also kills orphans on every launch using parent PID matching and dead-parent detection, covering workers older than the pid registry.
 
 ---
 
