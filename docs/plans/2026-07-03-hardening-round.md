@@ -124,7 +124,7 @@ in one place, not a branching if/then system and not a framework.
   reliable, no branching system, no framework), item 4 (device-loss +
   wedged-worker stall detection, hardware-resilience H2+H4: callback
   status flags, no-buffer stall detector with one reopen attempt,
-  worker progress pings during unbounded meeting transcribes), item 6
+  worker progress pings during unbounded meeting transcriptions), item 6
   (__main__.py decomposition by workflow, architecture-validation A2 -
   largest, do last). A fresh session resumes from this doc alone; the
   pipeline protocol is in CONTRIBUTING.md; production validation of the
