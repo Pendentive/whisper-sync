@@ -17,7 +17,7 @@ Use a prefix that describes the type of change:
 1. **Create a branch** from `dev` with the appropriate prefix
 2. **Make your changes** -- keep PRs focused on a single concern
 3. **Open a PR** against `dev`
-4. **Automated review runs** -- the CI workflow classifies your PR by complexity, Copilot reviews the code
+4. **Automated review runs** -- the CI workflow classifies your PR by complexity, Copilot reviews the code, and the system test suite runs (tests.yml; must pass before auto-merge)
 5. **Auto-merge** once Copilot has reviewed and no Copilot review threads remain unresolved. A clean first review merges immediately; if Copilot left suggestions, address them, push, and resolve each thread with a reply citing the fixing commit - no fresh clean review run is required.
 
 ### Automated Review

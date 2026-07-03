@@ -1,0 +1,28 @@
+name: Tests
+
+# Runs the system-python test suite (no CUDA, no audio hardware, no
+# private data - see docs/development.md "Running the Test Suites") on
+# every PR. The auto-merge workflow requires this check to succeed on
+# the head commit before merging. The venv capture/real-data suites and
+# the WS_E2E end-to-end run stay local-only: they need a GPU and real
+# meeting audio that must never enter this public repo.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  system-suite:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        # pytest is the runner; pillow is needed because the tests import
+        # whisper_sync.icons directly (IconAnimator); windows-toasts by
+        # the notification tests.
+        run: python -m pip install pytest pillow windows-toasts
+      - name: Run system suite
+        run: python -m pytest tests/ --ignore=tests/test_capture_recorder.py --ignore=tests/test_capture_open_input.py --ignore=tests/test_capture_speaker_streaming.py --ignore=tests/test_capture_mic_downmix.py --ignore=tests/test_real_meeting_data.py --ignore=tests/test_e2e_real_transcription.py -q
