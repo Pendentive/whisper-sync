@@ -13,7 +13,7 @@ from unittest import mock
 
 from whisper_sync import app_control
 from whisper_sync.app_control import AppControl
-from whisper_sync.state_manager import StateManager
+from whisper_sync.state_manager import StateManager, SLEEP_STARTED
 
 
 class _InlineThread:
@@ -43,6 +43,7 @@ class _FakeApp:
             set_preload_model=mock.Mock(),
             restart=mock.Mock(),
             is_ready=mock.Mock(return_value=True),
+            device="cpu",
         )
         self._backup = types.SimpleNamespace(stop=mock.Mock())
         self.meetings = types.SimpleNamespace(shutdown_post_worker=mock.Mock())
@@ -51,6 +52,7 @@ class _FakeApp:
             respawn_overlay=mock.Mock(return_value=None),
             log_external_event=mock.Mock(),
             effective_model=mock.Mock(side_effect=lambda m: m),
+            device_lost=False,
         )
 
 
@@ -196,6 +198,63 @@ class RestartWorkerTests(_ControlHarness):
     def test_failed_respawn_reports_false(self):
         self.app.worker.is_ready.return_value = False
         self.assertFalse(self.control.restart_worker("x"))
+
+
+class SwitchbackTests(_ControlHarness):
+    """schedule_gpu_switchback: pinned-cpu worker returns to the GPU
+    once the app is idle, and only when there is something to switch."""
+
+    def setUp(self):
+        super().setUp()
+        self.scheduled = []
+        fake_scheduler = types.SimpleNamespace(
+            call_later=lambda delay, fn, label=None:
+                self.scheduled.append((delay, fn, label)))
+        patches = [
+            mock.patch("whisper_sync.executors.submit_or_spawn",
+                       lambda lane, label, fn, native=False: fn()),
+            mock.patch("whisper_sync.scheduler.scheduler", fake_scheduler),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_idle_app_switches_back_with_toast(self):
+        self.control.schedule_gpu_switchback()
+        self.app.worker.restart.assert_called_once()
+        # Live config rebound, never the overlay.
+        self.app.worker.update_config.assert_called_once_with(self.app.cfg)
+        self.assertIn("GPU is back", self.notify.call_args_list[0][0][0])
+
+    def test_busy_app_retries_later_instead_of_restarting(self):
+        self.app.recorder.is_recording = True
+        self.control.schedule_gpu_switchback(retry_s=60.0)
+        self.app.worker.restart.assert_not_called()
+        self.assertEqual(len(self.scheduled), 1)
+        self.assertEqual(self.scheduled[0][0], 60.0)
+        # The rescheduled attempt succeeds once the app is idle again.
+        self.app.recorder.is_recording = False
+        self.scheduled[0][1]()
+        self.app.worker.restart.assert_called_once()
+
+    def test_aborts_when_gpu_lost_again(self):
+        self.app._gpu_guard.device_lost = True
+        self.control.schedule_gpu_switchback()
+        self.app.worker.restart.assert_not_called()
+        self.assertEqual(self.scheduled, [])
+
+    def test_skips_while_model_is_asleep(self):
+        # Never grab VRAM back mid-game: the wake respawn already lands
+        # on the live config.
+        self.app.state.emit(SLEEP_STARTED, sleeping=True)
+        self.control.schedule_gpu_switchback()
+        self.app.worker.restart.assert_not_called()
+
+    def test_skips_when_worker_was_never_pinned(self):
+        # A probe blip with no respawn in between: worker still on cuda.
+        self.app.worker.device = "cuda"
+        self.control.schedule_gpu_switchback()
+        self.app.worker.restart.assert_not_called()
 
 
 class ShutdownTests(_ControlHarness):

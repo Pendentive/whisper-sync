@@ -50,6 +50,24 @@ _ACTIVITY_EVENTS = frozenset({
 
 _CHECK_INTERVAL_S = 60.0
 
+
+def app_busy(app) -> bool:
+    """True while stopping or replacing the worker would interrupt work.
+
+    Shared by AutoSleep (sleep decisions) and the GPU switch-back in
+    app_control (a recovered dGPU waits for idle before the worker is
+    restarted onto it).
+    """
+    current = app.state.current if app.state else None
+    if current is None:
+        return True  # not fully started; treat as busy
+    return (
+        current.mode not in (None, "done", "error")
+        or current.meeting_transcribing
+        or current.dictation_overlay
+        or app.recorder.is_recording
+    )
+
 # Windows' default double-click time is 500ms; the single action is
 # deferred this long so a second click can claim the pair. Left-click
 # actions (toggle meeting/dictation, discard) are not latency-critical -
@@ -129,15 +147,7 @@ class AutoSleep:
 
     def _busy(self) -> bool:
         """True while sleeping now would interrupt real work."""
-        current = self.app.state.current if self.app.state else None
-        if current is None:
-            return True  # not fully started; never sleep during startup
-        return (
-            current.mode not in (None, "done", "error")
-            or current.meeting_transcribing
-            or current.dictation_overlay
-            or self.app.recorder.is_recording
-        )
+        return app_busy(self.app)
 
     def _check(self):
         """Idle checker (scheduler, every minute). Cheap by contract."""

@@ -55,9 +55,11 @@ class GpuGuard:
 
     def __init__(self, cfg, notify: Optional[Callable[[str, str], None]] = None,
                  probe=None, probe_name: str | None = None,
-                 event_path: Path | None = None):
+                 event_path: Path | None = None,
+                 on_device_recovered: Optional[Callable[[], None]] = None):
         self._cfg = cfg
         self._notify = notify or (lambda title, msg: None)
+        self._on_device_recovered = on_device_recovered
         self._lock = threading.Lock()
         self._level = 0            # rungs below the requested model
         self._armed_low = False    # hysteresis: True while below watermark
@@ -98,6 +100,28 @@ class GpuGuard:
         return "base"
 
     # -- lifecycle ------------------------------------------------------------
+
+    def prime(self) -> None:
+        """Resolve the probe provider and observe ONE synchronous probe.
+
+        Called before the first worker spawn: a hybrid laptop booted
+        with the dGPU powered off then pins that first spawn to cpu +
+        cpu_fallback_model (the startup counterpart of the mid-session
+        failover) instead of loading the cuda model against a dead
+        device. Cost: one probe (~100ms via nvidia-smi; bounded by its
+        10s timeout on a wedged driver). No-op when disabled or
+        providerless.
+        """
+        if not self.enabled:
+            return
+        if self._probe is None:
+            from .vram_probe import get_probe
+            self._probe_name, self._probe = get_probe(
+                self._cfg.get("gpu_guard_probe") or None
+            )
+        if self._probe is None:
+            return
+        self._observe_probe_result(self._probe(), source="startup")
 
     def start(self, scheduler, io_executor) -> None:
         """Begin polling. No-op when disabled or no probe provider exists."""
@@ -163,17 +187,29 @@ class GpuGuard:
         state. None counts one strike: DEVICE_LOST_AFTER_FAILURES
         consecutive poll strikes - or a single strike observed at a
         worker crash (any non-"poll" source) - declare the device lost.
+        The recovery callback fires OUTSIDE the lock: it schedules the
+        switch-back, which re-enters the guard (respawn_overlay).
         """
+        recovered = False
         with self._lock:
             if result is not None:
                 self._probe_fail_streak = 0
                 if self._device_lost:
                     self._device_lost = False
+                    recovered = True
                     self._event("gpu_device_recovered", source=source,
                                 free_mb=result.free_mb,
                                 total_mb=result.total_mb)
                     logger.info("GPU guard: GPU reachable again")
-                return
+        if recovered and self._on_device_recovered is not None:
+            try:
+                self._on_device_recovered()
+            except Exception:
+                logger.warning("GPU guard: on_device_recovered callback failed",
+                               exc_info=True)
+        if result is not None:
+            return
+        with self._lock:
             if str(self._cfg.get("device", "auto")).lower() == "cpu":
                 # The user never wanted cuda; nothing to fail over. Keep
                 # the streak at zero so an explicit-cpu period does not

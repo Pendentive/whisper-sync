@@ -178,6 +178,48 @@ class AppControl:
         app.worker.restart()
         return app.worker.is_ready()
 
+    def schedule_gpu_switchback(self, retry_s: float = 60.0):
+        """Move a pinned-cpu worker back to the GPU once the app is idle.
+
+        Fired by the guard's on_device_recovered callback when the dGPU
+        becomes reachable again. The attempt runs on the IO executor
+        (restart_worker blocks) and re-checks every ``retry_s`` while
+        the app is busy. It aborts when the GPU is lost again (the
+        failover path owns it), while the model is asleep (the wake
+        respawn already lands on the live config - and grabbing VRAM
+        back mid-game would defeat manual sleep), or when the worker is
+        not actually on cpu (a probe blip with no pinned respawn in
+        between: nothing to switch). Repeated recover/lose transitions
+        can stack attempts; each attempt re-checks the guard first, so
+        a stale attempt degrades to a no-op or an idle-time restart.
+        """
+        from .executors import IO, submit_or_spawn
+
+        def _attempt():
+            app = self.app
+            if app._gpu_guard.device_lost:
+                return
+            state = app.state
+            if state is not None and state.current.sleeping:
+                return
+            if app.worker.device != "cpu":
+                return
+            from .auto_sleep import app_busy
+            if app_busy(app):
+                from .scheduler import scheduler
+                scheduler.call_later(
+                    retry_s,
+                    lambda: submit_or_spawn(IO, "gpu-switchback", _attempt,
+                                            native=True),
+                    label="gpu-switchback-retry",
+                )
+                return
+            notify("GPU is back",
+                   "Switching transcription back to the GPU model.")
+            self.restart_worker("gpu_recovered")
+
+        submit_or_spawn(IO, "gpu-switchback", _attempt, native=True)
+
     # Empirically chosen delay (seconds) to let pystray menu callbacks
     # return before we call tray.stop(). Without this, WM_QUIT is posted
     # but can't be processed while the callback is still on the stack.

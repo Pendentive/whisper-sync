@@ -13,7 +13,7 @@
 
 | # | Step | Spec anchor | Status |
 |---|------|-------------|--------|
-| 1 | GPU power-state failover (guard-owned, cpu_fallback_model) | GPU power-state resilience | IN PROGRESS |
+| 1 | GPU power-state failover (guard-owned, cpu_fallback_model) | GPU power-state resilience | MERGED (#180-#182) |
 | 2 | Tier 0+1 always-on listener (VAD + openWakeWord, off by default) | Staged architecture, step 2 | NEEDS OWNER INPUT |
 | 3 | Tier 2 splice: wake -> ring-buffer-prefixed dictation + outro | Staged architecture, step 2 | QUEUED |
 | 4 | Per-app meeting auto-record (WASAPI session watch + app list) | Staged architecture, step 3 | QUEUED |
@@ -111,4 +111,20 @@ Recorded in BACKLOG.md in PR C.
   suspend/resume check, auto-sleep wake). tray_menu's manual device
   switch deliberately keeps its own restart: an explicit user choice
   must not be overridden by the overlay. Protected paths untouched;
-  WS_E2E run against the real worker.
+  WS_E2E run against the real worker (999s, OK - slow because the
+  owner was gaming on the GPU at the time; future E2E runs get a
+  warning first, or the CPU variant when the change is
+  device-agnostic).
+
+- **2026-07-04 (step 1 PR C)**: recovery + startup. guard.prime() runs
+  one synchronous probe before the first worker spawn, so booting with
+  the dGPU off pins the first spawn to cpu + fallback (startup
+  counterpart of the failover). On a lost -> recovered probe
+  transition the guard fires on_device_recovered (outside its lock);
+  AppControl.schedule_gpu_switchback restarts a pinned-cpu worker onto
+  the live config once idle - retrying each minute while busy,
+  aborting if the GPU is lost again, skipping while asleep (never grab
+  VRAM back mid-game) or when no pinned respawn ever happened.
+  auto_sleep._busy extracted to module-level app_busy() and shared.
+  BACKLOG: CPU-floor entry removed (shipped); WM_DEVICECHANGE instant
+  detection recorded as the deliberate deferral.

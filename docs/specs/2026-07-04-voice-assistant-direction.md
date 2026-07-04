@@ -1,6 +1,10 @@
 # Voice assistant direction - 2026-07-04 intake
 
-Status: DIRECTION RECORDED; nothing beyond step 1 is committed.
+Status: DIRECTION RECORDED. Build-order step 1 (GPU power-state
+failover) SHIPPED 2026-07-04 (#180-#182); the NPU backend (step 6) is
+committed scope; steps 2-3 await the owner's phrase/whisper-mode
+decisions (open questions below). Round state:
+docs/plans/2026-07-04-assistant-build-round.md.
 Source: owner voice notes, 2026-07-04. This captures the intent and a
 proposed staged architecture so future sessions design against it
 instead of rediscovering it. The owner explicitly wants the always-on
