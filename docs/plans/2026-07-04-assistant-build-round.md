@@ -16,7 +16,7 @@
 | 1 | GPU power-state failover (guard-owned, cpu_fallback_model) | GPU power-state resilience | MERGED (#180-#182) |
 | 2 | Tier 0+1 always-on listener (VAD + openWakeWord, off by default) | Staged architecture, step 2 | NEEDS OWNER INPUT |
 | 3 | Tier 2 splice: wake -> ring-buffer-prefixed dictation + outro | Staged architecture, step 2 | QUEUED |
-| 4 | Per-app meeting auto-record (WASAPI session watch + app list) | Staged architecture, step 3 | QUEUED |
+| 4 | Per-app meeting auto-record (mic consent-store watch + app list) | Staged architecture, step 3 | IN PROGRESS |
 | 5 | In-app wake-word trainer (verifier first, full training later) | Wake-word model landscape | QUEUED |
 | 6 | NPU/OpenVINO backup-transcriber backend (committed scope) | NPU section | QUEUED |
 | - | Installer refresh (screens generated from docs/features/) | BACKLOG.md | QUEUED |
@@ -84,6 +84,38 @@ broadcasts, same constraint as power_events.py). Probe streak +
 crash-time probe covers detection within one poll interval (default
 30s) and instantly on any crash, which is when detection matters.
 Recorded in BACKLOG.md in PR C.
+
+## Step 4 plan - per-app meeting auto-record
+
+Requirement (spec, owner second intake): a configurable app list
+(Zoom, Slack huddles, Teams, ...); when a watched app is in a call,
+recording auto-starts. Manual trigger stays. Steps 2-3 being blocked
+on owner input, step 4 has no dependency on the listener and proceeds
+first (standing authorization).
+
+DELIBERATE DEVIATION from the spec's mechanism sketch: detection reads
+the Windows CapabilityAccessManager mic consent store (stdlib winreg)
+instead of WASAPI session enumeration. Rationale: session enumeration
+needs pycaw/comtypes (new dependencies) and primarily sees RENDER
+sessions (a notification sound would look like a call); the consent
+store is the OS's own mic-in-use indicator - capture-specific, zero
+dependencies, poll-cheap. Verified live on the dev machine 2026-07-04,
+which also surfaced the stale-entry hazard (a dead Slack version's
+entry stuck active) that dictates transition-only triggering.
+
+PRs:
+
+- **PR 1 - watcher module**: meeting_watch.py (consent-store probe,
+  per-entry transition detection with 2-poll debounce, auto-start via
+  meetings.toggle under the app lock, auto-stop only for auto-started
+  recordings after sustained release, disabled-state reset), four
+  config keys, wiring in __main__, features/defaults docs, fake-probe
+  test suite.
+- **PR 2 - tray surface**: settings toggle + watched-apps visibility
+  in the tray menu, manual-validation notes. Browser/Meet detection
+  stays out (any tab's audio would trigger); revisit with the
+  listener's voice command ("record the meeting") or a window-title
+  heuristic later.
 
 ## Progress log
 
