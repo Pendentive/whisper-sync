@@ -152,6 +152,17 @@ class ManualToggleTests(_SleepHarness):
         self.auto.sleep(reason="double_click")
         self.assertEqual(self.app.worker.stops, 1)
 
+    def test_wake_resets_the_idle_clock(self):
+        # Review catch: without this, a manual wake after a long idle
+        # stretch is auto-slept again on the next minute tick.
+        self.auto.toggle()  # sleep
+        self.auto._last_activity = time.monotonic() - 90 * 60
+        self.auto.toggle()  # wake
+        self.assertLess(time.monotonic() - self.auto._last_activity, 5)
+        self.auto._check()
+        self.assertFalse(self.app.state.current.sleeping,
+                         "freshly woken model must not instantly re-sleep")
+
     def test_wake_when_awake_is_a_noop(self):
         self.auto.wake(reason="hotkey")
         self.assertEqual(self.app.worker.starts, 0)
@@ -181,6 +192,21 @@ class ClickRouterTests(unittest.TestCase):
         time.sleep(0.35)
         self.assertEqual(self.fired, ["double"],
                          "the deferred single must be cancelled")
+
+    def test_stale_pending_handle_never_fakes_a_double(self):
+        # Review catch: if the scheduler is shut down, call_later returns
+        # a handle that never fires, so _pending never clears. The
+        # deadline guard must treat a click after the window as a fresh
+        # single, not a phantom double.
+        router = self._router(window=0.05)
+        dead_handle = types.SimpleNamespace(cancel=lambda: None)
+        with mock.patch("whisper_sync.scheduler.scheduler.call_later",
+                        return_value=dead_handle):
+            router.click()          # pending stored, never fires
+            time.sleep(0.2)         # window expires
+            router.click()          # must NOT be a double
+        self.assertEqual(self.fired, [],
+                         "no action may fire through a dead scheduler")
 
     def test_two_slow_clicks_are_two_singles(self):
         router = self._router(window=0.05)

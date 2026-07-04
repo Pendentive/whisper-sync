@@ -72,11 +72,17 @@ class ClickRouter:
         self._window_s = window_s
         self._lock = threading.Lock()
         self._pending = None  # scheduler handle for the deferred single
+        self._deadline = 0.0  # monotonic time the pending single expires
 
     def click(self):
         from .scheduler import scheduler
+        now = time.monotonic()
         with self._lock:
-            if self._pending is not None:
+            # The deadline guard makes a stale pending harmless: if the
+            # scheduler was shut down (teardown) the handle never fires
+            # and never clears, but once the window has passed the next
+            # click is a fresh single, not a phantom double.
+            if self._pending is not None and now < self._deadline:
                 self._pending.cancel()
                 self._pending = None
                 fire_double = True
@@ -84,6 +90,7 @@ class ClickRouter:
                 fire_double = False
                 self._pending = scheduler.call_later(
                     self._window_s, self._fire_single, label="tray-click")
+                self._deadline = now + self._window_s
         if fire_double:
             self._double()
 
@@ -181,13 +188,16 @@ class AutoSleep:
 
         # Off-thread: worker.stop() joins the subprocess and must not
         # block a hotkey/menu/scheduler thread.
-        submit_or_spawn(IO, "sleep-stop-worker", _stop)
+        submit_or_spawn(IO, "sleep-stop-worker", _stop, native=True)
 
     def wake(self, reason: str):
         """Respawn the worker and reload the model (yellow flash while loading)."""
         if not self.sleeping:
             return
         logger.info(f"Model waking up ({reason}); reloading worker")
+        # A wake IS activity: without this, a manual wake after a long
+        # idle stretch would be auto-slept again on the next check tick.
+        self._last_activity = time.monotonic()
         self.app.state.emit(SLEEP_ENDED, sleeping=False)
         try:
             self.app._gpu_guard.log_external_event("model_wake", reason=reason)
@@ -207,4 +217,4 @@ class AutoSleep:
                 logger.warning("Worker start during wake failed", exc_info=True)
             self.app._refresh_menu()
 
-        submit_or_spawn(IO, "wake-start-worker", _start)
+        submit_or_spawn(IO, "wake-start-worker", _start, native=True)
