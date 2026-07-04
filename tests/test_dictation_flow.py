@@ -229,6 +229,15 @@ class NormalDictationTests(_FlowHarness):
         self.flow._start(feature=False)
         self.assertFalse(self.app.recorder.is_recording)
 
+    def test_toggle_wakes_sleeping_model_instead_of_recording(self):
+        from whisper_sync.state_manager import SLEEP_STARTED
+        self.app.auto_sleep = mock.Mock()
+        self.app.state.emit(SLEEP_STARTED, sleeping=True)
+        self.flow.toggle()
+        self.app.auto_sleep.wake.assert_called_once()
+        self.assertFalse(self.app.recorder.is_recording,
+                         "dictation must not start while the model loads")
+
     def test_discard_throws_audio_away(self):
         self.flow.toggle()
         self.flow.discard()

@@ -58,6 +58,7 @@ from .meeting_flow import MeetingFlow
 from .tray_menu import TrayMenu
 from .github_tray import GitHubTray
 from .app_control import AppControl
+from .auto_sleep import AutoSleep, ClickRouter
 from .meeting_dialogs import MeetingDialogs
 from .dialog_dispatcher import DialogDispatcher
 
@@ -129,6 +130,10 @@ class WhisperSync:
         self.github = GitHubTray(self)
         # Update/restart/quit lifecycle component (app_control.py).
         self.control = AppControl(self)
+        # Model auto-sleep (VRAM unload) + tray double-click routing.
+        self.auto_sleep = AutoSleep(self)
+        self._click_router = ClickRouter(single=self._do_left_click,
+                                         double=self.auto_sleep.toggle)
 
     @staticmethod
     def _migrate_data():
@@ -205,6 +210,12 @@ class WhisperSync:
             self.dictation.toggle()
 
     def _on_left_click(self):
+        # All default-item activations funnel through the router so a
+        # double click (sleep toggle) can claim the pair; the single
+        # action fires after the double-click window.
+        self._click_router.click()
+
+    def _do_left_click(self):
         # Left-click while dictating = discard (stop recording, throw away audio)
         current = self.state.current if self.state else None
         mode = current.mode if current else None
@@ -377,6 +388,7 @@ class WhisperSync:
                 meeting_transcribing=s.meeting_transcribing,
                 dictation_overlay=s.dictation_overlay,
                 speaker_ok=speaker_ok,
+                sleeping=s.sleeping,
             )
             spec = ICON_REGISTRY[key]
             progress = s.progress
@@ -479,6 +491,9 @@ class WhisperSync:
         from .scheduler import scheduler as _sched
         self._gpu_guard.start(_sched, IO)
 
+        # Model auto-sleep: idle checker + activity subscription.
+        self.auto_sleep.start(_sched)
+
         # Suspend/resume awareness (hardware-resilience spec H1): both
         # transitions land in gpu-guard.jsonl for crash-time correlation,
         # and resume verifies the CUDA worker survived sleep, restarting
@@ -496,6 +511,9 @@ class WhisperSync:
         def _on_resume():
             def _check():
                 self._gpu_guard.log_external_event("system_resume")
+                asleep = self.state is not None and self.state.current.sleeping
+                if asleep:
+                    return  # worker is intentionally stopped; do not wake
                 if not self.worker.is_alive():
                     logger.warning("Worker did not survive suspend/resume; restarting")
                     self.worker.restart()

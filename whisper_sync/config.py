@@ -23,6 +23,7 @@ _VALID_KEYS = {
     "hotkeys", "paste_method", "language", "model", "dictation_model",
     "compute_type", "output_dir", "mic_device", "speaker_device",
     "sample_rate", "use_system_devices", "left_click", "middle_click",
+    "auto_sleep_minutes",
     "suppress_llm_warning", "github_repo", "github_poll_interval",
     "github_notifications", "log_window", "device", "incognito",
     "always_available_dictation", "backup_device", "backup_model",

@@ -95,6 +95,12 @@ class DictationFlow:
                 self._stop_overlay()
                 return
 
+            if current and current.sleeping:
+                # Model is unloaded (auto_sleep): wake it (yellow loading
+                # flash) and let the user retry once it is ready.
+                self.app.auto_sleep.wake(reason="dictation_hotkey")
+                return
+
             if mode == "dictation":
                 self._stop()
             elif mode == "meeting" or (mode is None and meeting_tx):
@@ -132,6 +138,9 @@ class DictationFlow:
             if mode == "dictation":
                 # Already recording a normal dictation - ignore
                 logger.debug("Feature suggest ignored - dictation in progress")
+                return
+            if current and current.sleeping:
+                self.app.auto_sleep.wake(reason="feature_hotkey")
                 return
 
             if mode == "meeting" or (mode is None and meeting_tx):

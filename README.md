@@ -22,6 +22,7 @@ Runs as a system tray icon on Windows.
 - **CPU/GPU device selection** -- Auto-detect, force GPU, or force CPU via tray menu
 - **Three-ring tray icon** -- inner dot = backup/overlay dictation, inner circle = mic status, outer ring = speaker/loopback status (canonical table: .claude/rules/ui-patterns.md)
 - **Incognito mode** -- RAM-only dictation; no transcription text logged or saved to disk
+- **Model auto-sleep** -- unloads the model from VRAM after 30 idle minutes (configurable) or on tray double-click (for gaming); any dictation/meeting action wakes it with the yellow loading flash
 - **Persistent dictation history** -- last 10 dictations in tray menu, survives restarts
 - **Session stats** -- dictation/meeting counts, averages, and uptime for the current session
 - **Windows toast notifications** -- native Windows notifications for transcription events

@@ -46,6 +46,9 @@ class IconSpec:
 ICON_REGISTRY: dict[str, IconSpec] = {
     # Idle
     "idle": IconSpec("#808080", "#808080", tooltip="Idle"),
+    # Sleep: model unloaded from VRAM (auto_sleep.py). Deeper gray
+    # middle inside the normal gray ring - resting, not a warning.
+    "sleep": IconSpec("#808080", "#4d4d4d", tooltip="Sleeping (model unloaded)"),
 
     # Meeting states
     "recording.meeting":              IconSpec("#CC3333", "#FF4444", tooltip="Recording meeting..."),
@@ -152,7 +155,8 @@ def build_icon(spec: IconSpec, progress: float | None = None,
 def resolve_icon_key(mode: str | None = None,
                      meeting_transcribing: bool = False,
                      dictation_overlay: bool = False,
-                     speaker_ok: bool = True) -> str:
+                     speaker_ok: bool = True,
+                     sleeping: bool = False) -> str:
     """Map composite app state to an ICON_REGISTRY key.
 
     Accepts individual fields rather than an AppState to avoid a circular
@@ -178,6 +182,8 @@ def resolve_icon_key(mode: str | None = None,
         return mode  # "dictation", "saving", "transcribing", "done", "error"
     if meeting_transcribing:
         return "transcribing"
+    if sleeping:
+        return "sleep"
     return "idle"
 
 

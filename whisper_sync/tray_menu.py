@@ -416,6 +416,8 @@ class TrayMenu:
 
         # Left-click fires the default menu item
         left_action = self.app.cfg.get("left_click", "meeting")
+        _state = self.app.state.current if self.app.state else None
+        _sleeping = bool(_state and _state.sleeping)
         return pystray.Menu(
             pystray.MenuItem("Meetings", self._build_meetings_menu()),
             pystray.MenuItem("Recent Dictations", self._build_recent_dictations_menu()),
@@ -424,6 +426,10 @@ class TrayMenu:
                              default=left_action == "dictation"),
             pystray.MenuItem(f"Meeting\t{meet_hk}", lambda: self.app._on_left_click() if left_action == "meeting" else self.app.meetings.toggle(),
                              default=left_action == "meeting"),
+            pystray.MenuItem(
+                "Wake Model" if _sleeping else "Sleep Model\tdouble-click",
+                menu_callback(self.app.auto_sleep.toggle),
+            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Mic Input\tsystem", None, enabled=False)
             if use_sys else

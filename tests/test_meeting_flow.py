@@ -159,6 +159,16 @@ class StartStopTests(_FlowHarness):
         self.assertTrue(disk_only, "meeting streams to disk only")
         self.assertTrue(str(path).endswith("mic-temp.wav"))
 
+    def test_toggle_wakes_sleeping_model_and_starts_recording(self):
+        from whisper_sync.state_manager import SLEEP_STARTED
+        self.app.auto_sleep = mock.Mock()
+        self.app.state.emit(SLEEP_STARTED, sleeping=True)
+        self.flow.toggle()
+        self.app.auto_sleep.wake.assert_called_once()
+        self.assertTrue(self.app.recorder.is_recording,
+                        "recording must start immediately; transcription "
+                        "waits for the worker at its own step")
+
     def test_start_rejected_when_mode_not_startable(self):
         self.app.state.emit("meeting_started", mode="saving")
         self.flow._start()
