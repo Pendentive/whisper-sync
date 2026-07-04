@@ -104,17 +104,17 @@ graphics) can power the discrete GPU on and off. Requirements:
   CUDA model selection unchanged.
 - If the dGPU turns off or disconnects MID-SESSION: the app must not
   crash the machine and workers must not hang. Detection signals:
-  VramProbe starts failing (pynvml/nvidia-smi errors), CUDA errors out
+  the VRAM probe (vram_probe.py) starts failing with pynvml/nvidia-smi errors, CUDA errors out
   of the worker, or WM_DEVICECHANGE removal events.
 - On loss: kill the worker (wedge detection already bounds a hang),
   respawn on device=cpu with a CPU-appropriate model (new config key,
   e.g. cpu_fallback_model, default small/base - CPU inference was
-  validated as acceptable earlier), toast the fallover, log it to
+  validated as acceptable earlier), toast the failover, log it to
   gpu-guard.jsonl.
 - CRITICAL: the respawn-after-crash path must NOT retry CUDA in a loop
-  when the GPU is gone (today it would). The fallover decision belongs
+  when the GPU is gone (today it would). The failover decision belongs
   to GPU Guard - it already owns VRAM health and the downgrade ladder;
-  device fallover is the ladder's missing floor (the "CPU floor"
+  device failover is the ladder's missing floor (the "CPU floor"
   deferral in BACKLOG.md becomes this requirement).
 - When the dGPU returns: notify + offer switch-back (or auto, config).
 
@@ -171,16 +171,16 @@ device enumeration). Assessment:
 - The REAL NPU win: the CPU-fallback/backup Whisper model. Running
   whisper base/small through OpenVINO on the NPU instead of CPU cuts
   the power draw of the library scenario and of always-available
-  dictation. This slots into the GPU-fallover work: fallback targets
+  dictation. This slots into the GPU-failover work: fallback targets
   become cpu OR npu-via-openvino.
 - Caveat: the worker stack is ctranslate2/whisperX (CUDA/CPU only). An
   OpenVINO whisper path is a NEW backend for the backup transcriber,
-  not a config flip. Treat as a follow-up experiment after fallover
+  not a config flip. Treat as a follow-up experiment after failover
   ships; measure quality/latency vs the CPU path first.
 
 ## Build order (next sessions)
 
-1. GPU power-state fallover (guard-owned; includes cpu_fallback_model)
+1. GPU power-state failover (guard-owned; includes cpu_fallback_model)
    - the safety item, and auto-sleep's natural sibling.
 2. Tier 0+1 listener: always-on shared stream + ring buffer +
    silero-vad + openWakeWord with a pretrained phrase, OFF by default,

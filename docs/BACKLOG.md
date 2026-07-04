@@ -28,7 +28,7 @@ same PR that defers them.
   monitored today; a dead loopback still records mic-only silently
   after the initial warning (item 4, H2 deferral).
 - **CPU floor for the GPU Guard ladder** - superseded 2026-07-04: now
-  the GPU power-state fallover requirement in
+  the GPU power-state failover requirement in
   specs/2026-07-04-voice-assistant-direction.md (device loss must not
   crash or hang; respawn on cpu with cpu_fallback_model).
 
