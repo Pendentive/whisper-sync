@@ -27,10 +27,13 @@ same PR that defers them.
 - **Loopback-stream stall coverage** - only the mic channel is
   monitored today; a dead loopback still records mic-only silently
   after the initial warning (item 4, H2 deferral).
-- **CPU floor for the GPU Guard ladder** - superseded 2026-07-04: now
-  the GPU power-state failover requirement in
-  specs/2026-07-04-voice-assistant-direction.md (device loss must not
-  crash or hang; respawn on cpu with cpu_fallback_model).
+- **WM_DEVICECHANGE removal events for GPU loss** - instant loss
+  detection needs a hidden top-level window + message pump
+  (message-only windows never receive broadcasts, the power_events.py
+  constraint). The shipped failover detects via probe streak +
+  crash-time probes instead: within one poll interval, and instantly
+  on any crash (assistant round step 1,
+  plans/2026-07-04-assistant-build-round.md).
 
 ## Feature gaps
 

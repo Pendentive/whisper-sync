@@ -96,10 +96,23 @@ class WhisperSync:
         self._menu_refresher = None  # MenuRefresher, created in run()
         self._lock = threading.RLock()
         self._tray_lock = threading.Lock()  # Serialize all tray icon/title updates (pystray not thread-safe)
-        self._gpu_guard = GpuGuard(self.cfg, notify=notify)
+        self._gpu_guard = GpuGuard(
+            self.cfg, notify=notify,
+            # Fire-time lookup: self.control is composed below; the
+            # callback only runs on a lost -> recovered probe
+            # transition, long after composition.
+            on_device_recovered=lambda: self.control.schedule_gpu_switchback(),
+        )
+        # One synchronous probe before the first spawn: booting with the
+        # dGPU powered off pins the first worker to cpu + fallback model
+        # instead of loading the cuda model against a dead device.
+        self._gpu_guard.prime()
         dictation_model = self._gpu_guard.effective_model(
             self.cfg.get("dictation_model", self.cfg["model"]))
-        self.worker = TranscriptionWorker(self.cfg, preload_model=dictation_model)
+        _startup_overlay = self._gpu_guard.respawn_overlay()
+        _worker_cfg = ({**self.cfg.snapshot(), **_startup_overlay}
+                       if _startup_overlay else self.cfg)
+        self.worker = TranscriptionWorker(_worker_cfg, preload_model=dictation_model)
         self._backup = BackupTranscriber(self.cfg)
         # Single long-lived thread for ALL tkinter dialogs. tk.Tk() must not
         # be created on rotating worker threads; doing so corrupts Win32 heap

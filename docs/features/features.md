@@ -46,8 +46,11 @@ Companion files: [shortcuts.md](shortcuts.md) (how to interact),
   (hybrid laptops can power it off mid-session), the guard detects it
   via consecutive failed probes or a crash-time probe, toasts, and
   clamps model selection to `cpu_fallback_model` so the app never
-  retries CUDA against a dead device. Recovery is detected
-  automatically when the GPU returns.
+  retries CUDA against a dead device; every worker respawn is pinned
+  to cpu while the GPU is gone. Booting with the dGPU off pins the
+  first spawn the same way. When the GPU returns, the app switches
+  back automatically once idle (toast; never while recording,
+  transcribing, or intentionally asleep).
 - **CPU/GPU device selection** - auto-detect, force GPU, or force CPU
   from the tray menu; backup model has independent device/model
   settings.

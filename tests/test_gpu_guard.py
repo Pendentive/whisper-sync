@@ -31,7 +31,8 @@ class _Harness(unittest.TestCase):
         self.event_path = Path(self._tmp.name) / "gpu-guard.jsonl"
         self.toasts = []
 
-    def _guard(self, free_sequence=None, **cfg_overrides):
+    def _guard(self, free_sequence=None, on_device_recovered=None,
+               **cfg_overrides):
         seq = list(free_sequence or [])
 
         def _probe():
@@ -47,6 +48,7 @@ class _Harness(unittest.TestCase):
             notify=lambda t, m: self.toasts.append((t, m)),
             probe=_probe, probe_name="fake",
             event_path=self.event_path,
+            on_device_recovered=on_device_recovered,
         )
 
     def _events(self):
@@ -291,6 +293,50 @@ class DeviceFailoverTests(_Harness):
         armed = [e for e in self._events() if e["event"] == "downgrade_armed"]
         self.assertEqual(armed[0]["free_mb"], 3000)
         self.assertEqual(armed[0]["total_mb"], 8192)
+
+
+class StartupPrimeTests(_Harness):
+    """prime(): one synchronous probe before the first worker spawn."""
+
+    def test_boot_with_dgpu_off_pins_the_first_spawn(self):
+        g = self._guard(free_sequence=[None])
+        g.prime()
+        self.assertTrue(g.device_lost)
+        self.assertIsNotNone(g.respawn_overlay())
+        self.assertEqual(g.effective_model("large-v3"), "base")
+
+    def test_healthy_boot_stays_passthrough(self):
+        g = self._guard(free_sequence=[4000])
+        g.prime()
+        self.assertFalse(g.device_lost)
+        self.assertIsNone(g.respawn_overlay())
+
+    def test_disabled_guard_prime_is_inert(self):
+        g = self._guard(free_sequence=[None], gpu_guard=False)
+        g.prime()
+        self.assertFalse(g.device_lost)
+
+
+class RecoveryCallbackTests(_Harness):
+    def test_recovery_fires_callback_once_on_the_transition(self):
+        fired = []
+        g = self._guard(free_sequence=[None, None, None, 4000, 4000],
+                        on_device_recovered=lambda: fired.append(1))
+        for _ in range(5):
+            g.check_once()
+        self.assertEqual(fired, [1],
+                         "callback fires on the transition only, not on "
+                         "every healthy poll")
+
+    def test_callback_exception_does_not_break_the_guard(self):
+        def _boom():
+            raise RuntimeError("callback boom")
+
+        g = self._guard(free_sequence=[None, None, None, 4000, 4000],
+                        on_device_recovered=_boom)
+        for _ in range(5):
+            g.check_once()  # must not raise
+        self.assertFalse(g.device_lost)
 
 
 class ProbeRegistryTests(unittest.TestCase):
