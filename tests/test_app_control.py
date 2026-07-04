@@ -40,6 +40,7 @@ class _FakeApp:
         self.worker = types.SimpleNamespace(
             stop=mock.Mock(),
             update_config=mock.Mock(),
+            set_preload_model=mock.Mock(),
             restart=mock.Mock(),
             is_ready=mock.Mock(return_value=True),
         )
@@ -49,6 +50,7 @@ class _FakeApp:
         self._gpu_guard = types.SimpleNamespace(
             respawn_overlay=mock.Mock(return_value=None),
             log_external_event=mock.Mock(),
+            effective_model=mock.Mock(side_effect=lambda m: m),
         )
 
 
@@ -159,6 +161,8 @@ class RestartWorkerTests(_ControlHarness):
         ok = self.control.restart_worker("worker_crash_dictation")
         self.assertTrue(ok)
         self.app.worker.update_config.assert_called_once_with(self.app.cfg)
+        # Preload follows the (guard-filtered) configured model.
+        self.app.worker.set_preload_model.assert_called_once_with("large-v3")
         self.app.worker.restart.assert_called_once()
 
     def test_lost_gpu_pins_the_spawn_to_the_overlay(self):
@@ -171,6 +175,9 @@ class RestartWorkerTests(_ControlHarness):
         self.assertEqual(pinned["device"], "cpu")
         self.assertEqual(pinned["model"], "base")
         self.assertEqual(pinned["compute_type"], "int8")
+        # Preload travels with the pin: never the cuda-sized model on
+        # cpu (PR #181 review catch).
+        self.app.worker.set_preload_model.assert_called_once_with("base")
         # The overlay merges OVER a snapshot of the live config: the
         # pinned dict is frozen (not the store) and unrelated settings
         # survive the pin.

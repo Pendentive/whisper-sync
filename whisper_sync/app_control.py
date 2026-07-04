@@ -160,6 +160,10 @@ class AppControl:
             snapshot = getattr(app.cfg, "snapshot", None)
             base = snapshot() if callable(snapshot) else dict(app.cfg)
             app.worker.update_config({**base, **overlay})
+            # Preload travels with the config: spawning pinned-cpu but
+            # preloading the cuda-sized model would wedge startup on
+            # cpu and time out the restart (PR #181 review).
+            app.worker.set_preload_model(overlay.get("dictation_model"))
             app._gpu_guard.log_external_event(
                 "worker_respawn_pinned_cpu", reason=reason,
                 model=overlay.get("model"))
@@ -168,6 +172,9 @@ class AppControl:
                 f"using '{overlay.get('model')}'")
         else:
             app.worker.update_config(app.cfg)
+            app.worker.set_preload_model(app._gpu_guard.effective_model(
+                str(app.cfg.get("dictation_model",
+                                app.cfg.get("model", "large-v3")))))
         app.worker.restart()
         return app.worker.is_ready()
 

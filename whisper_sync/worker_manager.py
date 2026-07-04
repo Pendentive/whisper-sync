@@ -403,6 +403,16 @@ class TranscriptionWorker:
         """
         self._cfg = cfg
 
+    def set_preload_model(self, model_name: str | None) -> None:
+        """Rebind the model preloaded at the next spawn.
+
+        Spawn-time config and preload travel together: a pinned-cpu
+        failover respawn must not preload the cuda-sized model on cpu
+        (PR #181 review), and rebinding the live config restores the
+        configured selection the same way. None skips preloading.
+        """
+        self._preload_model = model_name
+
     def restart(self) -> None:
         """Kill and respawn the worker (e.g., after a crash).
 
