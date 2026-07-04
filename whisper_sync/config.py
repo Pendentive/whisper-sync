@@ -34,6 +34,8 @@ _VALID_KEYS = {
     "gpu_guard", "gpu_guard_low_vram_mb", "gpu_guard_poll_seconds",
     "gpu_guard_ladder", "gpu_guard_probe",
     "cpu_fallback_model",
+    "meeting_auto_record", "meeting_watch_apps",
+    "meeting_watch_poll_seconds", "meeting_watch_stop_after_s",
 }
 
 

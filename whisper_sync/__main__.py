@@ -147,6 +147,10 @@ class WhisperSync:
         self.auto_sleep = AutoSleep(self)
         self._click_router = ClickRouter(single=self._do_left_click,
                                          double=self.auto_sleep.toggle)
+        # Per-app meeting auto-record (meeting_watch.py): mic consent
+        # store polling; auto-starts/stops recordings for watched apps.
+        from .meeting_watch import MeetingWatch
+        self.meeting_watch = MeetingWatch(self)
 
     @staticmethod
     def _migrate_data():
@@ -506,6 +510,10 @@ class WhisperSync:
 
         # Model auto-sleep: idle checker + activity subscription.
         self.auto_sleep.start(_sched)
+
+        # Per-app meeting auto-record (assistant round step 4): polls
+        # the mic consent store; inert unless meeting_auto_record.
+        self.meeting_watch.start(_sched, IO)
 
         # Suspend/resume awareness (hardware-resilience spec H1): both
         # transitions land in gpu-guard.jsonl for crash-time correlation,
