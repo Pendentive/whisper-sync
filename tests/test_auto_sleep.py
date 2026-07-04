@@ -6,7 +6,6 @@ is active, waking flashes and respawns the worker, and the double-click
 router never fires both actions for one gesture.
 """
 
-import threading
 import time
 import types
 import unittest
@@ -41,6 +40,20 @@ class _FakeWorker:
         return self.running
 
 
+class _FakeControl:
+    """Guard-aware respawn stand-in: wake routes through this, never a
+    bare worker.start() (the spawn must be pinnable to cpu)."""
+
+    def __init__(self, app):
+        self.app = app
+        self.respawns = []
+
+    def restart_worker(self, reason):
+        self.respawns.append(reason)
+        self.app.worker.start()
+        return self.app.worker.wait_ready(120)
+
+
 class _FakeApp:
     def __init__(self):
         self.cfg = {"auto_sleep_minutes": 30}
@@ -49,6 +62,7 @@ class _FakeApp:
         self.recorder = types.SimpleNamespace(is_recording=False)
         self._gpu_guard = types.SimpleNamespace(
             log_external_event=mock.Mock())
+        self.control = _FakeControl(self)
         self.flashes = 0
         self.refreshes = 0
 
@@ -167,6 +181,14 @@ class ManualToggleTests(_SleepHarness):
         self.auto.wake(reason="hotkey")
         self.assertEqual(self.app.worker.starts, 0)
         self.assertEqual(self.app.flashes, 0)
+
+    def test_wake_routes_through_the_failover_respawn(self):
+        # The wake spawn must consult the guard: if the dGPU was
+        # powered off while asleep (the gaming scenario), the respawn
+        # is pinned to cpu instead of loading cuda on a dead device.
+        self.auto.toggle()  # sleep
+        self.auto.toggle()  # wake
+        self.assertEqual(self.app.control.respawns, ["wake"])
 
 
 class ClickRouterTests(unittest.TestCase):

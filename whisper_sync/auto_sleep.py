@@ -209,8 +209,12 @@ class AutoSleep:
 
         def _start():
             try:
-                self.app.worker.start()
-                if self.app.worker.wait_ready(timeout=120):
+                # Guard-aware respawn (restart on a stopped worker is
+                # just spawn + wait_ready): if the dGPU was powered off
+                # while asleep - the gaming scenario auto-sleep exists
+                # for - the wake spawn is pinned to cpu instead of
+                # loading the cuda model against a dead device.
+                if self.app.control.restart_worker("wake"):
                     logger.info("Model reloaded after sleep")
                 else:
                     logger.warning("Worker failed to become ready after wake")

@@ -92,3 +92,23 @@ Recorded in BACKLOG.md in PR C.
   Owner reminder outstanding: the tray app still runs pre-#167
   bytecode and needs a restart to pick up everything from #167 through
   auto-sleep.
+
+- **2026-07-04 (step 1 PR A merged, #180)**: guard failover core as
+  planned. Review caught two real issues, both fixed with regression
+  tests: explicit-cpu periods were banking probe failures (a later
+  switch to auto would declare loss on ONE failure, bypassing the
+  3-failure rule - streak now resets at the cpu gate), and crash
+  events logged stale VRAM readings despite a fresh probe having just
+  run. 13 failover tests; suite 303.
+
+- **2026-07-04 (step 1 PR B)**: respawn routing.
+  AppControl.restart_worker(reason) is the single guard-aware respawn
+  path: consults respawn_overlay(), pins the spawn to a
+  cpu+fallback-model snapshot while the device is lost (logging
+  worker_respawn_pinned_cpu to the timeline), rebinds the live
+  ConfigStore otherwise. All five generic respawn sites rerouted
+  (dictation crash, meeting crash, meeting_job pre-transcribe,
+  suspend/resume check, auto-sleep wake). tray_menu's manual device
+  switch deliberately keeps its own restart: an explicit user choice
+  must not be overridden by the overlay. Protected paths untouched;
+  WS_E2E run against the real worker.

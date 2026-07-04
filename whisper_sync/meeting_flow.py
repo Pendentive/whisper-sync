@@ -307,7 +307,8 @@ class MeetingFlow:
             self.app._gpu_guard.note_pressure_trigger("worker_crash_meeting")
             logger.error("Worker crashed during meeting, respawning...")
             logger.info(f"Audio is preserved at: {job.wav_path}")
-            self.app.worker.restart()
+            # Guard-aware respawn: pinned to cpu if the dGPU is gone.
+            self.app.control.restart_worker("worker_crash_meeting")
             self._emit_error_safe(str(e))
         except PermissionError as e:
             logger.error(str(e))

@@ -145,14 +145,13 @@ class MeetingJob:
     def step_transcribe(self):
         """Transcribe the WAV file via the shared worker process."""
         from .state_manager import TRANSCRIPTION_STARTED
-        from .worker_manager import WorkerCrashedError
 
         self.app.state.emit(TRANSCRIPTION_STARTED, mode=None, meeting_transcribing=True)
 
         if not self.app.worker.is_alive():
             logger.warning("Worker not alive, restarting...")
-            self.app.worker.restart()
-            if not self.app.worker.wait_ready(timeout=120):
+            # Guard-aware respawn: pinned to cpu if the dGPU is gone.
+            if not self.app.control.restart_worker("meeting_pre_transcribe"):
                 raise RuntimeError("Worker failed to restart")
 
         guard = getattr(self.app, "_gpu_guard", None)

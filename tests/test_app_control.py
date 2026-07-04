@@ -7,10 +7,8 @@ and sleeps are stubbed - a real exit would kill the test runner.
 """
 
 import sys
-import threading
 import types
 import unittest
-from pathlib import Path
 from unittest import mock
 
 from whisper_sync import app_control
@@ -39,9 +37,28 @@ class _FakeApp:
         self.state = StateManager(None, {})
         self.tray = types.SimpleNamespace(stop=mock.Mock())
         self.recorder = _FakeRecorder()
-        self.worker = types.SimpleNamespace(stop=mock.Mock())
+        self.worker = types.SimpleNamespace(
+            stop=mock.Mock(),
+            update_config=mock.Mock(),
+            set_preload_model=mock.Mock(),
+            restart=mock.Mock(),
+            is_ready=mock.Mock(return_value=True),
+        )
         self._backup = types.SimpleNamespace(stop=mock.Mock())
         self.meetings = types.SimpleNamespace(shutdown_post_worker=mock.Mock())
+        self.cfg = _FakeConfigStore({"model": "large-v3", "device": "auto"})
+        self._gpu_guard = types.SimpleNamespace(
+            respawn_overlay=mock.Mock(return_value=None),
+            log_external_event=mock.Mock(),
+            effective_model=mock.Mock(side_effect=lambda m: m),
+        )
+
+
+class _FakeConfigStore(dict):
+    """Live-config stand-in: a dict with the snapshot() seam."""
+
+    def snapshot(self):
+        return dict(self)
 
 
 class _FakeRun:
@@ -135,6 +152,50 @@ class UpdateStepsTests(_ControlHarness):
             self.control._run_update_steps(fake_sp, "root", "dev")
         restart.assert_called_once()
         self.assertIn(["git", "pull", "origin"], run.commands)
+
+
+class RestartWorkerTests(_ControlHarness):
+    """The single guard-aware respawn path (assistant round, step 1)."""
+
+    def test_healthy_respawn_rebinds_the_live_config(self):
+        ok = self.control.restart_worker("worker_crash_dictation")
+        self.assertTrue(ok)
+        self.app.worker.update_config.assert_called_once_with(self.app.cfg)
+        # Preload follows the (guard-filtered) configured model.
+        self.app.worker.set_preload_model.assert_called_once_with("large-v3")
+        self.app.worker.restart.assert_called_once()
+
+    def test_lost_gpu_pins_the_spawn_to_the_overlay(self):
+        self.app.cfg["language"] = "en"  # unrelated setting
+        overlay = {"device": "cpu", "model": "base",
+                   "dictation_model": "base", "compute_type": "int8"}
+        self.app._gpu_guard.respawn_overlay.return_value = overlay
+        self.control.restart_worker("wake")
+        pinned = self.app.worker.update_config.call_args[0][0]
+        self.assertEqual(pinned["device"], "cpu")
+        self.assertEqual(pinned["model"], "base")
+        self.assertEqual(pinned["compute_type"], "int8")
+        # Preload travels with the pin: never the cuda-sized model on
+        # cpu (PR #181 review catch).
+        self.app.worker.set_preload_model.assert_called_once_with("base")
+        # The overlay merges OVER a snapshot of the live config: the
+        # pinned dict is frozen (not the store) and unrelated settings
+        # survive the pin.
+        self.assertIsNot(pinned, self.app.cfg)
+        self.assertEqual(pinned["language"], "en")
+        self.app.worker.restart.assert_called_once()
+
+    def test_pinned_respawn_lands_on_the_correlation_timeline(self):
+        self.app._gpu_guard.respawn_overlay.return_value = {"device": "cpu",
+                                                            "model": "base"}
+        self.control.restart_worker("resume")
+        event = self.app._gpu_guard.log_external_event.call_args
+        self.assertEqual(event[0][0], "worker_respawn_pinned_cpu")
+        self.assertEqual(event[1]["reason"], "resume")
+
+    def test_failed_respawn_reports_false(self):
+        self.app.worker.is_ready.return_value = False
+        self.assertFalse(self.control.restart_worker("x"))
 
 
 class ShutdownTests(_ControlHarness):
