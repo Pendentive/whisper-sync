@@ -269,6 +269,29 @@ class DeviceFailoverTests(_Harness):
         self.assertFalse(g.device_lost)
         self.assertIsNone(g.respawn_overlay())
 
+    def test_cpu_period_does_not_bank_failures(self):
+        # Review catch: failures during an explicit-cpu period must not
+        # accumulate, or the first failure after switching back to auto
+        # would declare loss instantly, bypassing the 3-failure rule.
+        g = self._guard(free_sequence=[None] * 8, device="cpu")
+        for _ in range(5):
+            g.check_once()
+        g._cfg["device"] = "auto"
+        g.check_once()  # first failure after the switch: streak = 1
+        self.assertFalse(g.device_lost)
+        g.check_once()
+        g.check_once()  # third consecutive failure: now lost
+        self.assertTrue(g.device_lost)
+
+    def test_crash_event_logs_the_fresh_probe_reading(self):
+        # Review catch: the downgrade event must carry the reading from
+        # the probe that just ran, not the last poll's stale value.
+        g = self._guard(free_sequence=[3000])
+        g.note_pressure_trigger("worker_crash_dictation")
+        armed = [e for e in self._events() if e["event"] == "downgrade_armed"]
+        self.assertEqual(armed[0]["free_mb"], 3000)
+        self.assertEqual(armed[0]["total_mb"], 8192)
+
 
 class ProbeRegistryTests(unittest.TestCase):
     def test_get_probe_returns_none_when_no_provider(self):

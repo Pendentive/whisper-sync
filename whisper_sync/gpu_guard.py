@@ -174,6 +174,13 @@ class GpuGuard:
                                 total_mb=result.total_mb)
                     logger.info("GPU guard: GPU reachable again")
                 return
+            if str(self._cfg.get("device", "auto")).lower() == "cpu":
+                # The user never wanted cuda; nothing to fail over. Keep
+                # the streak at zero so an explicit-cpu period does not
+                # bank failures that would fire instantly after a later
+                # switch to auto/cuda (review catch on this PR).
+                self._probe_fail_streak = 0
+                return
             self._probe_fail_streak += 1
             if self._device_lost:
                 return
@@ -181,8 +188,6 @@ class GpuGuard:
             if (not from_crash
                     and self._probe_fail_streak < DEVICE_LOST_AFTER_FAILURES):
                 return
-            if str(self._cfg.get("device", "auto")).lower() == "cpu":
-                return  # the user never wanted cuda; nothing to fail over
             self._device_lost = True
             fallback = self._fallback_model()
             self._event("gpu_device_lost", source=source,
@@ -215,8 +220,15 @@ class GpuGuard:
         with self._lock:
             if self._device_lost:
                 return  # cpu failover governs; ladder rungs are meaningless
-            self._escalate_locked(trigger=reason,
-                                  free_mb=self._last_free_mb, total_mb=None)
+            if result is not None:
+                # The probe just ran; log the fresh reading instead of
+                # the last poll's (which may be stale or None).
+                self._last_free_mb = result.free_mb
+            self._escalate_locked(
+                trigger=reason,
+                free_mb=self._last_free_mb,
+                total_mb=result.total_mb if result is not None else None,
+            )
 
     def _escalate_locked(self, trigger: str, free_mb, total_mb) -> None:
         ladder = self._ladder()
