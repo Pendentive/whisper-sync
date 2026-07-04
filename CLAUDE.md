@@ -26,6 +26,7 @@ When a user reports that a meeting "crashed" or "failed" or "didn't finish", do 
 | `meeting_flow.py` | Meeting workflow component: record/save/post-process pipeline (MeetingJob steps), crash recovery, re-run speaker ID, rename suggestions, minutes via Claude CLI. |
 | `tray_menu.py` | Tray menu construction + all settings setters + option constants. menu_callback() binds pystray item callbacks. |
 | `github_tray.py` | GitHub PR status tray glue: poller lifecycle, PR toasts, menu section, gh merge. |
+| `app_control.py` | Update/restart/quit lifecycle: git self-update, shared shutdown, deferred exits. Update guard folded into AppState.updating. |
 | `state_manager.py` | Observable state machine. AppState dataclass, typed StateEvent, event constants, thread-safe emit(), listener subscriptions (on/on_any), event log ringbuffer. All icon/toast updates flow through here. |
 | `transcribe.py` | WhisperX with persistent model cache. Fast path (dictation) and staged pipeline (meeting) |
 | `worker.py` | Multiprocessing transcription worker. CUDA isolation via spawn context |

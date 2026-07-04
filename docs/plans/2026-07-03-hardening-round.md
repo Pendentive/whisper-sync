@@ -21,7 +21,7 @@
 | 4 | Device-loss and wedged-worker stall detection | hardware-resilience H2+H4 | MERGED (#165) |
 | 5 | Overlay dictation disk-first | hardware-resilience H3 | MERGED (#162) |
 | 7 | State machine transition table | architecture-validation A1 | MERGED (#164) |
-| 6 | __main__.py decomposition by workflow | architecture-validation A2 | PENDING |
+| 6 | __main__.py decomposition by workflow | architecture-validation A2 | MERGED (#168-#173) |
 
 Execution order: 2, 9, 1, 3, 11+10, 8, 4, 5, 7, 6. Owner approved the
 full list 2026-07-03 with standing authorization to proceed item to item
@@ -274,6 +274,37 @@ in one place, not a branching if/then system and not a framework.
   (bare self.worker refs, self._update bound callbacks) and the
   _updating class attribute stranded away from its users before any
   code shipped.
+
+- **2026-07-03 (item 6, extraction 4 + ROUND CLOSE)**: update/restart/
+  quit lifecycle extracted to app_control.py (AppControl: git
+  self-update against the running checkout, shared shutdown sequence,
+  deferred restart/quit for the Win32 pump). _updating FOLDED into
+  AppState.updating with UPDATE_STARTED/UPDATE_COMPLETED events - the
+  LAST stray mode flag from the architecture audit is gone. 9 new
+  tests pin the guard fold (set during the run, cleared on success and
+  failure, re-entrant click ignored), the git decision points
+  (up-to-date vs pull-then-restart), and the shutdown order.
+
+  ITEM 6 COMPLETE, and with it ALL 11 hardening items. __main__.py:
+  3,990 -> ~650 lines of composition, hotkey/click wiring, run(), and
+  main(). Components: dictation_flow, meeting_flow, meeting_dialogs,
+  tray_menu, github_tray, app_control, icons.FlashController - each
+  with an app back-reference (the meeting_job pattern), lazy imports
+  for numpy/pyperclip/pystray deps so ALL are testable on the system
+  python, and unit tests the god-class made impossible (suite grew
+  189 -> 260+; venv 36 still green). All three stray flags folded or
+  rehomed: feature_suggest + updating in AppState, the flash gate in
+  icons.FlashController.
+
+  STILL OPEN after this round: (1) production validation - the owner
+  must restart the tray app onto current dev (it still runs pre-#167
+  bytecode) and use it normally; five signals in docs/testing.md;
+  gpu-guard.jsonl + heartbeat rss are the nvlddmkm crash-correlation
+  evidence. (2) MODE_TRANSITIONS warn-to-reject - the soak clock only
+  starts at that restart; tighten after the log stays clean for a few
+  days of real use. (3) Deferred hardware items recorded in the item
+  4/5 entries (mid-recording mic reopen, loopback stall coverage, CPU
+  floor for the GPU guard ladder).
 
 - **2026-07-03 (production bugs, owner-reported)**: two real bugs from
   field use, both fixed. (1) PIPELINE ABORT AFTER TRANSCRIPTION: every
