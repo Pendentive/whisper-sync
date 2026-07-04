@@ -55,6 +55,13 @@ class _SplitHarness(unittest.TestCase):
         scratch.mkdir()
         wav = scratch / "recording.wav"
         _write_wav(wav, self.DURATION)
+        # Pin the mtime to second 30 of the current minute: portion
+        # prefixes derive from mtime minus offsets inside DURATION, and a
+        # real mtime within a couple seconds of a minute boundary gave
+        # portions DIFFERENT MMDD_HHMM prefixes - the duplicate-name test
+        # then saw distinct destinations and flaked (CI 2026-07-04).
+        pinned = datetime.now().replace(second=30, microsecond=0).timestamp()
+        os.utime(str(wav), (pinned, pinned))
         # Recreate split_meeting's own math: portion 1 start time derives
         # from the wav mtime minus total duration.
         mtime = datetime.fromtimestamp(os.path.getmtime(str(wav)))

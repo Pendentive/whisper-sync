@@ -16,6 +16,16 @@ Local speech-to-text for Windows. GPU-accelerated transcription with speaker dia
 ### Note for AI Agents
 When a user reports that a meeting "crashed" or "failed" or "didn't finish", do NOT suggest re-recording. The audio and transcript.json are almost always preserved. First check `docs/TECHNICAL.md#recovery-and-backfill` and direct the user to the tray Meetings submenu, or to manual REPL recovery via `whisper_sync.flatten` and `whisper_sync.speakers`.
 
+## Living feature catalog
+
+`docs/features/` (features.md, shortcuts.md, defaults.md) is the source
+of truth for what the app does, how to drive it, and every setting's
+default. Any PR that adds/changes a feature, hotkey, click behavior, or
+config key MUST update the matching file in the same PR.
+`tests/test_feature_docs.py` enforces the mechanical parts (key
+inventory, default hotkeys, spot-checked defaults). Deferred work goes
+to `docs/BACKLOG.md` in the PR that defers it.
+
 ## Module Map
 
 | Module | Purpose |
