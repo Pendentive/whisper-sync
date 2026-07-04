@@ -305,3 +305,38 @@ def error_icon() -> Image.Image:
 
 def yellow_flash_icon(size: int = 64) -> Image.Image:
     return build_icon(ICON_REGISTRY["flash"], size=size)
+
+
+class FlashController:
+    """Re-entry-gated tray icon flashes (formerly on the WhisperSync app).
+
+    Lock-guarded check-and-set: a bare Event ``is_set()`` + ``set()``
+    pair raced concurrent hotkey threads - both could observe "not
+    flashing" and both start animations. The gate lives with the
+    animation code it protects; it is deliberately NOT AppState (a
+    cosmetic flash bit in the event log would push useful history out
+    of the 100-event ringbuffer - see the 2026-07-03 hardening plan).
+    """
+
+    def __init__(self, get_tray, tray_lock):
+        self._get_tray = get_tray  # late-bound: tray exists only after run()
+        self._tray_lock = tray_lock
+        self._gate = threading.Lock()
+        self._active = threading.Event()
+
+    def yellow(self):
+        """Universal loading/queuing signal: two quick yellow flashes."""
+        with self._gate:
+            if self._active.is_set():
+                return
+            self._active.set()
+        animator = IconAnimator(self._get_tray(), lock=self._tray_lock)
+        animator.flash(count=2, interval_ms=150)
+        # Reset after the animation completes (~600ms) on the shared
+        # scheduler instead of spawning a sleep thread per flash.
+        scheduler.call_later(0.7, self._active.clear, label="flash-reset")
+
+    def queued(self):
+        """Rapid amber flash: dictation queued behind a meeting stage."""
+        animator = IconAnimator(self._get_tray(), lock=self._tray_lock)
+        animator.flash_between("queued", "transcribing", count=2, interval_ms=150)

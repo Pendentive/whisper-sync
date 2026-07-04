@@ -249,6 +249,32 @@ in one place, not a branching if/then system and not a framework.
   missing -> actionable popup), _emit_error_safe mode preservation,
   rename semantics (never clobbers), and the no-CLI name fallback.
 
+- **2026-07-03 (item 6, extraction 2b review)**: Copilot caught that
+  the moved save closure constructed MeetingJob(app=self) where self
+  is now the FLOW - every job step would have hit AttributeError. A
+  test now pins job.app identity. pyflakes added to the extraction
+  workflow; it surfaced two more latent NameErrors: sanitize_name
+  unimported in meeting_flow, and a PRE-EXISTING bug in the deep-ID
+  failure path (the Tk callback read 'e' after the except block
+  unbound it - crashed the error label whenever deep speaker-ID
+  failed).
+
+- **2026-07-03 (item 6, extraction 3)**: menu + settings + GitHub glue
+  extracted (~1,100 lines): tray_menu.py (TrayMenu: full menu build,
+  every settings setter, output-folder dialogs, error popup, option
+  constants, module-level menu_callback) and github_tray.py
+  (GitHubTray: poller lifecycle, PR toasts, menu section, gh merge -
+  named github_tray because github_status.py is the poller itself).
+  The flash gate moved to icons.FlashController per the extraction-1
+  deviation note; the app keeps two-line delegates. __main__.py is now
+  799 lines - under the ~800 target with extraction 4 still to come.
+  11 new tests; the load-bearing one builds the FULL menu against the
+  real default config with pystray/capture stubbed (menu-build crashes
+  were the 2026-05-07 crash class) - it caught three transform misses
+  (bare self.worker refs, self._update bound callbacks) and the
+  _updating class attribute stranded away from its users before any
+  code shipped.
+
 - **2026-07-03 (production bugs, owner-reported)**: two real bugs from
   field use, both fixed. (1) PIPELINE ABORT AFTER TRANSCRIPTION: every
   past-week meeting had transcript.json but no flatten/speakers/minutes.
