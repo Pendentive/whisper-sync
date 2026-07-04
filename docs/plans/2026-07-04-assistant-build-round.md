@@ -16,7 +16,7 @@
 | 1 | GPU power-state failover (guard-owned, cpu_fallback_model) | GPU power-state resilience | MERGED (#180-#182) |
 | 2 | Tier 0+1 always-on listener (VAD + openWakeWord, off by default) | Staged architecture, step 2 | NEEDS OWNER INPUT |
 | 3 | Tier 2 splice: wake -> ring-buffer-prefixed dictation + outro | Staged architecture, step 2 | QUEUED |
-| 4 | Per-app meeting auto-record (mic consent-store watch + app list) | Staged architecture, step 3 | IN PROGRESS |
+| 4 | Per-app meeting auto-record (mic consent-store watch + app list) | Staged architecture, step 3 | MERGED (#183, #184) |
 | 5 | In-app wake-word trainer (verifier first, full training later) | Wake-word model landscape | QUEUED |
 | 6 | NPU/OpenVINO backup-transcriber backend (committed scope) | NPU section | QUEUED |
 | - | Installer refresh (screens generated from docs/features/) | BACKLOG.md | QUEUED |
@@ -182,3 +182,13 @@ PRs:
   Manual validation for the owner: enable the toggle, join any Zoom or
   Slack call, expect the start toast within ~10s (two 5s polls) and
   the stop + save dialog ~30s after leaving.
+
+- **2026-07-04 (step 4 complete, #184 merged)**: clean first review
+  (the first of the round). Step 4 shipped as #183 + #184. Remaining
+  unblocked work: step 6 (NPU/OpenVINO backup-transcriber backend,
+  committed scope) - sized for a fresh session (new backend, venv
+  dependencies, quality/latency benchmark gate). Steps 2-3 still wait
+  on the owner: wake phrase, outro phrase(s), whisper-mode listener
+  behavior (asked again 2026-07-04). Owner reminder still outstanding:
+  the tray app runs pre-#167 bytecode; a restart picks up everything
+  from #167 through failover, auto-sleep, and meeting auto-record.
