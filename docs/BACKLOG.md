@@ -27,9 +27,10 @@ same PR that defers them.
 - **Loopback-stream stall coverage** - only the mic channel is
   monitored today; a dead loopback still records mic-only silently
   after the initial warning (item 4, H2 deferral).
-- **CPU floor for the GPU Guard ladder** - the downgrade ladder bottoms
-  out at the smallest model; forcing CPU per request needs a worker
-  restart path (item 1 deviation).
+- **CPU floor for the GPU Guard ladder** - superseded 2026-07-04: now
+  the GPU power-state fallover requirement in
+  specs/2026-07-04-voice-assistant-direction.md (device loss must not
+  crash or hang; respawn on cpu with cpu_fallback_model).
 
 ## Feature gaps
 
