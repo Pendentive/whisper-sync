@@ -73,7 +73,7 @@ class AppControl:
         """Run the git fetch/checkout/pull sequence for self-update."""
         notify("Updating WhisperSync...", f"Pulling latest from {branch}")
 
-                # Check for uncommitted changes
+        # Check for uncommitted changes
         status = _sp.run(
             ["git", "status", "--porcelain"],
             cwd=repo_root, capture_output=True, text=True, timeout=10
@@ -151,13 +151,14 @@ class AppControl:
         except Exception:
             logger.debug("Post-queue shutdown signal failed", exc_info=True)
         try:
-            # Lazy: keyboard is not installed on the CI system python.
-            import keyboard
-
             if self.app.recorder.is_recording:
                 self.app.recorder.stop()
             self.app.worker.stop()
             self.app._backup.stop()
+            # Lazy import last: keyboard is absent on the CI system
+            # python, and an ImportError here must never skip the
+            # recorder/worker/backup stops above.
+            import keyboard
             keyboard.unhook_all()
         except Exception:
             logger.debug("Cleanup error during shutdown", exc_info=True)
