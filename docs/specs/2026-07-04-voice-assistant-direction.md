@@ -175,8 +175,13 @@ device enumeration). Assessment:
   become cpu OR npu-via-openvino.
 - Caveat: the worker stack is ctranslate2/whisperX (CUDA/CPU only). An
   OpenVINO whisper path is a NEW backend for the backup transcriber,
-  not a config flip. Treat as a follow-up experiment after failover
-  ships; measure quality/latency vs the CPU path first.
+  not a config flip.
+- **Owner decision 2026-07-04: COMMITTED scope, not an experiment.**
+  Ship it as a built-in feature that auto-detects an NPU and prefers it
+  for the backup/fallback transcriber when present (feature pattern:
+  own module/backend, config key, inert without an NPU). Sequence it
+  after GPU failover; measure quality/latency vs the CPU path as the
+  acceptance gate.
 
 ## Build order (next sessions)
 
@@ -189,7 +194,8 @@ device enumeration). Assessment:
 4. Per-app meeting auto-record (WASAPI session watch + app list in
    settings).
 5. In-app trainer (verifier first, background full training later).
-6. NPU/OpenVINO backup-transcriber experiment.
+6. NPU/OpenVINO backup-transcriber backend (committed; auto-detect,
+   prefer NPU when present, CPU otherwise).
 
 ## Open questions to define before step 2
 
