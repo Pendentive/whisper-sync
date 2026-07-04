@@ -214,9 +214,14 @@ class AppControl:
                     label="gpu-switchback-retry",
                 )
                 return
-            notify("GPU is back",
-                   "Switching transcription back to the GPU model.")
-            self.restart_worker("gpu_recovered")
+            # Toast only after the respawn actually succeeds (review
+            # catch: a pre-restart toast lies when the reload fails).
+            if self.restart_worker("gpu_recovered"):
+                notify("GPU is back",
+                       "Transcription switched back to the GPU model.")
+            else:
+                notify("GPU switch-back failed",
+                       "Worker did not reload; check the log.")
 
         submit_or_spawn(IO, "gpu-switchback", _attempt, native=True)
 

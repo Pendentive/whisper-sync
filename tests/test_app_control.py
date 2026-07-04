@@ -226,6 +226,15 @@ class SwitchbackTests(_ControlHarness):
         self.app.worker.update_config.assert_called_once_with(self.app.cfg)
         self.assertIn("GPU is back", self.notify.call_args_list[0][0][0])
 
+    def test_failed_switchback_does_not_claim_success(self):
+        # Review catch: the success toast must be gated on the respawn
+        # actually reporting ready.
+        self.app.worker.is_ready.return_value = False
+        self.control.schedule_gpu_switchback()
+        titles = [c[0][0] for c in self.notify.call_args_list]
+        self.assertNotIn("GPU is back", titles)
+        self.assertIn("GPU switch-back failed", titles)
+
     def test_busy_app_retries_later_instead_of_restarting(self):
         self.app.recorder.is_recording = True
         self.control.schedule_gpu_switchback(retry_s=60.0)
