@@ -6,6 +6,8 @@ Everything below is for developers modifying this app or for an AI assistant (li
 
 ## Complete File Reference
 
+For the user-facing catalog (features, shortcuts, settings), see [features/](features/). Deferred work: [BACKLOG.md](BACKLOG.md).
+
 ### Python Files (whisper_sync/)
 
 | File | Purpose | Key Classes/Functions |

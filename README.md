@@ -92,6 +92,8 @@ For the full design, see [docs/specs/2026-03-24-governance-learning-loop-design.
 ## For Contributors
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) - branch naming, the PR pipeline (Copilot review + CI test gate + auto-merge), commit format
+- [docs/features/](docs/features/) - the living catalog: features, shortcuts and interactions, every setting with its default (kept in sync by tests)
+- [docs/BACKLOG.md](docs/BACKLOG.md) - deferred and known-open work with sources
 - [docs/development.md](docs/development.md) - setup, debugging, running the test suites
 - [docs/testing.md](docs/testing.md) - the single testing entry point: automated suites, manual checklist, where results are recorded
 - [docs/plans/2026-07-03-hardening-round.md](docs/plans/2026-07-03-hardening-round.md) - current project state (the stability rebuild that preceded it: [docs/plans/2026-05-11-stability-rebuild.md](docs/plans/2026-05-11-stability-rebuild.md))
