@@ -123,6 +123,35 @@ class TriggerTests(_WatchHarness):
         self._run_polls([{game: False}, {game: True}, {game: True}])
         self.assertEqual(self.app.meetings.toggles, 0)
 
+    def test_newly_watched_stale_entry_does_not_trigger(self):
+        # Review catch: the baseline covers ALL entries, so editing
+        # meeting_watch_apps mid-session cannot promote a stale
+        # always-active entry into a "transition".
+        self.app.cfg["meeting_watch_apps"] = ["zoom.exe"]
+        self._run_polls([{STALE_SLACK: True}, {STALE_SLACK: True}])
+        self.app.cfg["meeting_watch_apps"] = ["zoom.exe", "slack.exe"]
+        self._run_polls([{STALE_SLACK: True}] * 3)
+        self.assertEqual(self.app.meetings.toggles, 0)
+
+    def test_entry_appearing_active_is_a_real_acquire(self):
+        # The consent store only creates entries on actual mic use, so
+        # an entry APPEARING active (first-ever use, or a fresh app
+        # version directory) is a genuine transition.
+        self._run_polls([{}, {ZOOM: True}, {ZOOM: True}])
+        self.assertEqual(self.app.meetings.toggles, 1)
+
+    def test_busy_at_debounce_retries_until_recordable(self):
+        # Review catch: a dictation in flight at the debounce moment
+        # must not lose the whole meeting - the start retries while the
+        # mic stays held.
+        self.app.state.emit("dictation_started", mode="dictation")
+        self._run_polls([{ZOOM: False}] + [{ZOOM: True}] * 3)
+        self.assertEqual(self.app.meetings.toggles, 0)
+        self.app.state.emit("idle", mode=None)
+        self._run_polls([{ZOOM: True}])
+        self.assertEqual(self.app.meetings.toggles, 1)
+        self.assertEqual(self.mode, "meeting")
+
     def test_manual_recording_already_running_is_left_alone(self):
         self.app.state.emit(MEETING_STARTED, mode="meeting")
         self._run_polls([{ZOOM: False}, {ZOOM: True}, {ZOOM: True}])
@@ -158,6 +187,16 @@ class AutoStopTests(_WatchHarness):
         self.assertEqual(self.mode, None)
         self.assertIn("Meeting recording stopped",
                       self.notify.call_args[0][0])
+
+    def test_stop_timing_never_undershoots_the_configured_release(self):
+        # Review catch: round() stopped at 28s with poll=7/stop=30;
+        # the ceiling makes it 5 polls = 35s, never less than 30.
+        self.app.cfg["meeting_watch_poll_seconds"] = 7
+        self._start_auto_meeting()
+        self._run_polls([{ZOOM: False}] * 4)
+        self.assertEqual(self.mode, "meeting", "4 polls = 28s < 30s")
+        self._run_polls([{ZOOM: False}])
+        self.assertEqual(self.mode, None)
 
     def test_brief_release_then_reacquire_keeps_recording(self):
         self._start_auto_meeting()

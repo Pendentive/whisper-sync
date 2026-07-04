@@ -34,6 +34,7 @@ disabled or off-Windows.
 
 from __future__ import annotations
 
+import math
 import os
 
 from .logger import logger
@@ -133,6 +134,7 @@ class MeetingWatch:
         self._read_entries = read_entries
         self._prev: dict[str, bool] = {}
         self._streak: dict[str, int] = {}  # entry -> active polls observed
+        self._handled: set[str] = set()    # entries whose call is dealt with
         self._auto_started_by: str | None = None
         self._release_polls = 0
         self._primed = False  # first enabled poll only seeds the baseline
@@ -173,6 +175,7 @@ class MeetingWatch:
                 # treating everything that changed meanwhile as fresh.
                 self._prev.clear()
                 self._streak.clear()
+                self._handled.clear()
                 self._auto_started_by = None
                 self._release_polls = 0
                 self._primed = False
@@ -181,42 +184,53 @@ class MeetingWatch:
         if entries is None:
             return
         apps = cfg.get("meeting_watch_apps") or []
-        watched = {eid: active for eid, active in entries.items()
-                   if entry_matches(eid, apps)}
         if not self._primed:
-            # Baseline: an entry already active now may be a stale
-            # leftover from a dead app version - only transitions the
-            # watcher OBSERVES count (module docstring).
-            self._prev = watched
+            # Baseline over ALL entries, not just watched ones: an entry
+            # already active now may be a stale leftover from a dead app
+            # version, and it must stay baseline even if the watch list
+            # is edited later to include it (review catch). An entry that
+            # APPEARS later is a real acquire - the consent store only
+            # creates entries on actual mic use.
+            self._prev = entries
             self._primed = True
             return
-        for eid, active in watched.items():
+        for eid, active in entries.items():
             if not active:
                 self._streak.pop(eid, None)
+                self._handled.discard(eid)
                 continue
             if not self._prev.get(eid, False) and eid not in self._streak:
-                self._streak[eid] = 1  # observed transition
+                self._streak[eid] = 1  # observed transition (or appearance)
             elif eid in self._streak and self._streak[eid] < TRIGGER_AFTER_POLLS:
                 self._streak[eid] += 1
-                if self._streak[eid] >= TRIGGER_AFTER_POLLS:
-                    self._maybe_start(eid)
-        self._prev = watched
-        self._maybe_stop(watched)
+            if (self._streak.get(eid, 0) >= TRIGGER_AFTER_POLLS
+                    and eid not in self._handled
+                    and entry_matches(eid, apps)):
+                # Retried every poll while the mic stays held (review
+                # catch): an app that is busy dictating at the debounce
+                # moment must not lose the whole meeting.
+                if self._maybe_start(eid):
+                    self._handled.add(eid)
+        self._prev = entries
+        self._maybe_stop(entries)
 
     # -- Start / stop decisions -------------------------------------------------
 
-    def _maybe_start(self, entry_id: str) -> None:
+    def _maybe_start(self, entry_id: str) -> bool:
+        """Try to auto-start. True = this call is dealt with (started,
+        or someone is already recording it); False = busy, retry next
+        poll while the mic stays held."""
         label = _label(entry_id)
         with self.app._lock:
             current = self.app.state.current if self.app.state else None
             mode = current.mode if current else None
             if mode == "meeting" or self.app.recorder.is_recording:
-                return  # already recording; that meeting is handled
+                return True  # already recording; that meeting is handled
             if not self.app._can_record():
                 logger.info(
                     f"meeting watch: {label} is in a call but the app is "
-                    "busy; not auto-starting")
-                return
+                    "busy; retrying while the mic stays held")
+                return False
             logger.info(
                 f"meeting watch: {label} started using the mic; "
                 "auto-starting the meeting recording")
@@ -228,6 +242,7 @@ class MeetingWatch:
         notify("Meeting recording started",
                f"{label} is in a call. Stop with the meeting hotkey "
                "or the tray if unwanted.")
+        return True
 
     def _maybe_stop(self, watched: dict) -> None:
         if self._auto_started_by is None:
@@ -244,7 +259,9 @@ class MeetingWatch:
             return
         poll = max(float(self.app.cfg.get("meeting_watch_poll_seconds", 5)), 1.0)
         stop_after = float(self.app.cfg.get("meeting_watch_stop_after_s", 30))
-        if self._release_polls + 1 < max(1, round(stop_after / poll)):
+        # Ceiling, never round: the release duration must be AT LEAST
+        # stop_after (review catch: poll=7/stop=30 rounded to 28s).
+        if self._release_polls + 1 < max(1, math.ceil(stop_after / poll)):
             self._release_polls += 1
             return
         entry = self._auto_started_by
