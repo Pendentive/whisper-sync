@@ -42,3 +42,4 @@ fails if this table and the defaults file disagree on keys.
 | `gpu_guard_poll_seconds` | `30` | VRAM poll interval |
 | `gpu_guard_ladder` | `["large-v3", "medium", "small", "base"]` | Downgrade order as a JSON list (floor = last entry); non-list values are rejected and fall back to this default |
 | `gpu_guard_probe` | `null` | Force a probe backend (null = auto: pynvml, nvidia-smi) |
+| `cpu_fallback_model` | `base` | Model used when the GPU becomes unreachable (hybrid dGPU power-off) and transcription fails over to cpu |

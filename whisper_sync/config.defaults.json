@@ -41,5 +41,6 @@
     "small",
     "base"
   ],
-  "gpu_guard_probe": null
+  "gpu_guard_probe": null,
+  "cpu_fallback_model": "base"
 }
