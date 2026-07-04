@@ -352,9 +352,11 @@ class DictationFlow:
                     logger.info("Waiting for the model to load before "
                                 "transcribing dictation...")
                     if not app.worker.wait_ready(timeout=180):
+                        where = (f"audio preserved at: {self._wav_path}"
+                                 if self._wav_path else
+                                 "disk streaming was unavailable, audio lost")
                         raise RuntimeError(
-                            "Model did not load in time; dictation audio "
-                            f"preserved at: {self._wav_path}")
+                            f"Model did not load in time; dictation {where}")
                 text = None
                 used_backup = False
                 if use_backup:
