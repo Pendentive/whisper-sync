@@ -12,9 +12,11 @@ AutoSleep frees that memory two ways:
 
 While asleep the tray shows the "sleep" icon (deeper gray middle,
 normal gray outer ring). Any dictation or meeting toggle wakes the
-model with the usual yellow loading double-flash; meetings start
-recording immediately (the pipeline waits for the worker at the
-transcription step), dictation asks the user to retry once loaded.
+model with the usual yellow loading double-flash AND starts recording
+immediately - both flows are disk-first, so capture never waits on the
+model (exception: whisper/incognito dictation is RAM-only and still
+requires a loaded model). Meetings transcribe at their own pipeline step; dictation waits
+for readiness at stop time (the yellow state simply lasts longer).
 
 Follows the GPU Guard feature pattern: one owning module, flat config
 key, fully inert when disabled. Sleep and wake events land in

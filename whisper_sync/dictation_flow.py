@@ -96,10 +96,10 @@ class DictationFlow:
                 return
 
             if current and current.sleeping:
-                # Model is unloaded (auto_sleep): wake it (yellow loading
-                # flash) and let the user retry once it is ready.
+                # Model is unloaded (auto_sleep): wake it and KEEP GOING.
+                # Dictation streams to disk, so recording starts now and
+                # transcription waits for the model at stop time.
                 self.app.auto_sleep.wake(reason="dictation_hotkey")
-                return
 
             if mode == "dictation":
                 self._stop()
@@ -141,7 +141,6 @@ class DictationFlow:
                 return
             if current and current.sleeping:
                 self.app.auto_sleep.wake(reason="feature_hotkey")
-                return
 
             if mode == "meeting" or (mode is None and meeting_tx):
                 self._toggle_during_meeting(feature=True)
@@ -212,10 +211,18 @@ class DictationFlow:
 
         app = self.app
         _meeting_tx = app.state.current.meeting_transcribing if app.state else False
-        if not app.worker.is_ready() and not (_meeting_tx and BackupTranscriber.is_enabled(app.cfg)):
-            logger.warning("Worker not ready yet - ignoring dictation request")
-            app._yellow_flash()
-            return
+        if not app.worker.is_ready():
+            has_backup = _meeting_tx and BackupTranscriber.is_enabled(app.cfg)
+            if app.cfg.get("incognito", False) and not has_backup:
+                # RAM-only capture has no crash net and nothing to
+                # transcribe it promptly - keep the old refuse behavior.
+                logger.warning("Worker not ready and whisper mode is on - "
+                               "ignoring dictation request")
+                app._yellow_flash()
+                return
+            # Disk-first recording works fine without the model: record
+            # now, transcribe when it finishes loading (stop path waits).
+            logger.info("Dictation recording while the model loads (disk-first)")
         # Atomic claim: only start if mode is still startable. A worker
         # completion (or a double-fired hotkey on another thread) changing
         # mode between the toggle's check and this start is rejected here
@@ -338,6 +345,18 @@ class DictationFlow:
 
             t0 = _time.perf_counter()
             try:
+                if not use_backup and not app.worker.is_ready():
+                    # Started while the model was loading (wake from sleep
+                    # or app startup). The yellow transcribing state simply
+                    # lasts longer; the audio is already safe on disk.
+                    logger.info("Waiting for the model to load before "
+                                "transcribing dictation...")
+                    if not app.worker.wait_ready(timeout=180):
+                        where = (f"audio preserved at: {self._wav_path}"
+                                 if self._wav_path else
+                                 "disk streaming was unavailable, audio lost")
+                        raise RuntimeError(
+                            f"Model did not load in time; dictation {where}")
                 text = None
                 used_backup = False
                 if use_backup:

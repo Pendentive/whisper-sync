@@ -33,9 +33,10 @@ Companion files: [shortcuts.md](shortcuts.md) (how to interact),
 - **Model auto-sleep** - the worker (and all of its VRAM) unloads after
   `auto_sleep_minutes` of inactivity (default 30, 0 disables), or on
   demand by double-clicking the tray icon (for gaming). Any dictation
-  or meeting action wakes it with the yellow loading flash; meetings
-  start recording immediately while the model loads. Sleeping shows
-  the deep-gray sleep icon.
+  or meeting action wakes it with the yellow loading flash and starts
+  recording immediately - capture never waits on the model (whisper
+  mode excepted: RAM-only dictation still requires a loaded model).
+  Sleeping shows the deep-gray sleep icon.
 - **GPU Guard** - VRAM watermark polling with a sticky model downgrade
   ladder (large-v3 -> medium -> small -> base) on low-VRAM readings or
   worker crashes. Vendor-agnostic probes. All events (downgrades,
