@@ -98,6 +98,17 @@ class _FakeStats:
         self.features += 1
 
 
+class _FakeControl:
+    """Records guard-aware respawns (app_control.restart_worker)."""
+
+    def __init__(self):
+        self.respawns = []
+
+    def restart_worker(self, reason):
+        self.respawns.append(reason)
+        return True
+
+
 class _FakeApp:
     def __init__(self):
         self.cfg = {
@@ -117,6 +128,7 @@ class _FakeApp:
         self._backup = _FakeBackup()
         self._gpu_guard = _FakeGuard()
         self._stats = _FakeStats()
+        self.control = _FakeControl()
         self.flashes = 0
         self.refreshes = 0
 
@@ -218,6 +230,20 @@ class NormalDictationTests(_FlowHarness):
         self.assertEqual(self.app.flashes, 0)
         self.assertEqual(self.app.state.current.mode, "dictation")
         self.assertTrue(self.app.recorder.is_recording)
+
+    def test_worker_crash_routes_through_failover_respawn(self):
+        # Respawn must go through the guard-aware path, never a bare
+        # worker.restart() (which would retry CUDA on a lost dGPU).
+        from whisper_sync.worker_manager import WorkerCrashedError
+
+        def _boom(audio, model_override=None, timeout=None):
+            raise WorkerCrashedError("boom")
+
+        self.flow.toggle()
+        self.app.worker.transcribe_fast = _boom
+        self.flow.toggle()
+        self.assertEqual(self.app.control.respawns, ["worker_crash_dictation"])
+        self.assertEqual(self.app.state.current.mode, "error")
 
     def test_mic_failure_returns_to_idle_and_clears_feature(self):
         self.app.recorder.fail_start = True

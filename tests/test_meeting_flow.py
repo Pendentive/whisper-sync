@@ -54,6 +54,19 @@ class _FakeWorker:
         self.restarts += 1
 
 
+class _FakeControl:
+    """Records guard-aware respawns (app_control.restart_worker)."""
+
+    def __init__(self, app):
+        self.app = app
+        self.respawns = []
+
+    def restart_worker(self, reason):
+        self.respawns.append(reason)
+        self.app.worker.restart()
+        return True
+
+
 class _FakeGuard:
     def __init__(self):
         self.triggers = []
@@ -94,6 +107,7 @@ class _FakeApp:
         self._gpu_guard = _FakeGuard()
         self._backup = _FakeBackup()
         self.dialogs = _FakeDialogs()
+        self.control = _FakeControl(self)
         self.out = out_dir
         self.popups = []
         self.idles = []
@@ -244,6 +258,9 @@ class RunJobErrorTests(_FlowHarness):
         job = self._Job(WorkerCrashedError("boom"))
         self.flow._run_meeting_job(job)
         self.assertEqual(self.app._gpu_guard.triggers, ["worker_crash_meeting"])
+        # Respawn must route through the guard-aware path, never a bare
+        # worker.restart() (which would retry CUDA on a lost dGPU).
+        self.assertEqual(self.app.control.respawns, ["worker_crash_meeting"])
         self.assertEqual(self.app.worker.restarts, 1)
         self.assertEqual(self.app.state.current.mode, "error")
 

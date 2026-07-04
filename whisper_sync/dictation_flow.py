@@ -430,7 +430,8 @@ class DictationFlow:
                 logger.error("Worker crashed during dictation -- respawning...")
                 if self._wav_path:
                     logger.info(f"Dictation audio preserved at: {self._wav_path}")
-                app.worker.restart()
+                # Guard-aware respawn: pinned to cpu if the dGPU is gone.
+                app.control.restart_worker("worker_crash_dictation")
                 app.state.emit(ERROR, mode="error",
                                data={"message": "Worker crashed during dictation",
                                      "recoverable": True})

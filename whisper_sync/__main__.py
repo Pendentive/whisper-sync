@@ -144,7 +144,7 @@ class WhisperSync:
         """
         import shutil
 
-        data_dir = get_data_dir()  # creates .whispersync/ if needed
+        get_data_dir()  # side effect: creates .whispersync/ if needed
 
         # 1. config.json
         legacy_cfg = get_legacy_config_path()
@@ -516,7 +516,9 @@ class WhisperSync:
                     return  # worker is intentionally stopped; do not wake
                 if not self.worker.is_alive():
                     logger.warning("Worker did not survive suspend/resume; restarting")
-                    self.worker.restart()
+                    # Guard-aware respawn: resume is exactly when a
+                    # hybrid dGPU may have been powered off.
+                    self.control.restart_worker("resume")
                     notify("WhisperSync recovered",
                            "Transcription engine restarted after sleep.")
             submit_or_spawn(IO, "resume-check", _check)

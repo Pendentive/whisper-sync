@@ -11,6 +11,11 @@ background thread + defer).
 The old ``_updating`` class attribute is folded into
 ``AppState.updating`` with UPDATE_STARTED / UPDATE_COMPLETED events -
 the last stray mode flag from the architecture audit.
+
+restart_worker() is the single generic worker-respawn path (assistant
+build round, step 1): every "the worker died, bring it back" site
+routes through it so the GPU Guard's device-failover decision is
+always consulted before a spawn.
 """
 
 import os
@@ -133,6 +138,38 @@ class AppControl:
         import time
         time.sleep(2)  # Let the notification display
         self.restart()
+
+    def restart_worker(self, reason: str) -> bool:
+        """Respawn the transcription worker with GPU-failover awareness.
+
+        While the dGPU is lost (guard.respawn_overlay() is non-None)
+        the spawn is pinned to cpu + cpu_fallback_model - respawning on
+        the live config would retry CUDA against a dead device, the
+        loop the failover spec forbids. On healthy probes the live
+        ConfigStore is (re)bound so the spawn snapshots current
+        settings. Returns True when the new worker reports ready.
+
+        Blocking (stop, spawn, wait_ready): call from a worker/IO
+        thread, never a hotkey/menu/scheduler thread. The manual device
+        switch in tray_menu keeps its own restart on purpose - an
+        explicit user choice must not be overridden by the overlay.
+        """
+        app = self.app
+        overlay = app._gpu_guard.respawn_overlay()
+        if overlay is not None:
+            snapshot = getattr(app.cfg, "snapshot", None)
+            base = snapshot() if callable(snapshot) else dict(app.cfg)
+            app.worker.update_config({**base, **overlay})
+            app._gpu_guard.log_external_event(
+                "worker_respawn_pinned_cpu", reason=reason,
+                model=overlay.get("model"))
+            logger.warning(
+                f"Respawning worker on cpu ({reason}): GPU unreachable, "
+                f"using '{overlay.get('model')}'")
+        else:
+            app.worker.update_config(app.cfg)
+        app.worker.restart()
+        return app.worker.is_ready()
 
     # Empirically chosen delay (seconds) to let pystray menu callbacks
     # return before we call tray.stop(). Without this, WM_QUIT is posted
