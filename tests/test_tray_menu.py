@@ -187,7 +187,38 @@ class MenuBuildTests(unittest.TestCase):
         menu = self.menu.build()
         texts = " | ".join(_iter_texts(menu))
         self.assertIn("Meeting Auto-Record", texts)
-        self.assertIn("Watches: zoom", texts)
+        self.assertIn("Detect apps...", texts)
+        self.assertIn("zoom\trecord", texts)
+        self.assertIn("discord\task", texts)
+        self.assertIn("Show toasts", texts)
+
+    def test_set_app_record_state_saves_the_map(self):
+        from whisper_sync.meeting_watch import apps_map
+        with mock.patch.object(config, "save") as save:
+            self.menu._set_app_record_state("discord.exe", "ignore")
+        self.assertEqual(apps_map(self.app.cfg)["discord.exe"], "ignore")
+        save.assert_called_once()
+
+    def test_detect_adds_new_apps_as_ignore_only(self):
+        from whisper_sync import tray_menu as tray_menu_mod
+        from whisper_sync.meeting_watch import apps_map
+        entries = {
+            "c:#program files#zoom#bin#zoom.exe": False,   # already covered
+            "c:#program files#obs#obs64.exe": True,        # new
+            "microsoft.windowssoundrecorder_8wek": False,  # new (packaged)
+        }
+        with mock.patch("whisper_sync.meeting_watch.read_mic_entries",
+                        return_value=entries), \
+                mock.patch.object(config, "save"), \
+                mock.patch.object(tray_menu_mod, "notify"):
+            self.menu._detect_auto_record_apps()
+        apps = apps_map(self.app.cfg)
+        self.assertEqual(apps["obs64.exe"], "ignore")
+        self.assertEqual(apps["microsoft.windowssoundrecorder_8wek"],
+                         "ignore")
+        # The existing zoom token still covers its entry: no duplicate.
+        self.assertEqual(apps["zoom.exe"], "record")
+        self.assertNotIn("c:#program files#zoom#bin#zoom.exe", apps)
 
     def test_menu_callback_swallows_pystray_args(self):
         calls = []

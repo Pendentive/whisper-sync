@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 from whisper_sync import meeting_watch as mw
-from whisper_sync.meeting_watch import MeetingWatch, entry_matches
+from whisper_sync.meeting_watch import MeetingWatch, apps_map, match_token
 from whisper_sync.state_manager import StateManager, MEETING_STARTED, IDLE
 
 ZOOM = "c:#program files#zoom#bin#zoom.exe"
@@ -25,6 +25,7 @@ class _FakeMeetings:
     def __init__(self, app):
         self.app = app
         self.toggles = 0
+        self.aborts = 0
 
     def toggle(self):
         self.toggles += 1
@@ -34,12 +35,19 @@ class _FakeMeetings:
         else:
             self.app.state.emit(MEETING_STARTED, mode="meeting")
 
+    def abort_recording(self, reason="user"):
+        self.aborts += 1
+        if self.app.state.current.mode == "meeting":
+            self.app.state.emit(IDLE, mode=None)
+
 
 class _FakeApp:
     def __init__(self):
         self.cfg = {
             "meeting_auto_record": True,
-            "meeting_watch_apps": ["zoom.exe", "slack.exe", "msteams"],
+            "meeting_watch_apps": {"zoom.exe": "record",
+                                   "slack.exe": "record",
+                                   "msteams": "record"},
             "meeting_watch_poll_seconds": 5,
             "meeting_watch_stop_after_s": 30,
         }
@@ -87,8 +95,7 @@ class TriggerTests(_WatchHarness):
         ])
         self.assertEqual(self.app.meetings.toggles, 1)
         self.assertEqual(self.mode, "meeting")
-        self.assertIn("Meeting recording started",
-                      self.notify.call_args[0][0])
+        self.assertIn("Auto-recording", self.notify.call_args[0][0])
 
     def test_entry_already_active_at_baseline_never_triggers(self):
         # The stale-entry hazard: a dead app version's entry can be
@@ -241,22 +248,98 @@ class LifecycleTests(_WatchHarness):
         self.assertEqual(calls, [(5.0, "meeting-watch")])
 
 
+class ThreeStateTests(_WatchHarness):
+    """Record / Ask / Ignore per app (owner design, third intake)."""
+
+    def _toast_buttons(self):
+        kwargs = self.notify.call_args[1]
+        return {b["label"]: b["action"] for b in kwargs.get("buttons", [])}
+
+    def test_ask_state_offers_but_never_records(self):
+        self.app.cfg["meeting_watch_apps"] = {"zoom.exe": "ask"}
+        self._run_polls([{ZOOM: False}, {ZOOM: True}, {ZOOM: True}])
+        self.assertEqual(self.app.meetings.toggles, 0)
+        self.assertIn("Not recording", self.notify.call_args[0][0])
+        # One offer per call, not one per poll.
+        self._run_polls([{ZOOM: True}] * 3)
+        self.assertEqual(self.notify.call_count, 1)
+
+    def test_ask_toast_record_button_starts_recording(self):
+        self.app.cfg["meeting_watch_apps"] = {"zoom.exe": "ask"}
+        self._run_polls([{ZOOM: False}, {ZOOM: True}, {ZOOM: True}])
+        self._toast_buttons()["Record"]()
+        self.assertEqual(self.mode, "meeting")
+        # The click-started recording is watcher-owned: it auto-stops
+        # after sustained release like any auto-started one.
+        self._run_polls([{ZOOM: False}] * 6)
+        self.assertEqual(self.mode, None)
+
+    def test_ignore_state_is_fully_silent(self):
+        self.app.cfg["meeting_watch_apps"] = {"zoom.exe": "ignore"}
+        self._run_polls([{ZOOM: False}] + [{ZOOM: True}] * 4)
+        self.assertEqual(self.app.meetings.toggles, 0)
+        self.notify.assert_not_called()
+
+    def test_optin_toast_dont_record_discards_silently(self):
+        self._run_polls([{ZOOM: False}, {ZOOM: True}, {ZOOM: True}])
+        self.assertEqual(self.mode, "meeting")
+        self._toast_buttons()["Don't record"]()
+        self.assertEqual(self.app.meetings.aborts, 1)
+        self.assertEqual(self.mode, None)
+        # Ownership released: no auto-stop fires later.
+        self._run_polls([{ZOOM: False}] * 8)
+        self.assertEqual(self.app.meetings.aborts, 1)
+
+    def test_toast_master_toggle_silences_but_still_records(self):
+        self.app.cfg["meeting_watch_toasts"] = False
+        self._run_polls([{ZOOM: False}, {ZOOM: True}, {ZOOM: True}])
+        self.assertEqual(self.mode, "meeting")
+        self.notify.assert_not_called()
+
+    def test_optout_toggle_silences_ask_apps(self):
+        self.app.cfg["meeting_watch_apps"] = {"zoom.exe": "ask"}
+        self.app.cfg["meeting_watch_toast_optout"] = False
+        self._run_polls([{ZOOM: False}, {ZOOM: True}, {ZOOM: True}])
+        self.assertEqual(self.app.meetings.toggles, 0)
+        self.notify.assert_not_called()
+
+    def test_legacy_list_config_reads_as_all_record(self):
+        self.app.cfg["meeting_watch_apps"] = ["zoom.exe"]
+        self._run_polls([{ZOOM: False}, {ZOOM: True}, {ZOOM: True}])
+        self.assertEqual(self.mode, "meeting")
+
+    def test_unknown_state_string_reads_as_ignore(self):
+        self.app.cfg["meeting_watch_apps"] = {"zoom.exe": "recrd"}  # typo
+        self._run_polls([{ZOOM: False}] + [{ZOOM: True}] * 3)
+        self.assertEqual(self.app.meetings.toggles, 0,
+                         "a config typo must never enable recording")
+
+
 class MatchingTests(unittest.TestCase):
     def test_exe_token_matches_leaf_only(self):
-        self.assertTrue(entry_matches(ZOOM, ["zoom.exe"]))
-        self.assertFalse(
-            entry_matches("c:#tools#zoom.exe#helper.exe", ["zoom.exe"]),
+        self.assertEqual(match_token(ZOOM, ["zoom.exe"]), "zoom.exe")
+        self.assertIsNone(
+            match_token("c:#tools#zoom.exe#helper.exe", ["zoom.exe"]),
             "an exe token must match the path leaf, never a segment")
 
     def test_packaged_token_matches_family_prefix(self):
-        self.assertTrue(entry_matches(
-            "msteams_8wekyb3d8bbwe", ["msteams"]))
-        self.assertFalse(entry_matches(
+        self.assertEqual(match_token(
+            "msteams_8wekyb3d8bbwe", ["msteams"]), "msteams")
+        self.assertIsNone(match_token(
             "microsoft.windowscamera_8wekyb3d8bbwe", ["msteams"]))
 
     def test_matching_is_case_insensitive_and_skips_blanks(self):
-        self.assertTrue(entry_matches(ZOOM, ["ZOOM.EXE"]))
-        self.assertFalse(entry_matches(ZOOM, ["", "  "]))
+        self.assertEqual(match_token(ZOOM, ["ZOOM.EXE"]), "zoom.exe")
+        self.assertIsNone(match_token(ZOOM, ["", "  "]))
+
+    def test_apps_map_normalizes_forms(self):
+        self.assertEqual(apps_map({"meeting_watch_apps": ["Zoom.EXE", ""]}),
+                         {"zoom.exe": "record"})
+        self.assertEqual(
+            apps_map({"meeting_watch_apps": {"zoom.exe": "ASK",
+                                             "x.exe": "bogus"}}),
+            {"zoom.exe": "ask", "x.exe": "ignore"})
+        self.assertEqual(apps_map({"meeting_watch_apps": None}), {})
 
 
 class RealStoreTests(unittest.TestCase):

@@ -141,6 +141,22 @@ class MeetingFlow:
         if self.app.cfg.get("always_available_dictation", True):
             self.app._backup.preload()
 
+    def abort_recording(self, reason: str = "user"):
+        """Silently discard an in-progress meeting recording.
+
+        No save dialog, nothing written: the auto-record opt-in toast's
+        "Don't record" action lands here. The manual stop path keeps
+        its dialog (which has its own discard choice).
+        """
+        with self.app._lock:
+            current = self.app.state.current if self.app.state else None
+            if (current.mode if current else None) != "meeting":
+                return
+            self.app.recorder.stop()
+            self.app.recorder.discard_streaming()
+            logger.info(f"Meeting recording aborted ({reason}); nothing saved")
+            self.app.state.emit(IDLE, mode=None)
+
     def _stop(self):
         audio = self.app.recorder.stop()
 

@@ -47,6 +47,12 @@ same PR that defers them.
   [docs/features/](features/) - a features screen, a
   shortcuts/interaction screen, and a defaults/configuration screen -
   so the installer stays current automatically.
+- **Streaming dictation ("fill as it goes")** - live word-by-word
+  insertion with rolling self-correction for paste-unfriendly apps.
+  Owner-floated, explicitly deferred (2026-07-04 third intake). A
+  different ASR architecture (streaming zipformer / whisper-streaming
+  partial hypotheses + edit-in-place delivery), not a config flip on
+  the batch pipeline (specs/2026-07-04-voice-assistant-direction.md).
 
 ## Hygiene
 

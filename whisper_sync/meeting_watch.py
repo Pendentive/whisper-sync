@@ -1,11 +1,22 @@
 """Per-app meeting auto-record - assistant build round, step 4.
 
-When a configured communications app (Zoom, Slack, Teams, ...) starts
-using the microphone, a meeting recording auto-starts; when that app
-releases the mic and stays quiet, the auto-started recording stops
-(through the normal stop path, save dialog included). Manual hotkey
-control is untouched, and a manually started recording is never
-auto-stopped.
+Each configured app has one of three states (owner design, 2026-07-04
+third intake):
+
+- **record**: when the app starts using the microphone, a meeting
+  recording auto-starts; an opt-in toast announces it with a single
+  "Don't record" action (which silently discards). When the app
+  releases the mic and stays quiet, the auto-started recording stops
+  through the normal stop path, save dialog included.
+- **ask**: never auto-starts; an opt-out toast offers a one-click
+  "Record" action instead.
+- **ignore**: fully silent (the exhausting-Discord case) - no
+  recording, no toasts.
+
+Toasts are gated by meeting_watch_toasts (master) and the
+meeting_watch_toast_optin / meeting_watch_toast_optout sub-toggles.
+Manual hotkey control is untouched, and a manually started recording
+is never auto-stopped.
 
 Detection source: the Windows CapabilityAccessManager consent store
 (HKCU ConsentStore/microphone) - the registry tree behind the OS
@@ -99,8 +110,32 @@ def _scan_tree(winreg, path: str, out: dict, skip: set) -> None:
                 out[sub.lower()] = stop == 0
 
 
-def entry_matches(entry_id: str, app_names) -> bool:
-    """True when a consent-store entry belongs to a watched app.
+_APP_STATES = ("record", "ask", "ignore")
+
+
+def apps_map(cfg) -> dict[str, str]:
+    """Normalized {app token: state} from meeting_watch_apps.
+
+    Accepts the legacy list form (#183 shipped a plain list) as
+    all-'record'; unknown state strings read as 'ignore' so a config
+    typo can never silently enable recording.
+    """
+    raw = cfg.get("meeting_watch_apps") or {}
+    if isinstance(raw, (list, tuple)):
+        return {str(t).strip().lower(): "record"
+                for t in raw if str(t).strip()}
+    out: dict[str, str] = {}
+    if isinstance(raw, dict):
+        for token, state in raw.items():
+            token = str(token).strip().lower()
+            state = str(state).strip().lower()
+            if token:
+                out[token] = state if state in _APP_STATES else "ignore"
+    return out
+
+
+def match_token(entry_id: str, tokens) -> str | None:
+    """The configured token a consent-store entry belongs to, or None.
 
     Desktop entries are full '#'-separated paths: a configured
     ``*.exe`` token must match the path LEAF exactly (never a
@@ -109,16 +144,16 @@ def entry_matches(entry_id: str, app_names) -> bool:
     token without '.exe' matches as a case-insensitive prefix.
     """
     entry = entry_id.lower()
-    for name in app_names or ():
+    for name in tokens or ():
         token = str(name).strip().lower()
         if not token:
             continue
         if token.endswith(".exe"):
             if entry.rsplit("#", 1)[-1] == token:
-                return True
+                return token
         elif entry.startswith(token):
-            return True
-    return False
+            return token
+    return None
 
 
 def _label(entry_id: str) -> str:
@@ -183,7 +218,7 @@ class MeetingWatch:
         entries = self._read_entries()
         if entries is None:
             return
-        apps = cfg.get("meeting_watch_apps") or []
+        apps = apps_map(cfg)
         if not self._primed:
             # Baseline over ALL entries, not just watched ones: an entry
             # already active now may be a stale leftover from a dead app
@@ -204,19 +239,37 @@ class MeetingWatch:
             elif eid in self._streak and self._streak[eid] < TRIGGER_AFTER_POLLS:
                 self._streak[eid] += 1
             if (self._streak.get(eid, 0) >= TRIGGER_AFTER_POLLS
-                    and eid not in self._handled
-                    and entry_matches(eid, apps)):
-                # Retried every poll while the mic stays held (review
-                # catch): an app that is busy dictating at the debounce
-                # moment must not lose the whole meeting.
-                if self._maybe_start(eid):
+                    and eid not in self._handled):
+                token = match_token(eid, apps)
+                state = apps.get(token) if token else None
+                if state == "record":
+                    # Retried every poll while the mic stays held
+                    # (review catch on #183): an app that is busy
+                    # dictating at the debounce moment must not lose
+                    # the whole meeting.
+                    if self._maybe_start(eid):
+                        self._handled.add(eid)
+                elif state == "ask":
+                    self._offer_recording(eid)
+                    self._handled.add(eid)  # one offer per call
+                else:
+                    # ignore / not configured: nothing this call. A
+                    # state edited mid-call applies from the NEXT call.
                     self._handled.add(eid)
         self._prev = entries
         self._maybe_stop(entries)
 
     # -- Start / stop decisions -------------------------------------------------
 
-    def _maybe_start(self, entry_id: str) -> bool:
+    def _toast_enabled(self, kind: str) -> bool:
+        cfg = self.app.cfg
+        if not cfg.get("meeting_watch_toasts", True):
+            return False
+        key = ("meeting_watch_toast_optin" if kind == "optin"
+               else "meeting_watch_toast_optout")
+        return bool(cfg.get(key, True))
+
+    def _maybe_start(self, entry_id: str, announce: bool = True) -> bool:
         """Try to auto-start. True = this call is dealt with (started,
         or someone is already recording it); False = busy, retry next
         poll while the mic stays held."""
@@ -239,10 +292,39 @@ class MeetingWatch:
             self.app.meetings.toggle()
             self._auto_started_by = entry_id
             self._release_polls = 0
-        notify("Meeting recording started",
-               f"{label} is in a call. Stop with the meeting hotkey "
-               "or the tray if unwanted.")
+        if announce and self._toast_enabled("optin"):
+            notify("Auto-recording this meeting",
+                   f"{label} is in a call.",
+                   buttons=[{"label": "Don't record",
+                             "action": self._cancel_auto_recording}])
         return True
+
+    def _cancel_auto_recording(self) -> None:
+        """Opt-in toast action: silently discard the auto-started
+        recording (no save dialog). No-op if it already ended or the
+        user took over with a manual stop."""
+        entry = self._auto_started_by
+        if entry is None:
+            return
+        self._auto_started_by = None
+        self._release_polls = 0
+        logger.info(
+            f"meeting watch: opt-out clicked for {_label(entry)}; "
+            "discarding the auto-started recording")
+        self.app.meetings.abort_recording(reason="auto_record_optout")
+
+    def _offer_recording(self, entry_id: str) -> None:
+        """Ask-state path: never record, offer a one-click start."""
+        if not self._toast_enabled("optout"):
+            return
+        label = _label(entry_id)
+        logger.info(
+            f"meeting watch: {label} is in a call (ask); offering to record")
+        notify("Not recording this call",
+               f"{label} is in a call.",
+               buttons=[{"label": "Record",
+                         "action": lambda eid=entry_id:
+                             self._maybe_start(eid, announce=False)}])
 
     def _maybe_stop(self, watched: dict) -> None:
         if self._auto_started_by is None:

@@ -188,6 +188,21 @@ class StartStopTests(_FlowHarness):
         self.flow._start()
         self.assertFalse(self.app.recorder.is_recording)
 
+    def test_abort_recording_discards_without_dialog(self):
+        # The auto-record opt-in toast's "Don't record" action: no save
+        # dialog, temp streams discarded, straight back to idle.
+        self.flow.toggle()
+        self.assertEqual(self.app.state.current.mode, "meeting")
+        self.flow.abort_recording(reason="test")
+        self.assertIsNone(self.app.state.current.mode)
+        self.assertFalse(self.app.recorder.is_recording)
+        self.assertEqual(self.app.recorder.discarded, 1)
+        self.assertEqual(len(self.saved), 0, "nothing may be written")
+
+    def test_abort_when_not_recording_is_a_noop(self):
+        self.flow.abort_recording(reason="test")
+        self.assertEqual(self.app.recorder.discarded, 0)
+
     def test_stop_saves_and_enqueues_job(self):
         self.app.recorder.audio = {"mic": "MIC-AUDIO", "speaker": "SPK-AUDIO"}
         self.flow.toggle()

@@ -36,6 +36,8 @@ _VALID_KEYS = {
     "cpu_fallback_model",
     "meeting_auto_record", "meeting_watch_apps",
     "meeting_watch_poll_seconds", "meeting_watch_stop_after_s",
+    "meeting_watch_toasts", "meeting_watch_toast_optin",
+    "meeting_watch_toast_optout",
 }
 
 
