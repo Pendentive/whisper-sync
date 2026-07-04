@@ -1,6 +1,6 @@
 # Settings and defaults
 
-Every configurable key with its shipped default. The source of truth
+Every shipped defaults key (whisper_sync/config.defaults.json) with its default value. The source of truth
 is `whisper_sync/config.defaults.json`; user overrides live in
 `<output_dir>/.whispersync/config.json`. Update IN THE SAME PR as any
 key addition/removal/default change - `tests/test_feature_docs.py`
@@ -40,5 +40,5 @@ fails if this table and the defaults file disagree on keys.
 | `gpu_guard` | `true` | VRAM watchdog + model downgrade ladder |
 | `gpu_guard_low_vram_mb` | `750` | Free-VRAM watermark that arms a downgrade |
 | `gpu_guard_poll_seconds` | `30` | VRAM poll interval |
-| `gpu_guard_ladder` | `large-v3, medium, small, base` | Downgrade order (floor = last entry) |
+| `gpu_guard_ladder` | `["large-v3", "medium", "small", "base"]` | Downgrade order as a JSON list (floor = last entry); non-list values are rejected and fall back to this default |
 | `gpu_guard_probe` | `null` | Force a probe backend (null = auto: pynvml, nvidia-smi) |
