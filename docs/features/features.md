@@ -20,16 +20,20 @@ Companion files: [shortcuts.md](shortcuts.md) (how to interact),
   diarization, speaker identification (Claude CLI with manual
   fallback), readable transcript, minutes generation, rename
   suggestion. Recording never waits on the pipeline.
-- **Per-app meeting auto-record** (off by default; toggle in tray
-  Settings > Meeting Auto-Record) - when a watched communications app
-  (Zoom, Slack, Teams, Discord; configurable) starts using the
-  microphone, recording auto-starts with a toast; when that app
-  releases the mic for `meeting_watch_stop_after_s`, the
-  auto-started recording stops through the normal save flow. Detection
-  reads the Windows mic-in-use consent store (capture-specific: an app
-  playing a notification sound never looks like a call) and only acts
-  on transitions it observes, so stale entries cannot false-trigger.
-  Manual recordings are never auto-stopped.
+- **Per-app meeting auto-record** (off by default; Settings > Meeting
+  Auto-Record) - each app is Record, Ask, or Ignore. Record apps
+  auto-start a recording when they begin using the microphone (opt-in
+  toast with a one-click "Don't record" that discards silently) and
+  auto-stop through the normal save flow after
+  `meeting_watch_stop_after_s` of mic release. Ask apps never record
+  but toast a one-click "Record" offer. Ignore apps are fully silent.
+  "Detect apps..." populates the list from every app that has ever
+  used the mic (new apps arrive as Ignore). Toasts have a master
+  toggle plus separate opt-in/opt-out toggles. Detection reads the
+  Windows mic-in-use consent store (capture-specific: an app playing
+  a notification sound never looks like a call) and only acts on
+  transitions it observes, so stale entries cannot false-trigger.
+  Manual recordings are never auto-stopped or dialog-skipped.
 - **Per-channel stereo diarization** - 3-tier cascade
   (balanced mix, per channel, raw audio) selectable per meeting from
   the save dialog.

@@ -486,8 +486,28 @@ class TrayMenu:
                         checked=lambda item: self.app.cfg.get("meeting_auto_record", False),
                     ),
                     pystray.MenuItem(
-                        f"  Watches: {self._meeting_watch_apps_label()}",
-                        None, enabled=False),
+                        "Apps",
+                        pystray.Menu(*self._build_auto_record_apps_items())),
+                    pystray.MenuItem("Toasts", pystray.Menu(
+                        pystray.MenuItem(
+                            "Show toasts",
+                            menu_callback(self._toggle_watch_toast,
+                                          "meeting_watch_toasts"),
+                            checked=lambda item: self.app.cfg.get(
+                                "meeting_watch_toasts", True)),
+                        pystray.MenuItem(
+                            "Opt-in (auto-recording, click to discard)",
+                            menu_callback(self._toggle_watch_toast,
+                                          "meeting_watch_toast_optin"),
+                            checked=lambda item: self.app.cfg.get(
+                                "meeting_watch_toast_optin", True)),
+                        pystray.MenuItem(
+                            "Opt-out (not recording, click to record)",
+                            menu_callback(self._toggle_watch_toast,
+                                          "meeting_watch_toast_optout"),
+                            checked=lambda item: self.app.cfg.get(
+                                "meeting_watch_toast_optout", True)),
+                    )),
                 )),
                 pystray.MenuItem(f"Diarization (Speaker Detection)\t{primary_label}",
                                  pystray.Menu(*diarize_sub_items)),
@@ -852,10 +872,77 @@ class TrayMenu:
         # tick and re-seeds its baseline on re-enable (meeting_watch).
         self._save_and_refresh()
 
-    def _meeting_watch_apps_label(self) -> str:
-        apps = self.app.cfg.get("meeting_watch_apps") or []
-        names = [str(a).replace(".exe", "") for a in apps]
-        return ", ".join(dict.fromkeys(names)) or "none"
+    def _build_auto_record_apps_items(self):
+        """Per-app Record / Ask / Ignore radios + the Detect action."""
+        import pystray  # lazy: not installed on the CI system python
+        from .meeting_watch import apps_map
+
+        def _state_radio(token, state, label):
+            return pystray.MenuItem(
+                label,
+                menu_callback(self._set_app_record_state, token, state),
+                checked=lambda item, t=token, s=state:
+                    apps_map(self.app.cfg).get(t) == s,
+                radio=True,
+            )
+
+        items = [
+            pystray.MenuItem("Detect apps...",
+                             menu_callback(self._detect_auto_record_apps)),
+            pystray.Menu.SEPARATOR,
+        ]
+        apps = apps_map(self.app.cfg)
+        for token in sorted(apps):
+            items.append(pystray.MenuItem(
+                f"{token.replace('.exe', '')}\t{apps[token]}",
+                pystray.Menu(
+                    _state_radio(token, "record", "Record"),
+                    _state_radio(token, "ask", "Ask (toast to record)"),
+                    _state_radio(token, "ignore", "Ignore"),
+                )))
+        return items
+
+    def _set_app_record_state(self, token: str, state: str):
+        from .meeting_watch import apps_map
+        apps = apps_map(self.app.cfg)
+        apps[token] = state
+        self.app.cfg["meeting_watch_apps"] = apps
+        logger.info(f"Auto-record app {token}: {state}")
+        self._save_and_refresh()
+
+    def _detect_auto_record_apps(self):
+        """Populate the Apps submenu from the mic consent store.
+
+        Every app that has ever used the microphone becomes selectable;
+        new apps arrive as Ignore, so detection never changes behavior
+        by itself - the user promotes the ones they want to Record/Ask.
+        """
+        from .meeting_watch import apps_map, match_token, read_mic_entries
+        entries = read_mic_entries()
+        if entries is None:
+            notify("Detect failed",
+                   "Could not read the Windows microphone usage list.")
+            return
+        apps = apps_map(self.app.cfg)
+        added = 0
+        for eid in sorted(entries):
+            if match_token(eid, apps.keys()):
+                continue  # an existing token already covers this entry
+            token = eid.rsplit("#", 1)[-1] if "#" in eid else eid
+            if token not in apps:
+                apps[token] = "ignore"
+                added += 1
+        self.app.cfg["meeting_watch_apps"] = apps
+        logger.info(f"Auto-record detect: {added} new app(s) added as ignore")
+        self._save_and_refresh()
+        notify("Apps detected",
+               f"{added} new app(s) added as Ignore. Set the ones you "
+               "want to Record or Ask in Settings > Meeting Auto-Record.")
+
+    def _toggle_watch_toast(self, key: str):
+        self.app.cfg[key] = not self.app.cfg.get(key, True)
+        logger.info(f"Auto-record toast setting {key}: {self.app.cfg[key]}")
+        self._save_and_refresh()
 
     def _toggle_always_available_dictation(self):
         self.app.cfg["always_available_dictation"] = not self.app.cfg.get("always_available_dictation", True)

@@ -43,7 +43,10 @@ fails if this table and the defaults file disagree on keys.
 | `gpu_guard_ladder` | `["large-v3", "medium", "small", "base"]` | Downgrade order as a JSON list (floor = last entry); non-list values are rejected and fall back to this default |
 | `gpu_guard_probe` | `null` | Force a probe backend (null = auto: pynvml, nvidia-smi) |
 | `cpu_fallback_model` | `base` | Model used when the GPU becomes unreachable (hybrid dGPU power-off) and transcription fails over to cpu |
-| `meeting_auto_record` | `false` | Auto-start a meeting recording when a watched app starts using the mic (per-app meeting auto-record) |
-| `meeting_watch_apps` | `["zoom.exe", "slack.exe", "teams.exe", "ms-teams.exe", "msteams", "discord.exe"]` | Watched apps: `*.exe` matches a desktop exe name exactly; a token without `.exe` matches an MSIX package family prefix. Browsers are deliberately absent (any tab audio would trigger) |
+| `meeting_auto_record` | `false` | Master toggle for per-app meeting auto-record |
+| `meeting_watch_apps` | zoom/slack/teams/ms-teams/msteams `record`, discord `ask` | Map of app token to state: `record` (auto-start + opt-in toast), `ask` (opt-out toast offers Record), `ignore` (silent). `*.exe` tokens match a desktop exe name exactly; a token without `.exe` matches an MSIX package family prefix. Browsers are deliberately absent (any tab audio would trigger). Legacy list form reads as all-`record` |
 | `meeting_watch_poll_seconds` | `5` | Mic consent-store poll interval |
 | `meeting_watch_stop_after_s` | `30` | Sustained mic release before an AUTO-started recording stops (manual recordings are never auto-stopped) |
+| `meeting_watch_toasts` | `true` | Master toggle for auto-record toasts |
+| `meeting_watch_toast_optin` | `true` | Toast when auto-recording starts ("Don't record" discards silently) |
+| `meeting_watch_toast_optout` | `true` | Toast when an ask-state app is in a call ("Record" starts one-click) |

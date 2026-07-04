@@ -44,14 +44,17 @@
   "gpu_guard_probe": null,
   "cpu_fallback_model": "base",
   "meeting_auto_record": false,
-  "meeting_watch_apps": [
-    "zoom.exe",
-    "slack.exe",
-    "teams.exe",
-    "ms-teams.exe",
-    "msteams",
-    "discord.exe"
-  ],
+  "meeting_watch_apps": {
+    "zoom.exe": "record",
+    "slack.exe": "record",
+    "teams.exe": "record",
+    "ms-teams.exe": "record",
+    "msteams": "record",
+    "discord.exe": "ask"
+  },
   "meeting_watch_poll_seconds": 5,
-  "meeting_watch_stop_after_s": 30
+  "meeting_watch_stop_after_s": 30,
+  "meeting_watch_toasts": true,
+  "meeting_watch_toast_optin": true,
+  "meeting_watch_toast_optout": true
 }

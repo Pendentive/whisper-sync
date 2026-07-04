@@ -99,6 +99,27 @@ tiers 0-2, which are deliberately tiny.
   phrases. (Feasibility notes below.)
 - **Power efficiency is a primary constraint** (laptop, library use).
 
+## Owner decisions - 2026-07-04 (third intake)
+
+- **Auto-record settings redesign**: Settings > Meeting Auto-Record
+  with Enabled, an Apps submenu ("Detect apps..." populates from the
+  mic consent store; each app is Record / Ask / Ignore - the 3-state
+  resolves the owner's Discord case, where opt-out toasts on every
+  call would be exhausting), and a Toasts submenu (master + opt-in +
+  opt-out). Opt-in toast: "Auto-recording this meeting" with a single
+  "Don't record" action that discards silently. Opt-out toast (ask
+  apps): "Not recording this call" with a single "Record" action.
+- **Listener POC: GO this session** with a pretrained openWakeWord
+  phrase as the placeholder; the owner's custom wake/outro phrases and
+  the in-app trainer come later. Whisper-mode default until decided:
+  the listener does not run while whisper mode is on.
+- **Streaming dictation ("fill as it goes")**: owner floated live
+  word-by-word insertion with rolling self-correction for
+  paste-unfriendly apps; explicitly deferred ("we can delay this").
+  Recorded in BACKLOG.md - it is a different ASR architecture
+  (streaming zipformer / whisper-streaming partial hypotheses), not a
+  config flip on the current batch pipeline.
+
 ## GPU power-state resilience (owner: "actually really important")
 
 The laptop (Core Ultra 9 285H + Arc 140T iGPU + RTX 5070 Ti, hybrid
