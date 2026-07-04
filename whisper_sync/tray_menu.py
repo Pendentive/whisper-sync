@@ -496,7 +496,7 @@ class TrayMenu:
                             checked=lambda item: self.app.cfg.get(
                                 "meeting_watch_toasts", True)),
                         pystray.MenuItem(
-                            "Opt-in (auto-recording, click to stop)",
+                            "Opt-in (auto-recording, click to discard)",
                             menu_callback(self._toggle_watch_toast,
                                           "meeting_watch_toast_optin"),
                             checked=lambda item: self.app.cfg.get(
