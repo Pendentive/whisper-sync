@@ -20,10 +20,11 @@ Companion files: [shortcuts.md](shortcuts.md) (how to interact),
   diarization, speaker identification (Claude CLI with manual
   fallback), readable transcript, minutes generation, rename
   suggestion. Recording never waits on the pipeline.
-- **Per-app meeting auto-record** (off by default) - when a watched
-  communications app (Zoom, Slack, Teams, Discord; configurable) starts
-  using the microphone, recording auto-starts with a toast; when that
-  app releases the mic for `meeting_watch_stop_after_s`, the
+- **Per-app meeting auto-record** (off by default; toggle in tray
+  Settings > Meeting Auto-Record) - when a watched communications app
+  (Zoom, Slack, Teams, Discord; configurable) starts using the
+  microphone, recording auto-starts with a toast; when that app
+  releases the mic for `meeting_watch_stop_after_s`, the
   auto-started recording stops through the normal save flow. Detection
   reads the Windows mic-in-use consent store (capture-specific: an app
   playing a notification sound never looks like a call) and only acts

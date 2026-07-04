@@ -160,3 +160,25 @@ PRs:
   auto_sleep._busy extracted to module-level app_busy() and shared.
   BACKLOG: CPU-floor entry removed (shipped); WM_DEVICECHANGE instant
   detection recorded as the deliberate deferral.
+
+- **2026-07-04 (step 4 PR 1 merged, #183)**: meeting_watch.py shipped
+  per the step 4 plan. Review caught three real issues, all fixed with
+  regression tests: round() could stop an auto-started recording
+  before the configured release window (now math.ceil); the baseline
+  only covered watch-listed entries, so editing meeting_watch_apps
+  mid-session could promote a stale always-active entry into a fake
+  transition (baseline now covers ALL entries, filter applies at the
+  trigger decision); and a busy app at the debounce moment lost the
+  meeting permanently (start now retries every poll while the mic
+  stays held, via a handled-set). Suite 342. Session lesson recorded:
+  verify suite exit codes DIRECTLY, never through a tail pipe (a
+  test-harness infinite loop hid behind tail's exit 0 for a while).
+
+- **2026-07-04 (step 4 PR 2)**: tray surface. Settings > Meeting
+  Auto-Record submenu: Enabled checkbox (_toggle_meeting_auto_record;
+  the always-registered poll reads the flag per tick and re-seeds its
+  baseline on re-enable) plus a disabled info line listing the watched
+  apps. Two pre-existing pyflakes nits fixed in the touched files.
+  Manual validation for the owner: enable the toggle, join any Zoom or
+  Slack call, expect the start toast within ~10s (two 5s polls) and
+  the stop + save dialog ~30s after leaving.
