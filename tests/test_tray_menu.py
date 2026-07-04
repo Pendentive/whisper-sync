@@ -114,6 +114,7 @@ class _FakeApp:
         self.meetings = types.SimpleNamespace(
             recover_meeting_speakers=lambda d: None)
         self.github = _FakeGitHub()
+        self.auto_sleep = types.SimpleNamespace(toggle=lambda: None)
         self._cpu_name = "FakeCPU"
         self._dialog_dispatcher = None
         self.saved = 0

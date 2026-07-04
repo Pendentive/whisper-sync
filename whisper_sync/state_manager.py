@@ -45,6 +45,8 @@ QUEUED = "queued"
 IDLE = "idle"
 UPDATE_STARTED = "update_started"
 UPDATE_COMPLETED = "update_completed"
+SLEEP_STARTED = "sleep_started"
+SLEEP_ENDED = "sleep_ended"
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +77,13 @@ class AppState:
 
     speaker_ok: bool = True
     """Speaker loopback health (outer ring indicator)."""
+
+    sleeping: bool = False
+    """True while the model is unloaded from VRAM (auto_sleep.py).
+
+    Sleep is not a mode: recording stays possible (a meeting toggle
+    wakes the model and starts recording immediately).
+    """
 
     updating: bool = False
     """True while a self-update (git pull + restart) is in flight.

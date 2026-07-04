@@ -87,7 +87,13 @@ class MeetingFlow:
 
     def toggle(self):
         with self.app._lock:
-            mode = self.app.state.current.mode if self.app.state else None
+            current = self.app.state.current if self.app.state else None
+            mode = current.mode if current else None
+            if current and current.sleeping:
+                # Wake the model but START RECORDING immediately - the
+                # pipeline only needs the worker at the transcription
+                # step, and step_transcribe already waits for readiness.
+                self.app.auto_sleep.wake(reason="meeting_hotkey")
             if mode == "meeting":
                 self._stop()
             elif self.app._can_record():

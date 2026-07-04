@@ -17,6 +17,7 @@
   "use_system_devices": true,
   "left_click": "meeting",
   "middle_click": "dictation",
+  "auto_sleep_minutes": 30,
   "github_repo": null,
   "github_poll_interval": 120,
   "github_notifications": true,

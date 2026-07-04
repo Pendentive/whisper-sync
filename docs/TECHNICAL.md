@@ -17,6 +17,7 @@ Everything below is for developers modifying this app or for an AI assistant (li
 | `tray_menu.py` | **Tray menu + settings.** Full right-click menu build, every settings setter, output-folder dialogs, error popup. Menus swap via MenuRefresher under the tray lock. | `TrayMenu` class --`build()`, `_set_*()`, `_change_output_folder()`; module `menu_callback()` + option constants |
 | `github_tray.py` | **GitHub PR tray glue.** Poller lifecycle, PR change toasts with action buttons, GitHub menu section, gh-CLI merge. | `GitHubTray` class --`start()`, `stop()`, `menu_items()`, `_merge_pr()` |
 | `app_control.py` | **Update/restart/quit lifecycle.** Self-update via git against the running checkout, shared shutdown sequence, deferred restart/quit (menu callbacks run inside the Win32 pump). Update guard lives in `AppState.updating`. | `AppControl` class --`update()`, `restart()`, `quit()`, `_cleanup()` |
+| `auto_sleep.py` | **Model auto-sleep.** Unloads the worker (frees VRAM) after N idle minutes or on tray double-click; wakes on any dictation/meeting action with the yellow loading flash. Sleep/wake land in gpu-guard.jsonl. | `AutoSleep` class --`sleep()`, `wake()`, `toggle()`; `ClickRouter` (single vs double click) |
 | `capture.py` | **Audio recording.** Multi-stream mic + speaker loopback via WASAPI. | `AudioRecorder` class --`start()`, `stop()`, `_mic_callback()`, `_speaker_callback()`, `start_streaming()`, `stop_streaming()` |
 | `transcribe.py` | **WhisperX engine.** Model loading, transcription, alignment, diarization. Two paths: fast (dictation) and full (meeting). | `transcribe_fast(audio_np, model)` -- in-memory numpy to text; `transcribe(audio_path, diarize, model)` -- file-based full pipeline; `_load_model()`, `_load_align_model()` |
 | `worker.py` | **Subprocess entry point.** Runs transcription in isolated process (crash safety). Receives requests via Queue, returns results. | `worker_main()` -- event loop handling `transcribe_fast`, `transcribe`, `reload_model`, `shutdown` requests |
@@ -62,6 +63,7 @@ __main__.py (entry point, UI, hotkeys)
 ├── tray_menu.py (menu + settings component)
 ├── github_tray.py (GitHub PR status glue)
 ├── app_control.py (update/restart/quit lifecycle)
+├── auto_sleep.py (model VRAM sleep/wake)
 ├── config.py (settings)
 ├── paths.py (directories)
 ├── logger.py (logging)
