@@ -50,8 +50,16 @@ class _FakeWorker:
     def __init__(self):
         self.ready = True
         self.calls = []
+        self.wait_calls = 0
+        self.loads_on_wait = True  # model finishes loading when waited on
 
     def is_ready(self):
+        return self.ready
+
+    def wait_ready(self, timeout=None):
+        self.wait_calls += 1
+        if self.loads_on_wait:
+            self.ready = True
         return self.ready
 
     def transcribe_fast(self, audio, model_override=None, timeout=None):
@@ -202,11 +210,14 @@ class NormalDictationTests(_FlowHarness):
         self.flow.toggle()
         self.assertIsNone(self.flow._cap_handle)
 
-    def test_worker_not_ready_flashes_and_stays_idle(self):
+    def test_worker_not_ready_still_records_disk_first(self):
+        # App startup / model loading: dictation always works now; only
+        # the transcription waits (yellow state lasts longer).
         self.app.worker.ready = False
         self.flow.toggle()
-        self.assertEqual(self.app.flashes, 1)
-        self.assertIsNone(self.app.state.current.mode)
+        self.assertEqual(self.app.flashes, 0)
+        self.assertEqual(self.app.state.current.mode, "dictation")
+        self.assertTrue(self.app.recorder.is_recording)
 
     def test_mic_failure_returns_to_idle_and_clears_feature(self):
         self.app.recorder.fail_start = True
@@ -229,14 +240,51 @@ class NormalDictationTests(_FlowHarness):
         self.flow._start(feature=False)
         self.assertFalse(self.app.recorder.is_recording)
 
-    def test_toggle_wakes_sleeping_model_instead_of_recording(self):
+    def test_toggle_wakes_sleeping_model_and_records_immediately(self):
+        # Dictation is disk-first, so sleep must not block recording:
+        # wake the model AND start capturing in the same gesture.
         from whisper_sync.state_manager import SLEEP_STARTED
         self.app.auto_sleep = mock.Mock()
+        self.app.worker.ready = False  # sleeping worker is not ready
         self.app.state.emit(SLEEP_STARTED, sleeping=True)
         self.flow.toggle()
         self.app.auto_sleep.wake.assert_called_once()
-        self.assertFalse(self.app.recorder.is_recording,
-                         "dictation must not start while the model loads")
+        self.assertTrue(self.app.recorder.is_recording,
+                        "recording must start while the model loads")
+
+    def test_sleeping_toggle_in_whisper_mode_wakes_but_does_not_record(self):
+        # RAM-only capture has no crash net; the old refuse stands.
+        from whisper_sync.state_manager import SLEEP_STARTED
+        self.app.cfg["incognito"] = True
+        self.app.auto_sleep = mock.Mock()
+        self.app.worker.ready = False
+        self.app.state.emit(SLEEP_STARTED, sleeping=True)
+        self.flow.toggle()
+        self.app.auto_sleep.wake.assert_called_once()
+        self.assertFalse(self.app.recorder.is_recording)
+        self.assertEqual(self.app.flashes, 1)
+
+    def test_stop_waits_for_model_then_pastes(self):
+        # Start while loading, stop before ready: the process step must
+        # block on wait_ready and then transcribe normally.
+        self.app.worker.ready = False
+        self.flow.toggle()
+        self.assertTrue(self.app.recorder.is_recording)
+        self.flow.toggle()
+        self.assertEqual(self.app.worker.wait_calls, 1)
+        self.paste.assert_called_once()
+        self.assertEqual(self.app.state.current.mode, "done")
+
+    def test_stop_preserves_audio_when_model_never_loads(self):
+        self.app.worker.ready = False
+        self.app.worker.loads_on_wait = False
+        self.flow.toggle()
+        wav = self.flow._wav_path
+        self.flow.toggle()
+        self.paste.assert_not_called()
+        self.assertEqual(self.app.state.current.mode, "error")
+        self.assertEqual(self.flow._wav_path, wav,
+                         "crash-safety WAV must not be deleted on failure")
 
     def test_discard_throws_audio_away(self):
         self.flow.toggle()

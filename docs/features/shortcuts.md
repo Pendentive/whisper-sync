@@ -14,9 +14,12 @@ default hotkeys below match `config.defaults.json`.
 
 During a meeting, the dictation and feature hotkeys record through the
 backup model (overlay dictation) without touching the meeting audio.
-While the model is asleep, any of these wakes it: meetings start
-recording immediately; dictation flashes yellow and is ready to retry
-once loaded.
+While the model is asleep (or still loading at startup), any of these
+wakes it AND starts recording immediately - recordings are disk-first,
+so capture never waits on the model. A dictation stopped before the
+model is ready just shows the yellow transcribing state a little
+longer. Exception: whisper mode (RAM-only) still requires a loaded
+model.
 
 ## Tray icon clicks
 
