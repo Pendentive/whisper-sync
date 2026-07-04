@@ -65,7 +65,6 @@ def _iter_texts(menu):
         item = stack.pop()
         if isinstance(item, _MenuItem):
             out.append(item.text)
-            sub = item.kw.get("submenu") or (item.action if isinstance(item.action, _Menu) else None)
             if isinstance(item.action, _Menu):
                 stack.extend(item.action.items)
         elif isinstance(item, _Menu):
@@ -177,6 +176,18 @@ class MenuBuildTests(unittest.TestCase):
             before = self.app.cfg.get("incognito", False)
             self.menu._toggle_incognito()
             self.assertNotEqual(self.app.cfg["incognito"], before)
+
+    def test_toggle_meeting_auto_record_flips_and_saves(self):
+        with mock.patch.object(config, "save") as save:
+            self.menu._toggle_meeting_auto_record()
+            self.assertTrue(self.app.cfg["meeting_auto_record"])
+            save.assert_called_once()
+
+    def test_menu_shows_meeting_auto_record_section(self):
+        menu = self.menu.build()
+        texts = " | ".join(_iter_texts(menu))
+        self.assertIn("Meeting Auto-Record", texts)
+        self.assertIn("Watches: zoom", texts)
 
     def test_menu_callback_swallows_pystray_args(self):
         calls = []

@@ -479,6 +479,16 @@ class TrayMenu:
                     pystray.MenuItem(f"Backup Model\t{backup_model_cfg}",
                                      pystray.Menu(*backup_model_items)),
                 )),
+                pystray.MenuItem("Meeting Auto-Record", pystray.Menu(
+                    pystray.MenuItem(
+                        "Enabled",
+                        lambda: self._toggle_meeting_auto_record(),
+                        checked=lambda item: self.app.cfg.get("meeting_auto_record", False),
+                    ),
+                    pystray.MenuItem(
+                        f"  Watches: {self._meeting_watch_apps_label()}",
+                        None, enabled=False),
+                )),
                 pystray.MenuItem(f"Diarization (Speaker Detection)\t{primary_label}",
                                  pystray.Menu(*diarize_sub_items)),
                 pystray.Menu.SEPARATOR,
@@ -625,7 +635,7 @@ class TrayMenu:
 
                 tk.Label(dlg, text="Move Existing Recordings?",
                          font=("Segoe UI", 11, "bold"), bg=bg, fg=fg).pack(pady=(14, 4))
-                tk.Label(dlg, text=f"Move files from current folder to new location?",
+                tk.Label(dlg, text="Move files from current folder to new location?",
                          font=("Segoe UI", 9), bg=bg, fg=fg_dim).pack(pady=(0, 4))
                 tk.Label(dlg, text=f"{current}",
                          font=("Segoe UI", 8), bg=bg, fg=fg_dim).pack()
@@ -832,6 +842,20 @@ class TrayMenu:
             if gpu:
                 return f"Auto ({gpu})"
             return "Auto (CPU)"
+
+    def _toggle_meeting_auto_record(self):
+        cfg = self.app.cfg
+        cfg["meeting_auto_record"] = not cfg.get("meeting_auto_record", False)
+        state = "on" if cfg["meeting_auto_record"] else "off"
+        logger.info(f"Meeting auto-record: {state}")
+        # The watcher poll is always registered; it reads this flag per
+        # tick and re-seeds its baseline on re-enable (meeting_watch).
+        self._save_and_refresh()
+
+    def _meeting_watch_apps_label(self) -> str:
+        apps = self.app.cfg.get("meeting_watch_apps") or []
+        names = [str(a).replace(".exe", "") for a in apps]
+        return ", ".join(dict.fromkeys(names)) or "none"
 
     def _toggle_always_available_dictation(self):
         self.app.cfg["always_available_dictation"] = not self.app.cfg.get("always_available_dictation", True)
