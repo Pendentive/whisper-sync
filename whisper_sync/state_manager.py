@@ -43,6 +43,8 @@ PR_STATUS_CHANGED = "pr_status_changed"
 SPEAKER_HEALTH_CHANGED = "speaker_health_changed"
 QUEUED = "queued"
 IDLE = "idle"
+UPDATE_STARTED = "update_started"
+UPDATE_COMPLETED = "update_completed"
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +75,13 @@ class AppState:
 
     speaker_ok: bool = True
     """Speaker loopback health (outer ring indicator)."""
+
+    updating: bool = False
+    """True while a self-update (git pull + restart) is in flight.
+
+    Folded in from __main__'s old _updating class attribute (hardening
+    item 6) - the last stray mode flag from the architecture audit.
+    """
 
     progress: float | None = None
     """0.0-1.0 for progress ring, None = no progress shown."""
