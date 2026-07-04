@@ -100,15 +100,19 @@ class WatermarkTests(_Harness):
 
 
 class LadderTests(_Harness):
+    # note_pressure_trigger probes device reachability before walking
+    # the ladder; these tests model a healthy (reachable) GPU, so each
+    # trigger consumes one successful probe from the sequence.
+
     def test_crash_trigger_escalates_immediately(self):
-        g = self._guard()
+        g = self._guard(free_sequence=[4000, 4000])
         g.note_pressure_trigger("worker_crash_meeting")
         self.assertEqual(g.effective_model("large-v3"), "medium")
         g.note_pressure_trigger("worker_crash_meeting")
         self.assertEqual(g.effective_model("large-v3"), "small")
 
     def test_ladder_floor_is_sticky_and_logged(self):
-        g = self._guard()
+        g = self._guard(free_sequence=[4000] * 10)
         for _ in range(10):
             g.note_pressure_trigger("worker_crash_dictation")
         self.assertEqual(g.effective_model("large-v3"), "base")
@@ -117,13 +121,13 @@ class LadderTests(_Harness):
     def test_downgrade_never_upgrades_a_smaller_request(self):
         # Caller already using 'base' for dictation must not be bumped
         # up to the guard's rung.
-        g = self._guard()
+        g = self._guard(free_sequence=[4000])
         g.note_pressure_trigger("x")  # rung = medium
         self.assertEqual(g.effective_model("base"), "base")
         self.assertEqual(g.effective_model("small"), "small")
 
     def test_model_not_on_ladder_maps_to_rung(self):
-        g = self._guard()
+        g = self._guard(free_sequence=[4000])
         g.note_pressure_trigger("x")
         self.assertEqual(g.effective_model("distil-large-v3"), "medium")
 
@@ -144,10 +148,11 @@ class DisabledTests(_Harness):
     def test_invalid_ladder_config_falls_back_to_default(self):
         # Regression for PR #158 review: an empty or malformed ladder
         # must not crash escalation with an IndexError.
-        g = self._guard(gpu_guard_ladder=[])
+        g = self._guard(free_sequence=[4000], gpu_guard_ladder=[])
         g.note_pressure_trigger("x")
         self.assertEqual(g.effective_model("large-v3"), "medium")
-        g2 = self._guard(gpu_guard_ladder="large-v3")  # string, not list
+        # string, not list
+        g2 = self._guard(free_sequence=[4000], gpu_guard_ladder="large-v3")
         g2.note_pressure_trigger("x")
         self.assertEqual(g2.effective_model("large-v3"), "medium")
 
@@ -170,6 +175,122 @@ class DisabledTests(_Harness):
                         return_value=(None, None)):
             g.start(_NoProviderScheduler(), io_executor=None)
         self.assertIn("probe_unavailable", [e["event"] for e in self._events()])
+
+
+class DeviceFailoverTests(_Harness):
+    """GPU power-state failover (2026-07-04 voice-assistant spec)."""
+
+    def test_three_failed_polls_declare_device_lost(self):
+        g = self._guard(free_sequence=[None, None, None])
+        for _ in range(3):
+            g.check_once()
+        self.assertTrue(g.device_lost)
+        self.assertEqual(g.effective_model("large-v3"), "base")
+        events = [e for e in self._events() if e["event"] == "gpu_device_lost"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["fail_streak"], 3)
+        self.assertEqual(len(self.toasts), 1)
+
+    def test_two_failures_then_success_stays_healthy(self):
+        g = self._guard(free_sequence=[None, None, 4000])
+        for _ in range(3):
+            g.check_once()
+        self.assertFalse(g.device_lost)
+        self.assertEqual(g.effective_model("large-v3"), "large-v3")
+
+    def test_crash_with_failed_probe_fails_over_immediately(self):
+        g = self._guard(free_sequence=[None])
+        g.note_pressure_trigger("worker_crash_dictation")
+        self.assertTrue(g.device_lost)
+        self.assertEqual(g.effective_model("large-v3"), "base")
+        # While lost, the fallback clamp governs - no ladder escalation.
+        self.assertNotIn("downgrade_armed",
+                         [e["event"] for e in self._events()])
+
+    def test_crash_with_healthy_probe_keeps_ladder_semantics(self):
+        g = self._guard(free_sequence=[4000])
+        g.note_pressure_trigger("worker_crash_dictation")
+        self.assertFalse(g.device_lost)
+        self.assertEqual(g.effective_model("large-v3"), "medium")
+
+    def test_successful_poll_clears_loss(self):
+        g = self._guard(free_sequence=[None, None, None, 4000])
+        for _ in range(4):
+            g.check_once()
+        self.assertFalse(g.device_lost)
+        self.assertEqual(g.effective_model("large-v3"), "large-v3")
+        self.assertIn("gpu_device_recovered",
+                      [e["event"] for e in self._events()])
+
+    def test_fallback_never_upgrades_a_smaller_request(self):
+        g = self._guard(free_sequence=[None], cpu_fallback_model="small")
+        g.note_pressure_trigger("x")
+        self.assertEqual(g.effective_model("large-v3"), "small")
+        self.assertEqual(g.effective_model("base"), "base")
+
+    def test_explicit_cpu_device_never_declares_loss(self):
+        g = self._guard(free_sequence=[None, None, None, None], device="cpu")
+        for _ in range(3):
+            g.check_once()
+        g.note_pressure_trigger("worker_crash_dictation")
+        self.assertFalse(g.device_lost)
+        # The ladder still applies on explicit-cpu machines (existing
+        # semantics); only the failover path is gated off.
+        self.assertEqual(g.effective_model("large-v3"), "medium")
+
+    def test_respawn_overlay_pins_cpu_while_lost(self):
+        g = self._guard(free_sequence=[None])
+        self.assertIsNone(g.respawn_overlay())
+        g.note_pressure_trigger("worker_crash_meeting")
+        overlay = g.respawn_overlay()
+        self.assertEqual(overlay, {
+            "device": "cpu",
+            "model": "base",
+            "dictation_model": "base",
+            "compute_type": "int8",
+        })
+
+    def test_invalid_fallback_model_uses_base(self):
+        g = self._guard(free_sequence=[None], cpu_fallback_model=123)
+        g.note_pressure_trigger("x")
+        self.assertEqual(g.effective_model("large-v3"), "base")
+
+    def test_repeated_crashes_while_lost_toast_once(self):
+        g = self._guard(free_sequence=[None, None])
+        g.note_pressure_trigger("x")
+        g.note_pressure_trigger("x")
+        self.assertEqual(len(self.toasts), 1)
+        events = [e for e in self._events() if e["event"] == "gpu_device_lost"]
+        self.assertEqual(len(events), 1)
+
+    def test_providerless_guard_never_fails_over(self):
+        g = GpuGuard(_cfg(), notify=lambda t, m: None,
+                     probe=None, probe_name=None, event_path=self.event_path)
+        self.assertFalse(g.device_lost)
+        self.assertIsNone(g.respawn_overlay())
+
+    def test_cpu_period_does_not_bank_failures(self):
+        # Review catch: failures during an explicit-cpu period must not
+        # accumulate, or the first failure after switching back to auto
+        # would declare loss instantly, bypassing the 3-failure rule.
+        g = self._guard(free_sequence=[None] * 8, device="cpu")
+        for _ in range(5):
+            g.check_once()
+        g._cfg["device"] = "auto"
+        g.check_once()  # first failure after the switch: streak = 1
+        self.assertFalse(g.device_lost)
+        g.check_once()
+        g.check_once()  # third consecutive failure: now lost
+        self.assertTrue(g.device_lost)
+
+    def test_crash_event_logs_the_fresh_probe_reading(self):
+        # Review catch: the downgrade event must carry the reading from
+        # the probe that just ran, not the last poll's stale value.
+        g = self._guard(free_sequence=[3000])
+        g.note_pressure_trigger("worker_crash_dictation")
+        armed = [e for e in self._events() if e["event"] == "downgrade_armed"]
+        self.assertEqual(armed[0]["free_mb"], 3000)
+        self.assertEqual(armed[0]["total_mb"], 8192)
 
 
 class ProbeRegistryTests(unittest.TestCase):

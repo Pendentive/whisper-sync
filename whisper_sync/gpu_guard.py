@@ -21,6 +21,15 @@ Behavior (spec B1-B3):
   to ``gpu-guard.jsonl`` in the data dir - the artifact for correlating
   against Windows crash/BSOD times, and the machine surface for the
   API-first extension app.
+
+Device failover (2026-07-04 voice-assistant-direction spec): hybrid
+laptops can power the dGPU off mid-session. Three consecutive failed
+probes - or a worker crash whose immediate probe fails - declare the
+device lost: ``effective_model`` clamps to ``cpu_fallback_model`` and
+``respawn_overlay()`` tells the respawn path to pin the next worker
+spawn to cpu, so a dead GPU is never retried in a loop. A later
+successful probe clears the state. Explicit ``device: cpu`` configs
+never declare loss (the user never wanted cuda).
 """
 
 from __future__ import annotations
@@ -35,6 +44,11 @@ from .logger import logger
 
 DEFAULT_LADDER = ["large-v3", "medium", "small", "base"]
 
+# Consecutive failed polls before the device is declared lost. At the
+# default 30s poll this is ~90s worst-case detection; a worker crash
+# whose immediate probe fails short-circuits the wait entirely.
+DEVICE_LOST_AFTER_FAILURES = 3
+
 
 class GpuGuard:
     """Owns watermark monitoring, the downgrade ladder, and the event log."""
@@ -48,6 +62,8 @@ class GpuGuard:
         self._level = 0            # rungs below the requested model
         self._armed_low = False    # hysteresis: True while below watermark
         self._last_free_mb: int | None = None
+        self._device_lost = False  # dGPU unreachable; cpu failover active
+        self._probe_fail_streak = 0
         self._probe = probe
         self._probe_name = probe_name
         self._event_path = event_path
@@ -71,6 +87,15 @@ class GpuGuard:
 
     def _watermark_mb(self) -> int:
         return int(self._cfg.get("gpu_guard_low_vram_mb", 750))
+
+    def _fallback_model(self) -> str:
+        """Validated cpu_fallback_model; malformed config falls back to base."""
+        model = self._cfg.get("cpu_fallback_model", "base")
+        if isinstance(model, str) and model:
+            return model
+        logger.warning(
+            f"GPU guard: invalid cpu_fallback_model {model!r}; using 'base'")
+        return "base"
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -114,8 +139,9 @@ class GpuGuard:
     def check_once(self) -> None:
         """One probe + watermark evaluation. Runs on the IO executor."""
         result = self._probe() if self._probe else None
+        self._observe_probe_result(result, source="poll")
         if result is None:
-            return  # transient probe failure; next poll retries
+            return
         with self._lock:
             self._last_free_mb = result.free_mb
             watermark = self._watermark_mb()
@@ -130,17 +156,79 @@ class GpuGuard:
                 self._event("vram_recovered", free_mb=result.free_mb,
                             total_mb=result.total_mb, level=self._level)
 
+    def _observe_probe_result(self, result, source: str) -> None:
+        """Track device reachability from one probe outcome.
+
+        A ProbeResult proves the GPU is reachable and clears any loss
+        state. None counts one strike: DEVICE_LOST_AFTER_FAILURES
+        consecutive poll strikes - or a single strike observed at a
+        worker crash (any non-"poll" source) - declare the device lost.
+        """
+        with self._lock:
+            if result is not None:
+                self._probe_fail_streak = 0
+                if self._device_lost:
+                    self._device_lost = False
+                    self._event("gpu_device_recovered", source=source,
+                                free_mb=result.free_mb,
+                                total_mb=result.total_mb)
+                    logger.info("GPU guard: GPU reachable again")
+                return
+            if str(self._cfg.get("device", "auto")).lower() == "cpu":
+                # The user never wanted cuda; nothing to fail over. Keep
+                # the streak at zero so an explicit-cpu period does not
+                # bank failures that would fire instantly after a later
+                # switch to auto/cuda (review catch on this PR).
+                self._probe_fail_streak = 0
+                return
+            self._probe_fail_streak += 1
+            if self._device_lost:
+                return
+            from_crash = source != "poll"
+            if (not from_crash
+                    and self._probe_fail_streak < DEVICE_LOST_AFTER_FAILURES):
+                return
+            self._device_lost = True
+            fallback = self._fallback_model()
+            self._event("gpu_device_lost", source=source,
+                        fail_streak=self._probe_fail_streak)
+            logger.warning(
+                f"GPU guard: GPU unreachable ({source}); failing over to "
+                f"'{fallback}' on cpu until it returns"
+            )
+            self._notify(
+                "WhisperSync switched to CPU",
+                f"The GPU is not reachable; using '{fallback}' until it returns.",
+            )
+
     def note_pressure_trigger(self, reason: str) -> None:
         """Escalate one rung immediately (worker crash, OOM exhaustion).
 
         Inert without a probe provider: on providerless machines the
         guard must never alter model selection (documented contract).
+
+        Probes device reachability first: a crash WITH an unreachable
+        GPU is the power-off signature on hybrid laptops and fails over
+        to cpu instead of walking the ladder - the ladder assumes the
+        GPU still exists.
         """
         if not self.enabled or self._probe is None:
             return
+        # Probe outside the lock: nvidia-smi can take seconds.
+        result = self._probe()
+        self._observe_probe_result(result, source=reason)
         with self._lock:
-            self._escalate_locked(trigger=reason,
-                                  free_mb=self._last_free_mb, total_mb=None)
+            if self._device_lost:
+                return  # cpu failover governs; ladder rungs are meaningless
+            if result is not None:
+                # The probe just ran; log the fresh reading instead of
+                # the last poll's (which may be stale or None).
+                self._last_free_mb = result.free_mb
+            self._escalate_locked(
+                trigger=reason,
+                free_mb=self._last_free_mb,
+                total_mb=result.total_mb if result is not None else None,
+            )
 
     def _escalate_locked(self, trigger: str, free_mb, total_mb) -> None:
         ladder = self._ladder()
@@ -172,10 +260,17 @@ class GpuGuard:
         is the LOWER of the requested model and the current ladder rung -
         a downgrade may never upgrade a caller that already asked for a
         small model. Models not on the ladder map to the current rung.
+
+        While the device is lost the result is instead clamped to
+        ``cpu_fallback_model``: the worker runs (or will respawn) on
+        cpu, where the configured cuda-sized model would be unusably
+        slow.
         """
         if not self.enabled or self._probe is None:
             return requested
         with self._lock:
+            if self._device_lost:
+                return self._clamp_locked(requested, self._fallback_model())
             return self._effective_locked(requested)
 
     def _effective_locked(self, requested: str) -> str:
@@ -188,6 +283,51 @@ class GpuGuard:
         except ValueError:
             return ladder[rung_index]
         return ladder[max(requested_index, rung_index)]
+
+    def _clamp_locked(self, requested: str, ceiling: str) -> str:
+        """The smaller of requested and ceiling by ladder position.
+
+        A failover may never upgrade a caller that already asked for a
+        smaller model; models not on the ladder resolve to the ceiling.
+        """
+        ladder = self._ladder()
+        try:
+            ceiling_index = ladder.index(ceiling)
+        except ValueError:
+            return ceiling
+        try:
+            requested_index = ladder.index(requested)
+        except ValueError:
+            return ceiling
+        return ladder[max(requested_index, ceiling_index)]
+
+    @property
+    def device_lost(self) -> bool:
+        """True while the dGPU is unreachable and cpu failover governs."""
+        with self._lock:
+            return self._device_lost
+
+    def respawn_overlay(self) -> dict | None:
+        """Config overlay for the NEXT worker spawn, or None for live config.
+
+        While the device is lost every spawn must be pinned to cpu with
+        the fallback model - a live-config respawn would retry CUDA in
+        a loop (spec: forbidden). The caller merges this over a config
+        snapshot and hands it to ``worker.update_config()`` before
+        restarting (the backup_worker pinned-dict precedent).
+        """
+        if not self.enabled or self._probe is None:
+            return None
+        with self._lock:
+            if not self._device_lost:
+                return None
+            fallback = self._fallback_model()
+            return {
+                "device": "cpu",
+                "model": fallback,
+                "dictation_model": fallback,
+                "compute_type": "int8",
+            }
 
     def log_external_event(self, event: str, **fields) -> None:
         """Append a non-guard subsystem event to gpu-guard.jsonl.
@@ -206,6 +346,7 @@ class GpuGuard:
                 "provider": self._probe_name,
                 "level": self._level,
                 "last_free_mb": self._last_free_mb,
+                "device_lost": self._device_lost,
             }
 
     # -- event log ---------------------------------------------------------------
