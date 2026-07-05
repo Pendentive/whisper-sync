@@ -6,10 +6,11 @@ The finished .onnx lands in <root>/phrases/, ready to be set as
 wake_phrase_model or wake_outro_model (the PR B registry and tray
 surface automate that).
 
-GPU PROTOCOL: training occupies the dGPU for tens of minutes. The
-command refuses to run without --go, and the owner must be warned
-before any run (see feedback_warn-before-gpu-heavy-tests in the PM
-memory; the PR C background job adds the app-side busy/asleep checks).
+GPU PROTOCOL: training occupies the dGPU for tens of minutes and the
+owner may be using it (gaming). The command refuses to run without
+--go, and whoever drives it warns the owner first - the protocol and
+first-run validation steps live in docs/owner-test-checklist.md (the
+PR C background job adds the app-side busy/asleep checks).
 
 Config generation lives in whisper_sync.phrase_training (CI-tested);
 this file is the thin subprocess wrapper around the trainer venv.
@@ -49,8 +50,15 @@ def main() -> int:
 
     root = args.root.resolve()
     name = sanitize_model_name(args.phrase)
-    config = build_training_config(args.phrase, root,
-                                   json.loads(args.overrides))
+    try:
+        overrides = json.loads(args.overrides)
+        if not isinstance(overrides, dict):
+            raise ValueError("must be a JSON object")
+    except ValueError as exc:
+        print(f"[train] bad --overrides ({exc}); expected a JSON "
+              'object like {"steps": 20000}')
+        return 2
+    config = build_training_config(args.phrase, root, overrides)
     config_path = write_training_config(
         config, root / "output" / name / f"{name}.yml")
     print(f"[train] config: {config_path}")

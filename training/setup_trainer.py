@@ -89,7 +89,8 @@ else:
 ds = ds.cast_column("audio", Audio(sampling_rate=16000))
 n = 0
 for row in ds:
-    data = (np.asarray(row["audio"]["array"]) * 32767).astype(np.int16)
+    arr = np.clip(np.asarray(row["audio"]["array"]), -1.0, 1.0)
+    data = (arr * 32767).astype(np.int16)
     scipy.io.wavfile.write(out_dir / f"{n:06d}.wav", 16000, data)
     n += 1
 print(f"wrote {n} wavs to {out_dir}")
@@ -103,6 +104,17 @@ def log(msg: str) -> None:
 def run(cmd: list, **kw) -> None:
     log("run: " + " ".join(str(c) for c in cmd))
     subprocess.run([str(c) for c in cmd], check=True, **kw)
+
+
+def safe_extract(tar, dest: Path) -> None:
+    """extractall with member-path validation (remote tarballs can
+    carry traversal paths; every member must resolve under dest)."""
+    dest = dest.resolve()
+    for member in tar.getmembers():
+        target = (dest / member.name).resolve()
+        if not target.is_relative_to(dest):
+            raise RuntimeError(f"unsafe tar member: {member.name}")
+    tar.extractall(dest)
 
 
 def download(url: str, dest: Path) -> None:
@@ -175,7 +187,7 @@ def phase_datasets(root: Path) -> None:
             import tarfile
             log(f"extracting {tar.name}")
             with tarfile.open(tar) as tf:
-                tf.extractall(extracted)
+                safe_extract(tf, extracted)
         run([py, snippet, "local", extracted, "-", audioset])
     else:
         log("audioset_16k exists, skipping")
