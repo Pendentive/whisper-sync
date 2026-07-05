@@ -192,6 +192,37 @@ class MenuBuildTests(unittest.TestCase):
         self.app.wake_listener.restart_if_toggled.assert_called_once()
         save.assert_called_once()
 
+    def test_saved_phrases_empty_registry_shows_info_line(self):
+        items = self.menu._build_saved_phrase_items()
+        self.assertEqual(len(items), 1)
+        self.assertIn("No saved phrases", items[0].text)
+        self.assertFalse(items[0].kw.get("enabled", True))
+
+    def test_saved_phrases_entries_render_with_roles(self):
+        self.app.cfg["wake_phrases"] = {
+            "hey_hal": {"path": "C:/p/hey_hal.onnx", "role": "wake",
+                        "active": True},
+            "thats_all": {"path": "C:/p/t.onnx", "role": "outro",
+                          "active": False}}
+        items = self.menu._build_saved_phrase_items()
+        texts = [i.text for i in items]
+        self.assertEqual(texts, ["hey_hal (wake)", "thats_all (outro)"])
+        checked = [i.kw["checked"](i) for i in items]
+        self.assertEqual(checked, [True, False])
+
+    def test_toggle_saved_phrase_flips_saves_and_bounces_listener(self):
+        self.app.cfg["wake_phrases"] = {
+            "hey_hal": {"path": "C:/p/hey_hal.onnx", "role": "wake",
+                        "active": False}}
+        self.app.wake_listener = types.SimpleNamespace(
+            stop=mock.Mock(), start=mock.Mock())
+        with mock.patch.object(config, "save") as save:
+            self.menu._toggle_saved_phrase("hey_hal")
+        self.assertTrue(self.app.cfg["wake_phrases"]["hey_hal"]["active"])
+        self.app.wake_listener.stop.assert_called_once()
+        self.app.wake_listener.start.assert_called_once()
+        save.assert_called_once()
+
     def test_menu_shows_meeting_auto_record_section(self):
         menu = self.menu.build()
         texts = " | ".join(_iter_texts(menu))

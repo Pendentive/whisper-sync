@@ -104,6 +104,8 @@ gaming).
 - [ ] `python training/train_phrase.py "hey hal" --go` produces
   `training/workspace/phrases/hey_hal.onnx` (this run also validates
   the PROVISIONAL config values; a bad key fails fast and gets fixed).
-- [ ] Set `wake_phrase_model` to that .onnx path, toggle the listener
-  off/on - saying "hey hal" starts a dictation; "hey jarvis" no
-  longer does.
+- [ ] Register it in `wake_phrases` (name `hey_hal`, the .onnx path,
+  role `wake`, active `true`), then check it under Settings > Wake
+  Word Listener > Saved Phrases - saying "hey hal" starts a
+  dictation; "hey jarvis" no longer does (custom phrases replace the
+  pretrained fallback while any is active).

@@ -91,6 +91,66 @@ SESSION_GRACE_S = 2.0
 VAD_VOICE_THRESHOLD = 0.3
 
 
+def _model_stem(name: str) -> str:
+    """Model path/name -> the stem openWakeWord keys scores by."""
+    return re.sub(r"\.(onnx|tflite)$", "",
+                  re.split(r"[\\/]", str(name))[-1],
+                  flags=re.IGNORECASE).lower()
+
+
+def _registry(cfg) -> dict:
+    """The wake_phrases saved-phrase registry (name -> entry dict)."""
+    phrases = cfg.get("wake_phrases", {})
+    return phrases if isinstance(phrases, dict) else {}
+
+
+def active_phrase_entries(cfg, role: str):
+    """(name, path) pairs of active registry entries for a role.
+
+    Malformed entries (non-dict, missing path, unknown role) are
+    skipped - a broken registry can disable a phrase but never crash
+    the listener or load the wrong model.
+    """
+    for name, entry in _registry(cfg).items():
+        if (isinstance(entry, dict) and entry.get("active")
+                and entry.get("role", "wake") == role
+                and entry.get("path")):
+            yield name, str(entry["path"])
+
+
+def wake_model_paths(cfg) -> list[str]:
+    """Models that WAKE: active custom phrases, else the pretrained
+    fallback (wake_phrase_model) so the listener never goes deaf."""
+    paths = [p for _, p in active_phrase_entries(cfg, "wake")]
+    return paths or [str(cfg.get("wake_phrase_model", "hey_jarvis"))]
+
+
+def outro_model_paths(cfg) -> list[str]:
+    """Models that END a wake dictation: active outro phrases plus the
+    legacy wake_outro_model key (empty = none)."""
+    paths = [p for _, p in active_phrase_entries(cfg, "outro")]
+    legacy = str(cfg.get("wake_outro_model", "") or "")
+    if legacy:
+        paths.append(legacy)
+    return paths
+
+
+def wake_strip_names(cfg) -> list[str]:
+    """Phrase-name candidates for the leading text strip (registry
+    names encode the typed words, e.g. hey_hal)."""
+    return ([n for n, _ in active_phrase_entries(cfg, "wake")]
+            + [str(cfg.get("wake_phrase_model", "hey_jarvis"))])
+
+
+def outro_strip_names(cfg) -> list[str]:
+    """Phrase-name candidates for the trailing text strip."""
+    names = [n for n, _ in active_phrase_entries(cfg, "outro")]
+    legacy = str(cfg.get("wake_outro_model", "") or "")
+    if legacy:
+        names.append(legacy)
+    return names
+
+
 def _phrase_tokens(phrase_name: str) -> list[str]:
     """Model name -> spoken words ("hey_jarvis_v0.1" -> ["hey", "jarvis"]).
 
@@ -190,18 +250,27 @@ class WakeListener:
     def enabled(self) -> bool:
         return bool(self.app.cfg.get("wake_listener", False))
 
-    def _phrase(self) -> str:
-        return str(self.app.cfg.get("wake_phrase_model", "hey_jarvis"))
-
     def _threshold(self) -> float:
         try:
             return float(self.app.cfg.get("wake_threshold", 0.5))
         except (TypeError, ValueError):
             return 0.5
 
-    def _outro(self) -> str:
-        """Outro phrase model name; empty string = no outro configured."""
-        return str(self.app.cfg.get("wake_outro_model", "") or "")
+    def _model_list(self) -> list[str]:
+        """Every model the listener loads: wake models first, then
+        outro models, deduplicated preserving order."""
+        return list(dict.fromkeys(
+            wake_model_paths(self.app.cfg)
+            + outro_model_paths(self.app.cfg)))
+
+    def _outro_keys(self) -> set[str]:
+        """Score-dict keys that mean OUTRO, not wake (full value and
+        openWakeWord's stem form, lowercased)."""
+        keys = set()
+        for model in outro_model_paths(self.app.cfg):
+            keys.add(model.lower())
+            keys.add(_model_stem(model))
+        return keys
 
     def _silence_stop_s(self) -> float:
         """Seconds of sustained silence that end a wake dictation.
@@ -214,17 +283,6 @@ class WakeListener:
             return float(self.app.cfg.get("wake_silence_stop_s", 8))
         except (TypeError, ValueError):
             return 8.0
-
-    @staticmethod
-    def _is_outro_key(score_key: str, outro: str) -> bool:
-        """openWakeWord keys scores by the model file's basename minus
-        its extension; the config value may be a bare pretrained name or
-        a path to a custom .onnx."""
-        if not outro:
-            return False
-        stem = re.sub(r"\.(onnx|tflite)$", "",
-                      re.split(r"[\\/]", outro)[-1], flags=re.IGNORECASE)
-        return score_key.lower() in (outro.lower(), stem.lower())
 
     # -- Lifecycle ---------------------------------------------------------------
 
@@ -291,7 +349,7 @@ class WakeListener:
         import sounddevice as sd
 
         logger.info(
-            f"Wake listener active: phrase model '{self._phrase()}', "
+            f"Wake listener active: models {self._model_list()}, "
             f"threshold {self._threshold():.2f}")
         self._was_paused = False
         self._ring.clear()
@@ -311,15 +369,12 @@ class WakeListener:
     def _load_model(self):
         """Load the openWakeWord model (lazy heavy import).
 
-        The outro phrase, when configured, loads into the SAME model:
-        predict() returns one score per loaded model and the decision
-        logic routes wake keys and the outro key separately.
+        All active saved phrases and outro models load into the SAME
+        model: predict() returns one score per loaded model and the
+        decision logic routes wake keys and outro keys separately.
         """
         from openwakeword.model import Model
-        models = [self._phrase()]
-        outro = self._outro()
-        if outro:
-            models.append(outro)
+        models = self._model_list()
         try:
             return Model(wakeword_models=models,
                          inference_framework="onnx",
@@ -379,12 +434,12 @@ class WakeListener:
             self._last_voice = now
         if now - self._session_started < SESSION_GRACE_S:
             return
-        outro = self._outro()
-        if outro:
+        outro_keys = self._outro_keys()
+        if outro_keys:
             threshold = self._threshold()
             hit = any(score >= threshold
                       for name, score in (scores or {}).items()
-                      if self._is_outro_key(name, outro))
+                      if name.lower() in outro_keys)
             if hit:
                 self._stop_wake_dictation(model, "outro phrase")
                 return
@@ -461,14 +516,14 @@ class WakeListener:
         """Evaluate one frame's model scores; fire at most one wake.
 
         Returns True when a wake fired (refractory window applies).
-        The outro model shares the score dict but never wakes: saying
-        the outro phrase while idle must not start a dictation.
+        The outro models share the score dict but never wake: saying
+        an outro phrase while idle must not start a dictation.
         """
         threshold = self._threshold()
-        outro = self._outro()
+        outro_keys = self._outro_keys()
         hit = any(score >= threshold
                   for name, score in (scores or {}).items()
-                  if not self._is_outro_key(name, outro))
+                  if name.lower() not in outro_keys)
         if not hit:
             return False
         now = time.monotonic()

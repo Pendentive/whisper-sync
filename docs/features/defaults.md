@@ -55,3 +55,4 @@ fails if this table and the defaults file disagree on keys.
 | `wake_threshold` | `0.5` | Wake-word detection score threshold (0-1) |
 | `wake_outro_model` | (empty) | Outro phrase model that ends a wake dictation hands-free (empty = disabled) |
 | `wake_silence_stop_s` | `8` | Sustained silence (silero VAD) that ends a wake dictation; 0 disables |
+| `wake_phrases` | `{}` | Saved-phrase registry: name -> {path, role (wake/outro), active}. Active entries load into the listener; empty = pretrained fallback |

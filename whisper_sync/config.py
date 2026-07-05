@@ -39,7 +39,7 @@ _VALID_KEYS = {
     "meeting_watch_toasts", "meeting_watch_toast_optin",
     "meeting_watch_toast_optout",
     "wake_listener", "wake_phrase_model", "wake_threshold",
-    "wake_outro_model", "wake_silence_stop_s",
+    "wake_outro_model", "wake_silence_stop_s", "wake_phrases",
 }
 
 

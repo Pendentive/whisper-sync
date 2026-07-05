@@ -54,8 +54,10 @@ Companion files: [shortcuts.md](shortcuts.md) (how to interact),
   second openWakeWord model; also stripped from the text tail) or
   after `wake_silence_stop_s` of silence (silero VAD; 0 disables) -
   the dictation hotkey still works at any time. Ships with the
-  pretrained "hey jarvis" phrase until custom phrases and the in-app
-  trainer arrive. Pauses during whisper mode and while recording
+  pretrained "hey jarvis" phrase until custom phrases are trained
+  (training/README.md); trained phrases register in `wake_phrases`
+  and toggle via Settings > Wake Word Listener > Saved Phrases
+  (active checkmarks; multiple wake and outro phrases load at once). Pauses during whisper mode and while recording
   (except during its own wake dictations, which it watches for the
   stop signals). Needs `openwakeword` in the venv (in
   requirements.txt); without it the toggle simply reports unavailable.
