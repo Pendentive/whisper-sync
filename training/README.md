@@ -76,6 +76,9 @@ verified against):
 - **`download_models()`** step: openwakeword ships without its
   melspectrogram/embedding feature extractors; the augment stage needs
   them.
+- **PYTHONUTF8=1** for trainer subprocesses: torch's onnx exporter
+  prints emoji progress marks, which raise UnicodeEncodeError on the
+  cp1252 console and kill the export after a successful run.
 
 Rerunning `setup_trainer.py` applies all of this to an existing
 workspace (every step is idempotent).
