@@ -437,3 +437,20 @@ training job with menu status/ETA + completion toast.
   is not killed on app exit; the finished model is picked up by the
   next run. The FIRST real training run still awaits the owner's GPU
   go (he is gaming; all GPU use asks first).
+
+- **2026-07-05 (settings IA + device picker, owner review)**: formal
+  feature names shipped - "Always-On Dictation" (was Always Available
+  Dictation) and "Always-On Listening" (was Wake Word Listener), with
+  an H1 QUICK TOGGLE for Always-On Listening at the main tray menu
+  (owner: it must be switchable without opening Settings; the
+  detailed surface stays at H2). Device picker bugs from the owner's
+  review, both confirmed real: (1) the CPU row never named the CPU -
+  it now shows _cpu_name like the GPU rows; (2) worker.gpu_name only
+  exists after a CUDA worker loads, so with the model asleep or on
+  cpu the menu claimed "no GPU detected" next to an installed RTX
+  5070 Ti - a startup nvidia-smi hardware probe (_gpu_hw_name) now
+  backs the display, and the honest "no GPU detected" only shows
+  when the hardware probe also finds nothing. The owner's suspicion
+  of GPU-defaulting-to-CPU was checked against the logs: the app
+  loaded [cuda] large-v3 on its last run; the defaulting was a
+  DISPLAY lie, not a routing bug.

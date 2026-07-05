@@ -214,8 +214,38 @@ class MenuBuildTests(unittest.TestCase):
 
     def test_full_menu_has_no_poc_label(self):
         texts = " | ".join(_iter_texts(self.menu.build()))
-        self.assertIn("Wake Word Listener", texts)
+        self.assertIn("Always-On Listening", texts)
         self.assertNotIn("(POC)", texts)
+
+    def test_formal_feature_names_and_h1_quick_toggle(self):
+        # Owner IA request 2026-07-05: formal names, and the listening
+        # toggle reachable at the top level, not only under Settings.
+        menu = self.menu.build()
+        texts = " | ".join(_iter_texts(menu))
+        self.assertIn("Always-On Dictation", texts)
+        self.assertNotIn("Always Available Dictation", texts)
+        self.assertNotIn("Wake Word Listener", texts)
+        top_level = [i.text for i in menu.items
+                     if isinstance(i, _MenuItem)]
+        self.assertIn("Always-On Listening", top_level,
+                      "quick toggle must live at the main menu level")
+
+    def test_device_picker_names_the_cpu_and_falls_back_for_gpu(self):
+        # Owner report 2026-07-05: the CPU entry never named the CPU,
+        # and with no CUDA worker loaded the menu claimed "no GPU
+        # detected" on a machine with a GPU installed.
+        self.app.worker.gpu_name = None
+        self.app._gpu_hw_name = "FakeGPU-HW"
+        texts = " | ".join(_iter_texts(self.menu.build()))
+        self.assertIn("CPU	FakeCPU", texts)
+        self.assertIn("FakeGPU-HW", texts)
+        self.assertNotIn("no GPU detected", texts)
+
+    def test_device_picker_honest_when_no_gpu_exists(self):
+        self.app.worker.gpu_name = None
+        self.app._gpu_hw_name = None
+        texts = " | ".join(_iter_texts(self.menu.build()))
+        self.assertIn("no GPU detected", texts)
 
     def test_saved_phrases_empty_registry_shows_info_line(self):
         items = self.menu._build_saved_phrase_items()

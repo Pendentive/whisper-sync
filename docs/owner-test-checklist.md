@@ -81,7 +81,8 @@ Enable Settings > Meeting Auto-Record first (off by default).
 
 ## 5. Wake listener + tier-2 splice (#187, #189, #190)
 
-Enable Settings > Wake Word Listener (off by default; first enable
+Enable Always-On Listening (quick toggle at the MAIN tray menu, or
+Settings > Always-On Listening; off by default; first enable
 downloads the openWakeWord models - watch the log).
 
 > Owner-reported failure 2026-07-05 ("nothing happens"): root-caused
@@ -143,7 +144,7 @@ gaming).
 
 ## 8. In-app phrase manager (step 5 PR C) - the no-CLI path
 
-- [ ] Settings > Wake Word Listener > "Set New Wake Phrase...", type
+- [ ] Settings > Always-On Listening > "Set New Wake Phrase...", type
   a phrase, Start Training - toast confirms, the menu shows a live
   status line (stage + minutes), and after 20-40 min a "Phrase
   ready" toast fires with the phrase ACTIVE in Saved Phrases.
@@ -152,3 +153,13 @@ gaming).
 - [ ] While a job is running, starting a second one refuses politely;
   starting one while the model is asleep (gaming) refuses with a
   clear message and touches nothing.
+
+## 9. Settings IA + device picker (owner review 2026-07-05)
+
+- [ ] Main tray menu shows "Always-On Listening" with a checkmark;
+  toggling it there works without opening Settings.
+- [ ] Settings shows "Always-On Dictation" and "Always-On Listening"
+  (no "Always Available Dictation", no "Wake Word Listener").
+- [ ] Settings > Device: the CPU row names your CPU, and the
+  Auto/GPU rows name the RTX 5070 Ti even while the model is asleep
+  or the worker is on CPU (no more "no GPU detected" lie).

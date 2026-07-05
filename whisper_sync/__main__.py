@@ -109,6 +109,29 @@ def _get_cpu_name() -> str:
     return name if name else "Unknown CPU"
 
 
+def _get_gpu_hw_name() -> str | None:
+    """The installed NVIDIA GPU's name via nvidia-smi, or None.
+
+    worker.gpu_name only exists once a CUDA worker has loaded a model;
+    the tray device picker needs the HARDWARE answer even while the
+    model sleeps or runs on cpu (owner report 2026-07-05: the menu
+    claimed "no GPU detected" next to an installed RTX 5070 Ti).
+    Probed once at startup, same pattern as _get_cpu_name.
+    """
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip().splitlines()[0]
+    except Exception:
+        pass
+    return None
+
+
 class WhisperSync:
     def __init__(self):
         self._migrate_data()
@@ -145,6 +168,7 @@ class WhisperSync:
         self._dialog_dispatcher = DialogDispatcher()
         self._dialog_dispatcher.start()
         self._cpu_name = _get_cpu_name()
+        self._gpu_hw_name = _get_gpu_hw_name()
         # Session stats: lock-guarded; mutated from dictation/overlay/meeting
         # worker threads concurrently (see session_stats.py).
         from .session_stats import SessionStats

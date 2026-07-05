@@ -37,12 +37,15 @@ Companion files: [shortcuts.md](shortcuts.md) (how to interact),
 - **Per-channel stereo diarization** - 3-tier cascade
   (balanced mix, per channel, raw audio) selectable per meeting from
   the save dialog.
-- **Always-available dictation** - dictate during an active meeting via
+- **Always-On Dictation** - dictate during an active meeting via
   a second mic stream and the backup model (CPU or secondary GPU).
+  Settings > Always-On Dictation groups the toggle with its backup
+  device/model.
 - **Feature suggestions** - a dedicated hotkey records a voice note to
   the feature log and formats it via Claude CLI.
-- **Wake-word listener** - off by default (Settings > Wake Word
-  Listener). An always-on, shared (never exclusive) mic stream feeds
+- **Always-On Listening** (wake-word listener) - off by default;
+  quick toggle at the MAIN tray menu, detailed settings under
+  Settings > Always-On Listening. An always-on, shared (never exclusive) mic stream feeds
   an openWakeWord model on the CPU; audio stays in RAM and nothing is
   written before a wake. Detection starts a normal disk-first
   dictation, prefixed with the listener's rolling ~2.5s ring buffer so
@@ -55,7 +58,7 @@ Companion files: [shortcuts.md](shortcuts.md) (how to interact),
   after `wake_silence_stop_s` of silence (silero VAD; 0 disables) -
   the dictation hotkey still works at any time. Ships with the
   pretrained "hey jarvis" phrase until custom phrases are trained:
-  Settings > Wake Word Listener > "Set New Wake Phrase..." / "Set New
+  Settings > Always-On Listening > "Set New Wake Phrase..." / "Set New
   Outro Phrase..." takes a TYPED phrase, trains it on the GPU in the
   background (20-40 min; live status in the menu; refuses while the
   app is busy or the model is deliberately asleep), and activates it
