@@ -84,6 +84,14 @@ Enable Settings > Meeting Auto-Record first (off by default).
 Enable Settings > Wake Word Listener (off by default; first enable
 downloads the openWakeWord models - watch the log).
 
+> Owner-reported failure 2026-07-05 ("nothing happens"): root-caused
+> to a DLL-load-order conflict (windows_toasts' WinRT bindings break
+> onnxruntime when loaded first) - the listener silently reported
+> itself unavailable with a misleading "not installed" message. Fixed
+> by an onnxruntime preload at app startup + an honest error split;
+> reproduced and verified by bisect. Retest after the next app start
+> picks up the fix.
+
 - [x] automated (LiveWakePipelineTests): synthesized "hey jarvis"
   through the real model + real decision loop fires EXACTLY one wake
   and hands a well-formed >1s ring-buffer prefix to the dictation

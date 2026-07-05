@@ -6,6 +6,7 @@ live audio loop is exercised manually for the POC and gets harness
 coverage with the tier-2 splice.
 """
 
+import threading
 import time
 import types
 import unittest
@@ -16,6 +17,7 @@ try:
 except ImportError:  # dependency-light system python (CI)
     np = None
 
+from whisper_sync import listener as listener_mod
 from whisper_sync.listener import (
     WakeListener, strip_leading_phrase, RING_FRAMES,
     wake_model_paths, outro_model_paths, wake_strip_names,
@@ -275,6 +277,44 @@ class WakeActionSpliceTests(unittest.TestCase):
         self.listener._default_wake_action()
         self.app.dictation.begin_via_wake.assert_called_once_with(None)
         self.assertEqual(len(self.listener._ring), 0)
+
+
+class LoadFailureMessageTests(unittest.TestCase):
+    """Owner report 2026-07-05: a DLL-init ImportError (onnxruntime
+    loaded too late in the process) was reported as 'openwakeword is
+    not installed', pointing at the wrong fix. Only a genuinely
+    missing package gets the install hint."""
+
+    def setUp(self):
+        self.listener = WakeListener(_FakeApp())
+
+    def _run_with(self, exc):
+        with mock.patch.object(self.listener, "_load_model",
+                               side_effect=exc), \
+             mock.patch.object(listener_mod, "notify") as notify:
+            self.listener._run(threading.Event())
+        return notify
+
+    def test_missing_package_gets_the_install_hint(self):
+        notify = self._run_with(
+            ModuleNotFoundError("No module named 'openwakeword'",
+                                name="openwakeword"))
+        self.assertIn("not installed", notify.call_args[0][1])
+
+    def test_missing_transitive_dep_reports_honestly(self):
+        # Review catch: a dependency missing INSIDE openwakeword must
+        # not claim openwakeword itself is absent.
+        notify = self._run_with(
+            ModuleNotFoundError("No module named 'tflite_runtime'",
+                                name="tflite_runtime"))
+        self.assertNotIn("not installed", notify.call_args[0][1])
+        self.assertIn("could not load", notify.call_args[0][1])
+
+    def test_dll_init_failure_reports_the_load_failure_honestly(self):
+        notify = self._run_with(ImportError(
+            "DLL load failed while importing onnxruntime_pybind11_state"))
+        self.assertNotIn("not installed", notify.call_args[0][1])
+        self.assertIn("could not load", notify.call_args[0][1])
 
 
 class WakeSessionTests(unittest.TestCase):

@@ -24,6 +24,22 @@ warnings.filterwarnings("ignore", message="std\\(\\): degrees of freedom is <= 0
 logging.getLogger("lightning.pytorch.utilities.migration.utils").setLevel(logging.ERROR)
 logging.getLogger("whisperx.vads.pyannote").setLevel(logging.WARNING)
 logging.getLogger("whisperx.diarize").setLevel(logging.WARNING)
+
+# onnxruntime (the wake listener's inference engine) must initialize
+# BEFORE windows_toasts: with the WinRT bindings loaded first, its
+# pybind11 DLL init fails and the listener reports itself unavailable
+# (owner-reported 2026-07-05; bisected to windows_toasts specifically,
+# reproduced and fixed the same way in the live test suite). ~50ms and
+# a few MB when present; a harmless no-op when the package is absent.
+_ORT_PRELOAD_ERROR: Exception | None = None
+try:
+    import onnxruntime as _ort_dll_preload
+    del _ort_dll_preload
+except ModuleNotFoundError:
+    pass  # optional dependency; the listener reports its own absence
+except Exception as _exc:  # noqa: BLE001 - logged once the logger exists
+    _ORT_PRELOAD_ERROR = _exc
+
 from pathlib import Path
 
 import keyboard
@@ -61,6 +77,14 @@ from .app_control import AppControl
 from .auto_sleep import AutoSleep, ClickRouter
 from .meeting_dialogs import MeetingDialogs
 from .dialog_dispatcher import DialogDispatcher
+
+if _ORT_PRELOAD_ERROR is not None:
+    # The preload exists to beat windows_toasts into the process; a
+    # failure here means the wake listener will be unavailable, and
+    # silence would hide the reason (review catch).
+    logger.warning("onnxruntime preload failed at startup: %r - the "
+                   "wake listener will be unavailable",
+                   _ORT_PRELOAD_ERROR)
 
 def _get_cpu_name() -> str:
     """Get CPU model name via PowerShell CIM on Windows, platform.processor() fallback."""
