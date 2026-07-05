@@ -235,8 +235,22 @@ class PatchFileTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.st._patch_file(self.target, "b = 2", "b = 3")
 
+    def test_fails_loudly_when_the_anchor_is_ambiguous(self):
+        self.target.write_text("b = 2\nc = 9\nb = 2\n", encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            self.st._patch_file(self.target, "b = 2", "b = 3")
+
     def test_shim_constant_compiles(self):
         compile(self.st.SITECUSTOMIZE_SHIM, "sitecustomize.py", "exec")
+
+    def test_verify_sha256_accepts_match_and_rejects_mismatch(self):
+        import hashlib
+        blob = self.target.with_suffix(".bin")
+        blob.write_bytes(b"checkpoint bytes")
+        good = hashlib.sha256(b"checkpoint bytes").hexdigest()
+        self.st._verify_sha256(blob, good)  # must not raise
+        with self.assertRaises(SystemExit):
+            self.st._verify_sha256(blob, "0" * 64)
 
 
 if __name__ == "__main__":

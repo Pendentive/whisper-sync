@@ -36,6 +36,13 @@ PIPER_REPO = "https://github.com/rhasspy/piper-sample-generator"
 PIPER_REF = "v2.0.0"
 PIPER_CHECKPOINT = ("https://github.com/rhasspy/piper-sample-generator/"
                     "releases/download/v2.0.0/en_US-libritts_r-medium.pt")
+# SHA256 of the v2.0.0 release artifact (computed 2026-07-05 from the
+# HTTPS download). generate_samples.py unpickles this checkpoint with
+# weights_only=False (torch 2.6 patch below), so integrity MUST be
+# verified before any unpickling - a swapped artifact would be code
+# execution.
+PIPER_CHECKPOINT_SHA256 = \
+    "e95ee53770bf598c354a6e6dbfc95ccb259aeeb501d35a86be8a767429ab0ff6"
 
 FEATURES_BASE = ("https://huggingface.co/datasets/davidscripka/"
                  "openwakeword_features/resolve/main/")
@@ -319,7 +326,9 @@ def phase_venv(root: Path, base_python: str, torch_index: str) -> None:
     # from download_models() (notebook step; observed live 2026-07-05).
     resources = (root / "trainer-env" / "Lib" / "site-packages" /
                  "openwakeword" / "resources" / "models")
-    if not (resources / "melspectrogram.onnx").exists():
+    feature_models = [resources / "melspectrogram.onnx",
+                      resources / "embedding_model.onnx"]
+    if not all(p.exists() for p in feature_models):
         run([py, "-c",
              "import openwakeword.utils as u; u.download_models()"])
     else:
@@ -334,10 +343,12 @@ def _patch_file(target: Path, old: str, new: str) -> None:
     if "Patched by setup_trainer.py" in text:
         log(f"already patched: {target.name}")
         return
-    if old not in text:
+    count = text.count(old)
+    if count != 1:
         raise SystemExit(
-            f"[setup] expected code not found in {target}; the pinned "
-            "version changed - re-verify and update the patch.")
+            f"[setup] expected exactly one patch anchor in {target}, "
+            f"found {count}; the pinned version changed - re-verify "
+            "and update the patch.")
     target.write_text(text.replace(old, new), encoding="utf-8")
     log(f"patched: {target.name}")
 
@@ -390,6 +401,23 @@ def phase_package_patches(root: Path) -> None:
         "                                                  batch_size=None, num_workers=n_cpus, prefetch_factor=16)")
 
 
+def _verify_sha256(path: Path, expected: str) -> None:
+    """Refuse to proceed when a downloaded artifact does not match its
+    pinned digest. Required for the piper checkpoint because it is
+    unpickled with weights_only=False - a swapped artifact would be
+    arbitrary code execution."""
+    import hashlib
+    with open(path, "rb") as fh:
+        digest = hashlib.file_digest(fh, "sha256").hexdigest()
+    if digest != expected:
+        raise SystemExit(
+            f"[setup] SHA256 mismatch for {path.name}: got {digest}, "
+            f"expected {expected}. The upstream artifact changed - "
+            "verify it manually before trusting it (it is unpickled "
+            "with weights_only=False). Delete the file to re-download.")
+    log(f"sha256 verified: {path.name}")
+
+
 def phase_piper(root: Path) -> None:
     piper = root / "piper-sample-generator"
     if not piper.exists():
@@ -397,7 +425,9 @@ def phase_piper(root: Path) -> None:
              PIPER_REPO, piper])
     else:
         log("piper-sample-generator exists, skipping clone")
-    download(PIPER_CHECKPOINT, piper / "models" / "en_US-libritts_r-medium.pt")
+    checkpoint = piper / "models" / "en_US-libritts_r-medium.pt"
+    download(PIPER_CHECKPOINT, checkpoint)
+    _verify_sha256(checkpoint, PIPER_CHECKPOINT_SHA256)
     # torch 2.6 flipped torch.load's default to weights_only=True; the
     # pinned v2.0.0 libritts checkpoint is a full pickled model (a
     # trusted release artifact downloaded above), so the generator's
