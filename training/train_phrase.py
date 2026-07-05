@@ -105,11 +105,14 @@ def main() -> int:
                    "onnx.save(onnx.load(sys.argv[1]), sys.argv[2])")
     result = subprocess.run(
         [str(trainer_python), "-c", consolidate, str(produced),
-         str(final)], cwd=root, env=env)
+         str(final)], cwd=root, env=env, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"[train] onnx consolidation failed (exit "
               f"{result.returncode}); the raw export stays in "
               f"{produced.parent}")
+        detail = (result.stderr or result.stdout or "").strip()
+        if detail:
+            print(f"[train] consolidation error: {detail[-500:]}")
         return result.returncode
     print(f"[train] done: {final}")
     print("[train] set it as wake_phrase_model or wake_outro_model "
