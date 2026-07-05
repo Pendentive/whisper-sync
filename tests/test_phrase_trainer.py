@@ -225,9 +225,21 @@ class PatchFileTests(unittest.TestCase):
     def test_skips_when_already_patched(self):
         content = "# Patched by setup_trainer.py\nb = 3\n"
         self.target.write_text(content, encoding="utf-8")
-        self.st._patch_file(self.target, "b = 2", "never applied")
+        self.st._patch_file(self.target, "b = 2",
+                            "# Patched by setup_trainer.py\nb = 3")
         self.assertEqual(
             self.target.read_text(encoding="utf-8"), content)
+
+    def test_second_patch_applies_to_an_already_patched_file(self):
+        # A file can carry several patches; an earlier patch must not
+        # block a later one (idempotence is per-patch, not per-file).
+        self.target.write_text(
+            "# Patched by setup_trainer.py\nb = 3\nz = 1\n",
+            encoding="utf-8")
+        self.st._patch_file(self.target, "z = 1", "z = 2")
+        text = self.target.read_text(encoding="utf-8")
+        self.assertIn("z = 2", text)
+        self.assertIn("b = 3", text)
 
     def test_fails_loudly_when_the_anchor_drifted(self):
         self.target.write_text("something else entirely\n",

@@ -79,6 +79,14 @@ verified against):
 - **PYTHONUTF8=1** for trainer subprocesses: torch's onnx exporter
   prints emoji progress marks, which raise UnicodeEncodeError on the
   cp1252 console and kill the export after a successful run.
+- **Optional tflite conversion**: train.py converts onnx to tflite
+  unconditionally, but the tensorflow chain is deliberately not
+  installed (the listener loads onnx); the patch downgrades a missing
+  onnx_tf to a warning after the onnx export succeeds.
+- **Self-contained .onnx**: torch 2.x's exporter can split weights
+  into a sidecar `.onnx.data` file; train_phrase.py re-embeds them
+  via onnx.load/save when copying into `phrases/` (a plain file copy
+  of the graph alone would not load).
 
 Rerunning `setup_trainer.py` applies all of this to an existing
 workspace (every step is idempotent).
