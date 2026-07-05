@@ -41,8 +41,8 @@ Companion files: [shortcuts.md](shortcuts.md) (how to interact),
   a second mic stream and the backup model (CPU or secondary GPU).
 - **Feature suggestions** - a dedicated hotkey records a voice note to
   the feature log and formats it via Claude CLI.
-- **Wake-word listener (POC**, off by default; Settings > Wake Word
-  Listener) - an always-on, shared (never exclusive) mic stream feeds
+- **Wake-word listener (POC)** - off by default (Settings > Wake Word
+  Listener). An always-on, shared (never exclusive) mic stream feeds
   an openWakeWord model on the CPU; audio stays in RAM and nothing is
   written before a wake. Detection currently wakes the model and
   toasts; the splice into a dictation is the next step. Ships with the

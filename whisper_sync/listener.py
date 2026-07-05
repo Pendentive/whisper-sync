@@ -80,15 +80,26 @@ class WakeListener:
 
     def start(self) -> None:
         """Start the listening thread if enabled. Safe to call again
-        after a config toggle; a running thread is left alone."""
+        after a config toggle; a healthy running thread is left alone.
+
+        The stop event is bound PER THREAD (worker _WorkerGeneration
+        precedent): a quick off -> on toggle starts a fresh generation
+        immediately instead of short-circuiting on the old, stopping
+        thread and leaving the listener enabled-but-inert (review
+        catch). A briefly overlapping old thread exits on ITS OWN
+        event; both streams are shared-mode, so the overlap is
+        harmless.
+        """
         with self._lock:
             if not self.enabled:
                 return
-            if self._thread is not None and self._thread.is_alive():
-                return
-            self._stop_event.clear()
+            if (self._thread is not None and self._thread.is_alive()
+                    and not self._stop_event.is_set()):
+                return  # already running and not stopping
+            self._stop_event = threading.Event()
             self._thread = threading.Thread(
-                target=self._run, daemon=True, name="wake-listener")
+                target=self._run, args=(self._stop_event,),
+                daemon=True, name="wake-listener")
             self._thread.start()
 
     def stop(self) -> None:
@@ -104,15 +115,25 @@ class WakeListener:
 
     # -- The listening loop -------------------------------------------------------
 
-    def _run(self) -> None:
+    def _run(self, stop_event: threading.Event) -> None:
         try:
             model = self._load_model()
-        except Exception as exc:
+        except ImportError as exc:
             logger.warning(
-                f"Wake listener unavailable: {exc} - install openwakeword "
-                "in whisper-env to enable it")
+                f"Wake listener unavailable: openwakeword is not "
+                f"installed ({exc}) - pip install openwakeword in "
+                "whisper-env to enable it")
             notify("Wake listener unavailable",
                    "openwakeword is not installed; see the log.")
+            return
+        except Exception:
+            # Distinct from the missing dependency (review catch):
+            # model download/load or onnxruntime failures need the
+            # real traceback, not an install hint.
+            logger.warning("Wake listener failed to load its model",
+                           exc_info=True)
+            notify("Wake listener failed",
+                   "Wake model could not load; see the log.")
             return
         if model is None:
             return
@@ -122,17 +143,24 @@ class WakeListener:
         logger.info(
             f"Wake listener active: phrase model '{self._phrase()}', "
             f"threshold {self._threshold():.2f}")
+        was_paused = False
         try:
             with sd.InputStream(samplerate=SAMPLE_RATE, channels=1,
                                 dtype="int16", blocksize=FRAME_SAMPLES) as stream:
-                while not self._stop_event.is_set():
+                while not stop_event.is_set():
                     frame, _overflowed = stream.read(FRAME_SAMPLES)
                     if self._paused():
                         # Keep draining the stream (cheap) but skip
-                        # inference and reset state so a phrase spoken
-                        # during a pause cannot fire on resume.
-                        model.reset()
+                        # inference. Reset ONCE on entering the pause
+                        # (review catch: not per 80ms frame) - clears
+                        # pre-pause audio so it cannot fire on resume;
+                        # nothing accumulates during the pause because
+                        # paused frames are never fed to the model.
+                        if not was_paused:
+                            model.reset()
+                            was_paused = True
                         continue
+                    was_paused = False
                     scores = model.predict(np.squeeze(frame))
                     self.process_scores(scores)
         except Exception:

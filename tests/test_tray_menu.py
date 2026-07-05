@@ -183,6 +183,15 @@ class MenuBuildTests(unittest.TestCase):
             self.assertTrue(self.app.cfg["meeting_auto_record"])
             save.assert_called_once()
 
+    def test_toggle_wake_listener_flips_saves_and_reconciles(self):
+        self.app.wake_listener = types.SimpleNamespace(
+            restart_if_toggled=mock.Mock())
+        with mock.patch.object(config, "save") as save:
+            self.menu._toggle_wake_listener()
+        self.assertTrue(self.app.cfg["wake_listener"])
+        self.app.wake_listener.restart_if_toggled.assert_called_once()
+        save.assert_called_once()
+
     def test_menu_shows_meeting_auto_record_section(self):
         menu = self.menu.build()
         texts = " | ".join(_iter_texts(menu))

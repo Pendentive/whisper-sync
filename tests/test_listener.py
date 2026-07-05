@@ -113,7 +113,7 @@ class LifecycleTests(unittest.TestCase):
 
     def test_enabled_start_spawns_one_thread_and_stop_ends_it(self):
         with mock.patch.object(WakeListener, "_run",
-                               lambda s: s._stop_event.wait(5)):
+                               lambda s, ev: ev.wait(5)):
             self.listener.start()
             first = self.listener._thread
             self.assertIsNotNone(first)
@@ -124,9 +124,27 @@ class LifecycleTests(unittest.TestCase):
             first.join(timeout=2)
             self.assertFalse(first.is_alive())
 
+    def test_rapid_off_on_toggle_starts_a_fresh_generation(self):
+        # Review catch: the stop event is bound per thread, so a quick
+        # off -> on toggle must start a new generation instead of
+        # short-circuiting on the old, stopping thread and leaving the
+        # listener enabled-but-inert.
+        with mock.patch.object(WakeListener, "_run",
+                               lambda s, ev: ev.wait(5)):
+            self.listener.start()
+            first = self.listener._thread
+            self.listener.stop()   # old generation begins exiting
+            self.listener.start()  # immediate re-enable
+            self.assertIsNot(self.listener._thread, first,
+                             "a stopping thread must not block a fresh start")
+            self.assertTrue(self.listener._thread.is_alive())
+            self.listener.stop()
+            self.listener._thread.join(timeout=2)
+            first.join(timeout=2)
+
     def test_restart_if_toggled_reconciles_both_ways(self):
         with mock.patch.object(WakeListener, "_run",
-                               lambda s: s._stop_event.wait(5)):
+                               lambda s, ev: ev.wait(5)):
             self.app.cfg["wake_listener"] = False
             self.listener.restart_if_toggled()
             self.assertIsNone(self.listener._thread)
