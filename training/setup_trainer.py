@@ -157,8 +157,25 @@ else:
         ds = load_dataset(source, config if config != "-" else None,
                           split=split, streaming=False)
     ds = ds.cast_column("audio", Audio(sampling_rate=16000))
-    for row in ds:
-        write_16k(np.asarray(row["audio"]["array"]), 16000)
+    skipped = 0
+    # Index access instead of iteration: audio decodes lazily when a
+    # row materializes, so a corrupt clip raises during the for-row
+    # yield itself, where a loop-body try cannot catch it. FMA ships a
+    # few undecodable mp3s; one bad clip must not kill the conversion
+    # (observed live 2026-07-05: LibsndfileError at clip ~3495).
+    for i in range(len(ds)):
+        try:
+            arr = np.asarray(ds[i]["audio"]["array"])
+        except Exception:
+            skipped += 1
+            continue
+        write_16k(arr, 16000)
+    if skipped:
+        print(f"skipped {skipped} undecodable clips")
+    if n == start:
+        # Nothing decoded = wholly bad source; the caller must see a
+        # failure, not an empty success.
+        sys.exit(f"no clips decoded from {source}")
 print(f"wrote {n - start} wavs to {out_dir} ({n} total)")
 """
 
