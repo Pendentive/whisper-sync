@@ -44,7 +44,7 @@ The owner-facing side of that validation lives in
 [owner-test-checklist.md](owner-test-checklist.md) - a running,
 check-off list of every shipped feature awaiting hands-on validation
 (real mic, real calls, real GPU). PRs that change owner-facing
-behavior append to it in the same PR (rule in CLAUDE.md).
+behavior append or update an entry in the same PR (rule in CLAUDE.md).
 
 ## Benchmarks
 
