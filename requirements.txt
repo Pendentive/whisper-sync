@@ -10,3 +10,7 @@ keyboard
 pyperclip
 pywin32
 windows-toasts
+
+# Wake-word listener POC (assistant round step 2). Lazy-imported:
+# the app runs without it, the listener just stays unavailable.
+openwakeword

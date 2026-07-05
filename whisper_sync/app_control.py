@@ -242,6 +242,9 @@ class AppControl:
         except Exception:
             logger.debug("Post-queue shutdown signal failed", exc_info=True)
         try:
+            listener = getattr(self.app, "wake_listener", None)
+            if listener is not None:
+                listener.stop()
             if self.app.recorder.is_recording:
                 self.app.recorder.stop()
             self.app.worker.stop()

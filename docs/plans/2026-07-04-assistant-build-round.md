@@ -14,7 +14,7 @@
 | # | Step | Spec anchor | Status |
 |---|------|-------------|--------|
 | 1 | GPU power-state failover (guard-owned, cpu_fallback_model) | GPU power-state resilience | MERGED (#180-#182) |
-| 2 | Tier 0+1 always-on listener (VAD + openWakeWord, off by default) | Staged architecture, step 2 | NEEDS OWNER INPUT |
+| 2 | Tier 0+1 always-on listener (VAD + openWakeWord, off by default) | Staged architecture, step 2 | POC IN PROGRESS (pretrained phrase) |
 | 3 | Tier 2 splice: wake -> ring-buffer-prefixed dictation + outro | Staged architecture, step 2 | QUEUED |
 | 4 | Per-app meeting auto-record (mic consent-store watch + app list) | Staged architecture, step 3 | MERGED (#183, #184) |
 | 5 | In-app wake-word trainer (verifier first, full training later) | Wake-word model landscape | QUEUED |
@@ -22,8 +22,10 @@
 | - | Installer refresh (screens generated from docs/features/) | BACKLOG.md | QUEUED |
 
 Standing authorization (owner, 2026-07-03/04): proceed step to step
-without asking unless a large unforeseen blocker. Before steps 2-3 the
-owner still owes: wake + outro phrase choices, whisper-mode interaction,
+without asking unless a large unforeseen blocker. Third intake
+(2026-07-04): the listener POC is GO with a pretrained phrase; the
+owner still owes the CUSTOM wake + outro phrase choices, the final
+whisper-mode decision (POC default: listener off in whisper mode),
 and the command allowlist shape.
 
 ## Step 1 plan - GPU power-state failover
@@ -192,3 +194,27 @@ PRs:
   behavior (asked again 2026-07-04). Owner reminder still outstanding:
   the tray app runs pre-#167 bytecode; a restart picks up everything
   from #167 through failover, auto-sleep, and meeting auto-record.
+
+- **2026-07-04 (third intake shipped, #186)**: auto-record settings
+  redesign per the owner's third intake - Record/Ask/Ignore per app
+  (the 3-state resolves the exhausting-Discord case), "Detect apps..."
+  populating from the consent store (new apps arrive as Ignore),
+  opt-in/opt-out toasts with master + sub-toggles, and
+  MeetingFlow.abort_recording for the silent "Don't record" discard.
+  Review caught a misleading menu label (said stop, does discard).
+  Owner's streaming-dictation idea recorded as a BACKLOG deferral.
+  Suite 357.
+
+- **2026-07-04 (step 2 POC)**: wake-word listener shipped as a POC per
+  the third-intake GO. listener.py: an always-on SHARED mic stream
+  (sounddevice/WASAPI, never exclusive) feeds 80ms frames to
+  openWakeWord (onnx, built-in silero VAD gate) on a daemon thread;
+  detection wakes the model (auto_sleep.wake) and toasts - the tier-2
+  dictation splice is next. Pretrained "hey_jarvis" placeholder until
+  the owner picks custom phrases; pauses in whisper mode (owner
+  default) and while recording; 3s refractory so one utterance fires
+  once; RAM-only until wake. openwakeword added to requirements
+  (lazy-imported; the module is inert without it - CI never sees it).
+  Verified live in the venv: model download + load + predict on the
+  dev machine. Config: wake_listener (off), wake_phrase_model,
+  wake_threshold; tray toggle under Settings.
