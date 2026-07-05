@@ -41,7 +41,7 @@ Companion files: [shortcuts.md](shortcuts.md) (how to interact),
   a second mic stream and the backup model (CPU or secondary GPU).
 - **Feature suggestions** - a dedicated hotkey records a voice note to
   the feature log and formats it via Claude CLI.
-- **Wake-word listener (POC)** - off by default (Settings > Wake Word
+- **Wake-word listener** - off by default (Settings > Wake Word
   Listener). An always-on, shared (never exclusive) mic stream feeds
   an openWakeWord model on the CPU; audio stays in RAM and nothing is
   written before a wake. Detection starts a normal disk-first
@@ -54,10 +54,16 @@ Companion files: [shortcuts.md](shortcuts.md) (how to interact),
   second openWakeWord model; also stripped from the text tail) or
   after `wake_silence_stop_s` of silence (silero VAD; 0 disables) -
   the dictation hotkey still works at any time. Ships with the
-  pretrained "hey jarvis" phrase until custom phrases are trained
-  (training/README.md); trained phrases register in `wake_phrases`
-  and toggle via Settings > Wake Word Listener > Saved Phrases
-  (active checkmarks; multiple wake and outro phrases load at once). Pauses during whisper mode and while recording
+  pretrained "hey jarvis" phrase until custom phrases are trained:
+  Settings > Wake Word Listener > "Set New Wake Phrase..." / "Set New
+  Outro Phrase..." takes a TYPED phrase, trains it on the GPU in the
+  background (20-40 min; live status in the menu; refuses while the
+  app is busy or the model is deliberately asleep), and activates it
+  automatically on success. Trained phrases live in `wake_phrases`
+  and toggle via Saved Phrases (active checkmarks; multiple wake and
+  outro phrases load at once). Headless alternative:
+  training/README.md. One-time environment setup:
+  training/setup_trainer.py --yes (~20 GB). Pauses during whisper mode and while recording
   (except during its own wake dictations, which it watches for the
   stop signals). Needs `openwakeword` in the venv (in
   requirements.txt); without it the toggle simply reports unavailable.

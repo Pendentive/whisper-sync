@@ -509,20 +509,8 @@ class TrayMenu:
                                 "meeting_watch_toast_optout", True)),
                     )),
                 )),
-                pystray.MenuItem("Wake Word Listener (POC)", pystray.Menu(
-                    pystray.MenuItem(
-                        "Enabled",
-                        lambda: self._toggle_wake_listener(),
-                        checked=lambda item: self.app.cfg.get(
-                            "wake_listener", False),
-                    ),
-                    pystray.MenuItem(
-                        f"  Phrase: "
-                        f"{self.app.cfg.get('wake_phrase_model', 'hey_jarvis')}",
-                        None, enabled=False),
-                    pystray.MenuItem("Saved Phrases", pystray.Menu(
-                        *self._build_saved_phrase_items())),
-                )),
+                pystray.MenuItem("Wake Word Listener", pystray.Menu(
+                    *self._build_wake_listener_items())),
                 pystray.MenuItem(f"Diarization (Speaker Detection)\t{primary_label}",
                                  pystray.Menu(*diarize_sub_items)),
                 pystray.Menu.SEPARATOR,
@@ -966,6 +954,48 @@ class TrayMenu:
         self.app.wake_listener.restart_if_toggled()
         self._save_and_refresh()
 
+    def _build_wake_listener_items(self):
+        """The full wake-listener settings surface (fourth intake):
+        enable, set new wake/outro phrase (typed -> background
+        training), saved phrases with active checkmarks, live
+        training status."""
+        import pystray  # lazy: not installed on the CI system python
+        from .listener import wake_model_paths, outro_model_paths, _model_stem
+
+        cfg = self.app.cfg
+        wake_stems = ", ".join(_model_stem(p) for p in wake_model_paths(cfg))
+        outro_paths = outro_model_paths(cfg)
+        items = [
+            pystray.MenuItem(
+                "Enabled",
+                lambda: self._toggle_wake_listener(),
+                checked=lambda item: self.app.cfg.get(
+                    "wake_listener", False),
+            ),
+            pystray.MenuItem(f"  Wake: {wake_stems}", None, enabled=False),
+        ]
+        if outro_paths:
+            outro_stems = ", ".join(_model_stem(p) for p in outro_paths)
+            items.append(pystray.MenuItem(f"  Outro: {outro_stems}",
+                                          None, enabled=False))
+        items.extend([
+            pystray.MenuItem(
+                "Set New Wake Phrase...",
+                menu_callback(self.app.phrase_trainer.ask_new_phrase,
+                              "wake")),
+            pystray.MenuItem(
+                "Set New Outro Phrase...",
+                menu_callback(self.app.phrase_trainer.ask_new_phrase,
+                              "outro")),
+            pystray.MenuItem("Saved Phrases", pystray.Menu(
+                *self._build_saved_phrase_items())),
+        ])
+        status = self.app.phrase_trainer.status_line()
+        if status:
+            items.append(pystray.MenuItem(f"  {status}", None,
+                                          enabled=False))
+        return items
+
     def _build_saved_phrase_items(self):
         """Saved-phrase entries (wake_phrases registry) with active
         checkmarks. Until the PR C dialog exists, phrases arrive via
@@ -974,7 +1004,7 @@ class TrayMenu:
         phrases = self.app.cfg.get("wake_phrases", {}) or {}
         if not isinstance(phrases, dict) or not phrases:
             return [pystray.MenuItem(
-                "No saved phrases (train via training/train_phrase.py)",
+                'No saved phrases yet - use "Set New Wake Phrase..."',
                 None, enabled=False)]
         items = []
         for name in sorted(phrases):
@@ -992,16 +1022,20 @@ class TrayMenu:
         """Flip a saved phrase's active flag and reload the listener
         (the model list is bound at thread start)."""
         cfg = self.app.cfg
-        raw = cfg.get("wake_phrases", {})
-        # Same malformed-config tolerance as listener.py: a corrupted
-        # registry (non-dict, string entries) must never take down the
-        # tray menu.
-        phrases = dict(raw) if isinstance(raw, dict) else {}
-        raw_entry = phrases.get(name)
-        entry = dict(raw_entry) if isinstance(raw_entry, dict) else {}
-        entry["active"] = not entry.get("active")
-        phrases[name] = entry
-        cfg["wake_phrases"] = phrases
+        # transaction(): the phrase trainer's auto-registration does
+        # the same read-modify-write from its worker thread; the lock
+        # keeps the two writers from dropping each other's changes.
+        with cfg.transaction():
+            raw = cfg.get("wake_phrases", {})
+            # Same malformed-config tolerance as listener.py: a
+            # corrupted registry (non-dict, string entries) must never
+            # take down the tray menu.
+            phrases = dict(raw) if isinstance(raw, dict) else {}
+            raw_entry = phrases.get(name)
+            entry = dict(raw_entry) if isinstance(raw_entry, dict) else {}
+            entry["active"] = not entry.get("active")
+            phrases[name] = entry
+            cfg["wake_phrases"] = phrases
         logger.info(f"Saved phrase '{name}': "
                     f"{'active' if entry['active'] else 'inactive'}")
         self.app.wake_listener.stop()
