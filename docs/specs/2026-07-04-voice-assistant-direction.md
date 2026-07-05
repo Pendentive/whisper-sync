@@ -120,6 +120,29 @@ tiers 0-2, which are deliberately tiny.
   (streaming zipformer / whisper-streaming partial hypotheses), not a
   config flip on the current batch pipeline.
 
+## Owner decisions - 2026-07-04 (fourth intake): the phrase manager
+
+The in-app trainer (build-order step 5) is a SELF-SERVE phrase
+manager, not a record-your-voice wizard - openWakeWord custom phrases
+train synthetically from TYPED TEXT (Piper TTS generates the samples),
+so the owner never has to speak or hand over phrase strings:
+
+- Settings surface: "Set phrase..." takes typed text; training runs as
+  a BACKGROUND job on the dGPU (tens of minutes) with a visible status
+  in the menu (state + progress/ETA estimate). The current phrase(s)
+  display in the menu.
+- Saved phrases list with per-phrase ACTIVE checkmarks; reset/delete.
+  Multiple simultaneous phrases are cheap - openWakeWord runs several
+  models in parallel on the same frame stream (the POC's score dict is
+  already multi-model).
+- Different outcomes per phrase later ("hey Jarvis" -> dictation,
+  "take note" -> something else): the phrase -> action routing rides
+  the same score dict; design it with the tier-2 splice's command
+  routing, not before.
+- Until a custom phrase finishes training, the pretrained placeholder
+  keeps working; training happens alongside normal app use (GPU Guard
+  and auto-sleep already manage VRAM pressure).
+
 ## GPU power-state resilience (owner: "actually really important")
 
 The laptop (Core Ultra 9 285H + Arc 140T iGPU + RTX 5070 Ti, hybrid
