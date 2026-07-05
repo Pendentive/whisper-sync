@@ -339,6 +339,10 @@ def _patch_file(target: Path, old: str, new: str) -> None:
     """Idempotent in-place patch: skip when the patch marker is already
     present, fail loudly when the expected code is missing (the pinned
     version drifted and the patch must be re-verified)."""
+    if not target.exists():
+        raise SystemExit(
+            f"[setup] patch target missing: {target}; the pinned "
+            "package layout changed - re-verify and update the patch.")
     text = target.read_text(encoding="utf-8")
     if "Patched by setup_trainer.py" in text:
         log(f"already patched: {target.name}")

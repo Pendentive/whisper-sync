@@ -240,6 +240,11 @@ class PatchFileTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.st._patch_file(self.target, "b = 2", "b = 3")
 
+    def test_fails_loudly_when_the_target_is_missing(self):
+        with self.assertRaises(SystemExit):
+            self.st._patch_file(self.target.with_name("gone.py"),
+                                "b = 2", "b = 3")
+
     def test_shim_constant_compiles(self):
         compile(self.st.SITECUSTOMIZE_SHIM, "sitecustomize.py", "exec")
 
