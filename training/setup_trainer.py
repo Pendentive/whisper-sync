@@ -149,11 +149,29 @@ def trainer_python(root: Path) -> Path:
     return root / "trainer-env" / "Scripts" / "python.exe"
 
 
+def _require_py311(python_exe: str) -> None:
+    """Fail fast on the wrong interpreter: piper-phonemize wheels stop
+    at 3.11, and a mismatched venv only fails later, mid-pip, with a
+    far less actionable error."""
+    out = subprocess.run(
+        [python_exe, "-c",
+         "import sys; print('%d.%d' % sys.version_info[:2])"],
+        capture_output=True, text=True, check=True)
+    version = out.stdout.strip()
+    if version != "3.11":
+        raise SystemExit(
+            f"[setup] base python is {version}; the trainer venv MUST "
+            "be 3.11 (piper-phonemize ships no newer wheels). Pass "
+            "--python <path to a 3.11 interpreter> (py -3.11).")
+
+
 def phase_venv(root: Path, base_python: str, torch_index: str) -> None:
     py = trainer_python(root)
     if py.exists():
         log("trainer venv exists, skipping create")
+        _require_py311(str(py))
     else:
+        _require_py311(base_python)
         run([base_python, "-m", "venv", root / "trainer-env"])
     run([py, "-m", "pip", "install", "--upgrade", "pip"])
     # CUDA torch first (its own index), then the notebook stack.

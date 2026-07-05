@@ -363,7 +363,8 @@ training job with menu status/ETA + completion toast.
   tests/test_live_validation.py (WS_LIVE=1): shared-mic coexistence +
   prefix ordering on the real mic, consent-store read, synthesized
   "hey jarvis" through the real model + decision loop (one wake, >1s
-  prefix, negative control silent, VAD speech/silence split), GPU
+  prefix, an unrelated spoken phrase never fires, VAD speech/silence
+  split), GPU
   probe healthy + dead-probe -> CPU-pinned real worker transcribing
   correctly, and the FULL production pipeline on the pinned fixture
   (tests/fixtures/real-meeting/, gitignored - private audio never
