@@ -261,3 +261,17 @@ spliced; wakes during meetings refuse politely.
   with regression tests. The listener frame loop was refactored into
   handle_frame() so ring gating and pause-latch behavior are
   unit-tested without audio.
+
+- **2026-07-04 (step 3 PR 2)**: hands-free stop per the step 3 plan.
+  During a wake-initiated dictation the listener keeps running
+  (handle_frame routes on the session flag before the pause gate) and
+  ends the dictation on the outro phrase (wake_outro_model loads into
+  the SAME openWakeWord model; its score key never fires a wake, and a
+  2s grace window keeps a wake-alike outro from ending the session it
+  started) or on sustained silence (wake_silence_stop_s, default 8s,
+  read from the silero VAD scores the model already computes; a
+  missing VAD buffer counts every frame as voice, failing safe). The
+  spoken outro is stripped from the text tail (strip_trailing_phrase,
+  anchored to the end so a mid-sentence outro is preserved). Hotkey
+  stop, discard, the minutes cap, and incognito all hand the listener
+  back to normal listening cleanly.

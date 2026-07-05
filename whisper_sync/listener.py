@@ -16,6 +16,16 @@ audio; the stop path strips it from the transcription text
 between detection and the dictation mic opening (~0.1-0.3s, usually
 the natural pause after the phrase) is not captured.
 
+During a wake-initiated dictation the listener KEEPS running (its
+stream is shared) and watches for two hands-free stop signals: the
+outro phrase (``wake_outro_model``, a second openWakeWord model in the
+same score dict - multi-model is native) and sustained silence
+(``wake_silence_stop_s``, read from the silero VAD scores the model
+already computes for its own gate). Either one stops the dictation
+exactly like the hotkey would; the spoken outro is stripped from the
+tail of the transcription (strip_trailing_phrase). Hotkey-initiated
+dictations are untouched: the listener still pauses for those.
+
 Power and privacy posture (spec + owner decisions):
 - OFF by default (``wake_listener``); tray toggle under Settings.
 - All audio stays in RAM inside openWakeWord's internal buffer;
@@ -70,6 +80,16 @@ RING_FRAMES = int(RING_SECONDS * SAMPLE_RATE / FRAME_SAMPLES)
 # is the user SAYING the phrase mid-sentence and must be preserved.
 STRIP_SEARCH_CHARS = 48
 
+# For the first moments of a wake session, outro and silence checks are
+# suppressed: an outro model acoustically close to the wake phrase must
+# not end the dictation on the same utterance that started it.
+SESSION_GRACE_S = 2.0
+
+# A silero VAD score at or above this counts as voice and refreshes the
+# silence clock. Deliberately below the model's own 0.5 gate: a false
+# "voice" merely extends the dictation, a false "silence" cuts it off.
+VAD_VOICE_THRESHOLD = 0.3
+
 
 def _phrase_tokens(phrase_name: str) -> list[str]:
     """Model name -> spoken words ("hey_jarvis_v0.1" -> ["hey", "jarvis"]).
@@ -81,6 +101,20 @@ def _phrase_tokens(phrase_name: str) -> list[str]:
     stem = stem.split(".", 1)[0]
     tokens = [t for t in re.split(r"[_\-\s]+", stem.lower()) if t]
     return [t for t in tokens if not re.fullmatch(r"v\d+", t)]
+
+
+def _phrase_pattern(tokens: list[str]) -> str:
+    """Regex matching the spoken phrase inside transcribed text.
+
+    Whisper renders "hey jarvis" as "Hey, Jarvis." and friends - allow
+    punctuation and whitespace between tokens, and apostrophes inside
+    them ("thats" must match "that's"). Word boundaries keep
+    single-token phrases from matching inside a longer word ("alexa"
+    must not strip through "Alexander").
+    """
+    sep = r"[\s,.!?;:-]+"
+    words = (r"'?".join(re.escape(ch) for ch in t) for t in tokens)
+    return r"\b" + sep.join(words) + r"\b"
 
 
 def strip_leading_phrase(text: str, phrase_name: str) -> str:
@@ -97,17 +131,32 @@ def strip_leading_phrase(text: str, phrase_name: str) -> str:
     tokens = _phrase_tokens(phrase_name)
     if not tokens:
         return text
-    # Whisper renders "hey jarvis" as "Hey, Jarvis." and friends -
-    # allow punctuation and whitespace between and after the tokens.
-    # Word boundaries keep single-token phrases from matching inside a
-    # longer word ("alexa" must not strip through "Alexander").
-    sep = r"[\s,.!?;:-]+"
-    pattern = (r"\b" + sep.join(re.escape(t) for t in tokens)
-               + r"\b[\s,.!?;:-]*")
+    pattern = _phrase_pattern(tokens) + r"[\s,.!?;:-]*"
     match = re.search(pattern, text, re.IGNORECASE)
     if match is None or match.start() > STRIP_SEARCH_CHARS:
         return text
     return text[match.end():].lstrip()
+
+
+def strip_trailing_phrase(text: str, phrase_name: str) -> str:
+    """Remove the spoken outro phrase from the tail of a wake-spliced
+    transcription.
+
+    The outro is heard by the dictation mic before the listener can
+    stop it, so it lands at the end of the text. Conservative: only
+    strips when nothing but punctuation or whitespace follows the
+    phrase - an outro spoken mid-sentence is preserved.
+    """
+    if not text:
+        return text
+    tokens = _phrase_tokens(phrase_name)
+    if not tokens:
+        return text
+    pattern = _phrase_pattern(tokens) + r"[\s,.!?;:-]*$"
+    match = re.search(pattern, text, re.IGNORECASE)
+    if match is None:
+        return text
+    return text[:match.start()].rstrip()
 
 
 class WakeListener:
@@ -128,6 +177,12 @@ class WakeListener:
         # entry so pre-pause audio never crosses a privacy boundary.
         self._ring: deque = deque(maxlen=RING_FRAMES)
         self._was_paused = False
+        # Wake-session tracking (all touched only on the listener
+        # thread): while active, handle_frame watches for the outro
+        # phrase and sustained silence instead of pausing.
+        self._wake_session_active = False
+        self._session_started = 0.0
+        self._last_voice = 0.0
 
     # -- Config ----------------------------------------------------------------
 
@@ -143,6 +198,29 @@ class WakeListener:
             return float(self.app.cfg.get("wake_threshold", 0.5))
         except (TypeError, ValueError):
             return 0.5
+
+    def _outro(self) -> str:
+        """Outro phrase model name; empty string = no outro configured."""
+        return str(self.app.cfg.get("wake_outro_model", "") or "")
+
+    def _silence_stop_s(self) -> float:
+        """Seconds of sustained silence that end a wake dictation
+        (0 disables the silence stop)."""
+        try:
+            return float(self.app.cfg.get("wake_silence_stop_s", 8) or 0)
+        except (TypeError, ValueError):
+            return 8.0
+
+    @staticmethod
+    def _is_outro_key(score_key: str, outro: str) -> bool:
+        """openWakeWord keys scores by the model file's basename minus
+        its extension; the config value may be a bare pretrained name or
+        a path to a custom .onnx."""
+        if not outro:
+            return False
+        stem = re.sub(r"\.(onnx|tflite)$", "",
+                      re.split(r"[\\/]", outro)[-1], flags=re.IGNORECASE)
+        return score_key.lower() in (outro.lower(), stem.lower())
 
     # -- Lifecycle ---------------------------------------------------------------
 
@@ -213,6 +291,7 @@ class WakeListener:
             f"threshold {self._threshold():.2f}")
         self._was_paused = False
         self._ring.clear()
+        self._wake_session_active = False
         try:
             with sd.InputStream(samplerate=SAMPLE_RATE, channels=1,
                                 dtype="int16", blocksize=FRAME_SAMPLES) as stream:
@@ -226,10 +305,19 @@ class WakeListener:
             logger.info("Wake listener stopped")
 
     def _load_model(self):
-        """Load the openWakeWord model (lazy heavy import)."""
+        """Load the openWakeWord model (lazy heavy import).
+
+        The outro phrase, when configured, loads into the SAME model:
+        predict() returns one score per loaded model and the decision
+        logic routes wake keys and the outro key separately.
+        """
         from openwakeword.model import Model
+        models = [self._phrase()]
+        outro = self._outro()
+        if outro:
+            models.append(outro)
         try:
-            return Model(wakeword_models=[self._phrase()],
+            return Model(wakeword_models=models,
                          inference_framework="onnx",
                          vad_threshold=0.5)
         except Exception:
@@ -237,7 +325,7 @@ class WakeListener:
             logger.info("Wake listener: downloading openWakeWord models...")
             import openwakeword.utils
             openwakeword.utils.download_models()
-            return Model(wakeword_models=[self._phrase()],
+            return Model(wakeword_models=models,
                          inference_framework="onnx",
                          vad_threshold=0.5)
 
@@ -247,14 +335,20 @@ class WakeListener:
         """One frame's worth of decisions (unit-tested without audio).
 
         ``mono`` is one 80ms int16 frame (already squeezed to 1-D by the
-        loop); ``model`` is the loaded openWakeWord model. While paused,
-        inference is skipped and the model is reset ONCE on entering the
-        pause (review catch on the POC: not per 80ms frame) - it clears
-        pre-pause audio so it cannot fire on resume, and the ring buffer
-        is cleared for the same reason (paused audio is someone's
-        recording or whisper-mode speech; the splice must never inherit
-        it).
+        loop); ``model`` is the loaded openWakeWord model. A wake
+        session (a dictation THIS listener started) routes to the
+        outro/silence watcher; the pause gate would otherwise stop
+        inference the moment the dictation recorder opened. While
+        paused, inference is skipped and the model is reset ONCE on
+        entering the pause (review catch on the POC: not per 80ms
+        frame) - it clears pre-pause audio so it cannot fire on resume,
+        and the ring buffer is cleared for the same reason (paused
+        audio is someone's recording or whisper-mode speech; the splice
+        must never inherit it).
         """
+        if self._wake_session_active:
+            self._handle_wake_session_frame(mono, model)
+            return
         if self._paused():
             if not self._was_paused:
                 model.reset()
@@ -264,6 +358,68 @@ class WakeListener:
         self._was_paused = False
         self._ring.append(mono)
         self.process_scores(model.predict(mono))
+
+    def _handle_wake_session_frame(self, mono, model) -> None:
+        """Watch a wake-initiated dictation for its hands-free stops."""
+        current = self.app.state.current if self.app.state else None
+        mode = current.mode if current else None
+        if mode != "dictation" or self.app.cfg.get("incognito", False):
+            # The dictation ended some other way (hotkey stop, discard,
+            # auto-stop cap) or a privacy boundary appeared - return to
+            # normal listening.
+            self._end_wake_session(model)
+            return
+        scores = model.predict(mono)
+        now = time.monotonic()
+        if self._frame_has_voice(model):
+            self._last_voice = now
+        if now - self._session_started < SESSION_GRACE_S:
+            return
+        outro = self._outro()
+        if outro:
+            threshold = self._threshold()
+            hit = any(score >= threshold
+                      for name, score in (scores or {}).items()
+                      if self._is_outro_key(name, outro))
+            if hit:
+                self._stop_wake_dictation(model, "outro phrase")
+                return
+        limit = self._silence_stop_s()
+        if limit > 0 and now - self._last_voice >= limit:
+            self._stop_wake_dictation(model, f"{limit:.0f}s of silence")
+
+    def _frame_has_voice(self, model) -> bool:
+        """Latest silero VAD score from the model's own gate.
+
+        When the VAD buffer is unavailable (no vad_threshold, exotic
+        model object), every frame counts as voice: the silence stop
+        simply never fires, which fails safe (the hotkey still works).
+        """
+        try:
+            buffer = model.vad.prediction_buffer
+            if not buffer:
+                return True
+            return float(buffer[-1]) >= VAD_VOICE_THRESHOLD
+        except Exception:
+            return True
+
+    def _end_wake_session(self, model) -> None:
+        """Back to normal listening; nothing from the session lingers."""
+        self._wake_session_active = False
+        self._ring.clear()
+        try:
+            model.reset()
+        except Exception:
+            pass
+
+    def _stop_wake_dictation(self, model, why: str) -> None:
+        """Stop the wake dictation exactly like the hotkey would."""
+        logger.info(f"Wake dictation stopping: {why}")
+        self._end_wake_session(model)
+        try:
+            self.app.dictation.toggle()
+        except Exception:
+            logger.warning("Wake dictation stop failed", exc_info=True)
 
     def _assemble_prefix(self):
         """Ring frames -> the mono float32 column the recorder expects.
@@ -301,9 +457,14 @@ class WakeListener:
         """Evaluate one frame's model scores; fire at most one wake.
 
         Returns True when a wake fired (refractory window applies).
+        The outro model shares the score dict but never wakes: saying
+        the outro phrase while idle must not start a dictation.
         """
         threshold = self._threshold()
-        hit = any(score >= threshold for score in (scores or {}).values())
+        outro = self._outro()
+        hit = any(score >= threshold
+                  for name, score in (scores or {}).items()
+                  if not self._is_outro_key(name, outro))
         if not hit:
             return False
         now = time.monotonic()
@@ -342,3 +503,10 @@ class WakeListener:
             logger.info("Wake word heard but dictation could not start "
                         "(another workflow is active)")
             self.app._yellow_flash()
+            return
+        # Arm the outro/silence watcher (handle_frame routes on this
+        # from the next frame). The listener thread is the only writer.
+        now = time.monotonic()
+        self._wake_session_active = True
+        self._session_started = now
+        self._last_voice = now
