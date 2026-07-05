@@ -151,6 +151,10 @@ class WhisperSync:
         # store polling; auto-starts/stops recordings for watched apps.
         from .meeting_watch import MeetingWatch
         self.meeting_watch = MeetingWatch(self)
+        # Always-on wake-word listener POC (listener.py): inert unless
+        # wake_listener is on AND openwakeword is installed in the venv.
+        from .listener import WakeListener
+        self.wake_listener = WakeListener(self)
 
     @staticmethod
     def _migrate_data():
@@ -514,6 +518,10 @@ class WhisperSync:
         # Per-app meeting auto-record (assistant round step 4): polls
         # the mic consent store; inert unless meeting_auto_record.
         self.meeting_watch.start(_sched, IO)
+
+        # Wake-word listener POC (assistant round step 2): no-op while
+        # wake_listener is off; the tray toggle reconciles at runtime.
+        self.wake_listener.start()
 
         # Suspend/resume awareness (hardware-resilience spec H1): both
         # transitions land in gpu-guard.jsonl for crash-time correlation,

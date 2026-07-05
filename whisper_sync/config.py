@@ -38,6 +38,7 @@ _VALID_KEYS = {
     "meeting_watch_poll_seconds", "meeting_watch_stop_after_s",
     "meeting_watch_toasts", "meeting_watch_toast_optin",
     "meeting_watch_toast_optout",
+    "wake_listener", "wake_phrase_model", "wake_threshold",
 }
 
 

@@ -50,3 +50,6 @@ fails if this table and the defaults file disagree on keys.
 | `meeting_watch_toasts` | `true` | Master toggle for auto-record toasts |
 | `meeting_watch_toast_optin` | `true` | Toast when auto-recording starts ("Don't record" discards silently) |
 | `meeting_watch_toast_optout` | `true` | Toast when an ask-state app is in a call ("Record" starts one-click) |
+| `wake_listener` | `false` | Always-on wake-word listener (POC; needs openwakeword in the venv) |
+| `wake_phrase_model` | `hey_jarvis` | Pretrained openWakeWord phrase model (placeholder until custom phrases ship) |
+| `wake_threshold` | `0.5` | Wake-word detection score threshold (0-1) |

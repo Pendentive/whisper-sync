@@ -509,6 +509,18 @@ class TrayMenu:
                                 "meeting_watch_toast_optout", True)),
                     )),
                 )),
+                pystray.MenuItem("Wake Word Listener (POC)", pystray.Menu(
+                    pystray.MenuItem(
+                        "Enabled",
+                        lambda: self._toggle_wake_listener(),
+                        checked=lambda item: self.app.cfg.get(
+                            "wake_listener", False),
+                    ),
+                    pystray.MenuItem(
+                        f"  Phrase: "
+                        f"{self.app.cfg.get('wake_phrase_model', 'hey_jarvis')}",
+                        None, enabled=False),
+                )),
                 pystray.MenuItem(f"Diarization (Speaker Detection)\t{primary_label}",
                                  pystray.Menu(*diarize_sub_items)),
                 pystray.Menu.SEPARATOR,
@@ -942,6 +954,14 @@ class TrayMenu:
     def _toggle_watch_toast(self, key: str):
         self.app.cfg[key] = not self.app.cfg.get(key, True)
         logger.info(f"Auto-record toast setting {key}: {self.app.cfg[key]}")
+        self._save_and_refresh()
+
+    def _toggle_wake_listener(self):
+        cfg = self.app.cfg
+        cfg["wake_listener"] = not cfg.get("wake_listener", False)
+        logger.info(
+            f"Wake listener: {'on' if cfg['wake_listener'] else 'off'}")
+        self.app.wake_listener.restart_if_toggled()
         self._save_and_refresh()
 
     def _toggle_always_available_dictation(self):
