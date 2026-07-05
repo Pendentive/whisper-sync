@@ -204,10 +204,14 @@ class WakeListener:
         return str(self.app.cfg.get("wake_outro_model", "") or "")
 
     def _silence_stop_s(self) -> float:
-        """Seconds of sustained silence that end a wake dictation
-        (0 disables the silence stop)."""
+        """Seconds of sustained silence that end a wake dictation.
+
+        Only an explicit 0 disables the silence stop; invalid values
+        (None, empty string, junk) fall back to the 8s default, same
+        discipline as _threshold() (review catch).
+        """
         try:
-            return float(self.app.cfg.get("wake_silence_stop_s", 8) or 0)
+            return float(self.app.cfg.get("wake_silence_stop_s", 8))
         except (TypeError, ValueError):
             return 8.0
 

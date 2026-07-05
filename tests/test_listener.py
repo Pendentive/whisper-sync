@@ -348,6 +348,18 @@ class WakeSessionTests(unittest.TestCase):
         self.listener.handle_frame("f", model)
         self.app.dictation.toggle.assert_not_called()
 
+    def test_invalid_silence_config_falls_back_to_default_not_disabled(self):
+        # Review catch: `or 0` treated None/"" as an explicit disable.
+        # Only 0 disables; junk falls back to the 8s default.
+        for bad in (None, "", "soon"):
+            self.app.cfg["wake_silence_stop_s"] = bad
+            self.listener._wake_session_active = True
+            self.app.dictation.toggle.reset_mock()
+            model = _FakeModel(vad_score=0.0)
+            self.listener._last_voice = time.monotonic() - 9
+            self.listener.handle_frame("f", model)
+            self.app.dictation.toggle.assert_called_once()
+
     def test_missing_vad_counts_as_voice_and_never_silence_stops(self):
         model = _FakeModel(vad_score=0.0)
         del model.vad
