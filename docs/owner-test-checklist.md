@@ -11,17 +11,31 @@ Automated coverage lives in the suites (docs/testing.md); this list is
 only for what needs the owner's hands: real mic, real calls, real GPU,
 real days of uptime.
 
+**Automated evidence (owner directive 2026-07-05: verify outcomes with
+software tests, not hand-testing):** `tests/test_live_validation.py`
+(WS_LIVE=1, app venv) exercises the real mic, the real consent store,
+the real openWakeWord model on synthesized speech, the real GPU probe,
+a real CPU-pinned worker, and the full production pipeline on the
+pinned real-meeting fixture (tests/fixtures/). Items below marked
+`[x] automated` passed there on 2026-07-05 (9/9 green); unchecked
+items still need a human or multi-day soak.
+
 ## 0. Restart the tray app (gates everything below)
 
-- [ ] Quit the tray app and start it again from the checkout.
-  Everything from #167 onward (auto-sleep, failover, auto-record,
-  wake listener, all the fixes) only activates after this restart.
+- [x] DONE 2026-07-05: the app was not running; the session started
+  it fresh from the checkout via start.ps1 (post-#194 code, worker
+  spawned, guard_started logged). Everything from #167 onward is now
+  active.
 
 ## 1. Post-restart smoke (5 min)
 
 - [ ] Normal dictation: hotkey, speak a sentence, hotkey - text pastes.
-- [ ] Normal meeting: record ~1 min with system audio, stop, name it -
-  minutes + transcript appear, no error toast.
+- [x] automated (LiveRealMeetingTests): the full production pipeline
+  (GPU model, align, diarize) on the pinned 5.9-min 4-speaker meeting
+  fixture produced 60%+ of the reference word volume, 2+ speakers,
+  and full-duration coverage. 2026-07-05.
+- [ ] Normal meeting via the tray: record ~1 min with system audio,
+  stop, name it - minutes + transcript appear, no error toast.
 - [ ] The #167 fixes ride along: the meeting completes (no
   post-transcription abort) and saving with a name that already
   exists does not clobber anything.
@@ -35,16 +49,16 @@ real days of uptime.
   recording starts at once (yellow loading flash), text arrives
   after the model loads. Nothing you said is lost.
 
-## 3. GPU power-state failover (#180-#182) - opportunistic
+## 3. GPU power-state failover (#180-#182)
 
-Hard to trigger on demand; validate whenever the hybrid laptop powers
-the dGPU off mid-session (or via a driver toggle).
-
-- [ ] On dGPU loss: failover toast, dictation still works (cpu +
-  `cpu_fallback_model`), no crash, no CUDA-retry loop in the log.
-- [ ] When the dGPU returns and the app is idle: switch-back toast,
-  next dictation is fast (GPU) again.
-- [ ] `gpu-guard.jsonl` shows gpu_device_lost / gpu_device_recovered.
+- [x] automated (LiveFailoverTests): with the probe reporting the
+  device gone, the guard declares loss, pins the spawn to cpu +
+  `cpu_fallback_model`, and a REAL worker transcribes speech
+  correctly on CPU; with the real probe, the GPU is seen and no
+  pinning happens. 2026-07-05.
+- [ ] Opportunistic (real dGPU power-off only): failover toast +
+  switch-back toast in the running tray app, gpu_device_lost /
+  gpu_device_recovered in `gpu-guard.jsonl`.
 
 ## 4. Per-app meeting auto-record (#183, #184, #186)
 
@@ -57,6 +71,9 @@ Enable Settings > Meeting Auto-Record first (off by default).
   save dialog, nothing on disk.
 - [ ] Discord (default "ask"): joining a call shows the opt-out toast
   with a one-click "Record" button; ignoring it records nothing.
+- [x] automated (LiveConsentStoreTests): the consent-store probe that
+  powers detection and "Detect apps..." reads real entries on this
+  machine. 2026-07-05.
 - [ ] Settings > Meeting Auto-Record > Apps > "Detect apps..." - apps
   that have used the mic appear; new ones arrive as Ignore.
 - [ ] Manual hotkey recording still works exactly as before with the
@@ -67,9 +84,15 @@ Enable Settings > Meeting Auto-Record first (off by default).
 Enable Settings > Wake Word Listener (off by default; first enable
 downloads the openWakeWord models - watch the log).
 
-- [ ] Say "hey jarvis, take a note about X" in one breath - dictation
-  starts, and the pasted text is "take a note about X" WITHOUT the
-  wake phrase and without clipped syllables at the start.
+- [x] automated (LiveWakePipelineTests): synthesized "hey jarvis"
+  through the real model + real decision loop fires EXACTLY one wake
+  and hands a well-formed >1s ring-buffer prefix to the dictation
+  seam; unrelated speech never fires; the silero VAD separates speech
+  from silence (the silence auto-stop signal). 2026-07-05.
+- [ ] Say "hey jarvis, take a note about X" into the real mic with
+  the tray app running - text pastes WITHOUT the wake phrase and
+  without clipped syllables (the last human-only step: your voice,
+  your mic, the running app).
 - [ ] Stop by hotkey mid-dictation - works, listener resumes normal
   listening.
 - [ ] After waking it, stay silent ~8s - the dictation stops itself

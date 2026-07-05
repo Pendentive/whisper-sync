@@ -29,6 +29,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ROOT = Path(__file__).resolve().parent / "workspace"
 
 PIPER_REPO = "https://github.com/rhasspy/piper-sample-generator"
+# openwakeword's train.py does `from generate_samples import ...` -
+# the v1/v2 top-level-script layout. v3 refactored into a package and
+# breaks that import, so the clone is PINNED to the tag that matches
+# both the layout and the v2.0.0 checkpoint below.
+PIPER_REF = "v2.0.0"
 PIPER_CHECKPOINT = ("https://github.com/rhasspy/piper-sample-generator/"
                     "releases/download/v2.0.0/en_US-libritts_r-medium.pt")
 
@@ -50,8 +55,14 @@ AUDIOSET_TAR = ("https://huggingface.co/datasets/agkphysics/AudioSet/"
 # with the CUDA index.
 TRAINER_PACKAGES = [
     "openwakeword",
-    "piper-phonemize",
-    "webrtcvad",
+    # upstream piper-phonemize ships no Windows wheels at all; the
+    # -fix rebuild provides the same piper_phonemize module (verified
+    # importable on py3.11 2026-07-05)
+    "piper-phonemize-fix",
+    "setuptools<82",  # torch cu128 constraint; -fix pulls in 83
+    # upstream webrtcvad is sdist-only on Windows (needs MSVC); the
+    # -wheels fork ships the same module prebuilt
+    "webrtcvad-wheels",
     "mutagen==1.47.0",
     "torchinfo==1.8.0",
     "torchmetrics==1.2.0",
@@ -138,23 +149,45 @@ def trainer_python(root: Path) -> Path:
     return root / "trainer-env" / "Scripts" / "python.exe"
 
 
-def phase_venv(root: Path, base_python: str) -> None:
+def _require_py311(python_exe: str) -> None:
+    """Fail fast on the wrong interpreter: piper-phonemize wheels stop
+    at 3.11, and a mismatched venv only fails later, mid-pip, with a
+    far less actionable error."""
+    out = subprocess.run(
+        [python_exe, "-c",
+         "import sys; print('%d.%d' % sys.version_info[:2])"],
+        capture_output=True, text=True, check=True)
+    version = out.stdout.strip()
+    if version != "3.11":
+        raise SystemExit(
+            f"[setup] base python is {version}; the trainer venv MUST "
+            "be 3.11 (piper-phonemize ships no newer wheels). Pass "
+            "--python <path to a 3.11 interpreter> (py -3.11).")
+
+
+def phase_venv(root: Path, base_python: str, torch_index: str) -> None:
     py = trainer_python(root)
     if py.exists():
         log("trainer venv exists, skipping create")
+        _require_py311(str(py))
     else:
+        _require_py311(base_python)
         run([base_python, "-m", "venv", root / "trainer-env"])
     run([py, "-m", "pip", "install", "--upgrade", "pip"])
     # CUDA torch first (its own index), then the notebook stack.
+    # Default cu128: matches the torch build proven in whisper-env on
+    # this machine (RTX 5070 Ti is Blackwell/sm_120 - older cu121
+    # wheels neither support the GPU nor Python 3.13).
     run([py, "-m", "pip", "install", "torch",
-         "--index-url", "https://download.pytorch.org/whl/cu121"])
+         "--index-url", torch_index])
     run([py, "-m", "pip", "install"] + TRAINER_PACKAGES)
 
 
 def phase_piper(root: Path) -> None:
     piper = root / "piper-sample-generator"
     if not piper.exists():
-        run(["git", "clone", PIPER_REPO, piper])
+        run(["git", "clone", "--branch", PIPER_REF, "--depth", "1",
+             PIPER_REPO, piper])
     else:
         log("piper-sample-generator exists, skipping clone")
     download(PIPER_CHECKPOINT, piper / "models" / "en_US-libritts_r-medium.pt")
@@ -204,7 +237,12 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT,
                         help="workspace root (default: training/workspace)")
     parser.add_argument("--python", default=sys.executable,
-                        help="base python for the trainer venv")
+                        help="base python for the trainer venv. MUST be "
+                             "3.11: piper-phonemize (needed by the v2 "
+                             "sample generator) ships no newer wheels")
+    parser.add_argument("--torch-index",
+                        default="https://download.pytorch.org/whl/cu128",
+                        help="pytorch wheel index (CUDA build)")
     parser.add_argument("--yes", action="store_true",
                         help="confirm the 12-18 GB dataset download")
     parser.add_argument("--skip-datasets", action="store_true",
@@ -213,7 +251,7 @@ def main() -> int:
 
     root = args.root.resolve()
     log(f"workspace: {root}")
-    phase_venv(root, args.python)
+    phase_venv(root, args.python, args.torch_index)
     phase_piper(root)
     if args.skip_datasets:
         log("datasets skipped (--skip-datasets)")
