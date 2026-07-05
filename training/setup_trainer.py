@@ -47,11 +47,15 @@ FEATURE_FILES = [
 ]
 
 # The notebook's bal_train09.tar 404s: agkphysics/AudioSet was
-# restructured (2026) into parquet shards under data/bal_train/. One
-# ~700 MB shard carries the same balanced-train audio volume the
-# notebook's tar did.
-AUDIOSET_PARQUET = ("https://huggingface.co/datasets/agkphysics/AudioSet/"
-                    "resolve/main/data/bal_train/09.parquet")
+# restructured (2026) into parquet shards under data/bal_train/
+# (500 ten-second clips per ~700 MB shard). Two shards give ~2.8
+# hours of background noise alongside FMA.
+AUDIOSET_PARQUETS = [
+    ("https://huggingface.co/datasets/agkphysics/AudioSet/"
+     "resolve/main/data/bal_train/08.parquet"),
+    ("https://huggingface.co/datasets/agkphysics/AudioSet/"
+     "resolve/main/data/bal_train/09.parquet"),
+]
 
 # Training deps per the upstream notebook, minus the tensorflow/tflite
 # export chain (the listener loads onnx; train.py's import scan shows
@@ -81,38 +85,81 @@ TRAINER_PACKAGES = [
     "deep-phonemizer==0.0.19",
 ]
 
-# Runs inside the trainer venv (it has datasets/scipy): materialize a
-# HF dataset - or a local directory of audio files ("local" source) -
-# as 16 kHz mono int16 wavs, the layout train.py expects.
-# argv: <source> <config-or-dir> <split> <out_dir> ("local" uses
-# config-or-dir as the directory to glob; "-" config means None).
+# Runs inside the trainer venv: materialize audio as 16 kHz mono int16
+# wavs, the layout train.py expects.
+# argv: <source> <config-or-dir> <split> <out_dir>
+#   local:   config = directory to glob for audio files
+#   parquet: config = a parquet file with an audio{bytes,path} column,
+#            decoded directly via pyarrow + soundfile (datasets 2.14.6
+#            cannot read modern HF parquet - dataclass TypeError)
+#   else:    config = HF dataset config name ("-" = None)
 HF_TO_WAVS_SNIPPET = r"""
+import io
 import sys
+from math import gcd
 from pathlib import Path
 import numpy as np
 import scipy.io.wavfile
-from datasets import load_dataset, Audio, Dataset
 
 source, config, split, out_dir = (sys.argv[1], sys.argv[2], sys.argv[3],
                                   Path(sys.argv[4]))
 out_dir.mkdir(parents=True, exist_ok=True)
-if source == "local":
-    files = [str(p) for p in Path(config).glob("**/*")
-             if p.suffix.lower() in (".flac", ".wav", ".mp3", ".ogg")]
-    ds = Dataset.from_dict({"audio": files}).cast_column("audio", Audio())
-elif source == "parquet":
-    ds = load_dataset("parquet", data_files=config, split=split)
-else:
-    ds = load_dataset(source, config if config != "-" else None,
-                      split=split, streaming=False)
-ds = ds.cast_column("audio", Audio(sampling_rate=16000))
-n = 0
-for row in ds:
-    arr = np.clip(np.asarray(row["audio"]["array"]), -1.0, 1.0)
-    data = (arr * 32767).astype(np.int16)
-    scipy.io.wavfile.write(out_dir / f"{n:06d}.wav", 16000, data)
+# Continue numbering after existing wavs so multiple source shards
+# can feed one directory without overwriting each other.
+n = len(list(out_dir.glob("*.wav")))
+start = n
+
+
+def write_16k(arr, rate):
+    global n
+    if arr.ndim > 1:
+        arr = arr.mean(axis=1)
+    if rate != 16000:
+        from scipy.signal import resample_poly
+        g = gcd(16000, int(rate))
+        arr = resample_poly(arr, 16000 // g, int(rate) // g)
+    arr = np.clip(np.asarray(arr, dtype=np.float32), -1.0, 1.0)
+    scipy.io.wavfile.write(out_dir / f"{n:06d}.wav", 16000,
+                           (arr * 32767).astype(np.int16))
     n += 1
-print(f"wrote {n} wavs to {out_dir}")
+
+
+if source == "parquet":
+    import pyarrow.parquet as pq
+    import soundfile as sf
+    skipped = 0
+    # Batched read: a whole ~700MB shard materialized at once doubles
+    # peak memory for no benefit.
+    pf = pq.ParquetFile(config)
+    for batch in pf.iter_batches(columns=["audio"], batch_size=32):
+        for item in batch.column("audio").to_pylist():
+            try:
+                arr, rate = sf.read(io.BytesIO(item["bytes"]),
+                                    dtype="float32")
+            except Exception:
+                skipped += 1  # one bad clip must not kill the batch
+                continue
+            write_16k(arr, rate)
+    if skipped:
+        print(f"skipped {skipped} undecodable clips")
+    if n == 0:
+        # Nothing decoded = schema mismatch or wholly bad shard; the
+        # caller must see a failure, not an empty success.
+        sys.exit(f"no clips decoded from {config}")
+else:
+    from datasets import load_dataset, Audio, Dataset
+    if source == "local":
+        files = [str(p) for p in Path(config).glob("**/*")
+                 if p.suffix.lower() in (".flac", ".wav", ".mp3", ".ogg")]
+        ds = Dataset.from_dict({"audio": files}).cast_column("audio",
+                                                             Audio())
+    else:
+        ds = load_dataset(source, config if config != "-" else None,
+                          split=split, streaming=False)
+    ds = ds.cast_column("audio", Audio(sampling_rate=16000))
+    for row in ds:
+        write_16k(np.asarray(row["audio"]["array"]), 16000)
+print(f"wrote {n - start} wavs to {out_dir} ({n} total)")
 """
 
 
@@ -200,27 +247,35 @@ def phase_datasets(root: Path) -> None:
     snippet = root / "_hf_to_wavs.py"
     snippet.write_text(HF_TO_WAVS_SNIPPET, encoding="utf-8")
 
+    def _has_wavs(d: Path) -> bool:
+        # Content-based skip guard: a crashed conversion can leave an
+        # EMPTY directory behind, and a bare exists() check would then
+        # skip the phase forever.
+        return any(d.glob("*.wav"))
+
     rirs = data / "mit_rirs"
-    if not rirs.exists():
+    if not _has_wavs(rirs):
         run([py, snippet,
              "davidscripka/MIT_environmental_impulse_responses", "-",
              "train", rirs])
     else:
-        log("mit_rirs exists, skipping")
+        log("mit_rirs already converted, skipping")
 
     audioset = data / "audioset_16k"
-    if not audioset.exists():
-        parquet = data / "audioset_bal_train_09.parquet"
-        download(AUDIOSET_PARQUET, parquet)
-        run([py, snippet, "parquet", parquet, "train", audioset])
+    if not _has_wavs(audioset):
+        for url in AUDIOSET_PARQUETS:
+            parquet = data / url.rsplit("/", 2)[-1].replace(
+                ".parquet", "_bal_train.parquet")
+            download(url, parquet)
+            run([py, snippet, "parquet", parquet, "train", audioset])
     else:
-        log("audioset_16k exists, skipping")
+        log("audioset_16k already converted, skipping")
 
     fma = data / "fma"
-    if not fma.exists():
+    if not _has_wavs(fma):
         run([py, snippet, "rudraml/fma", "small", "train", fma])
     else:
-        log("fma exists, skipping")
+        log("fma already converted, skipping")
 
 
 def main() -> int:
