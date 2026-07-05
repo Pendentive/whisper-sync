@@ -24,7 +24,10 @@ default. Any PR that adds/changes a feature, hotkey, click behavior, or
 config key MUST update the matching file in the same PR.
 `tests/test_feature_docs.py` enforces the mechanical parts (key
 inventory, default hotkeys, spot-checked defaults). Deferred work goes
-to `docs/BACKLOG.md` in the PR that defers it.
+to `docs/BACKLOG.md` in the PR that defers it. Any PR that changes
+OWNER-FACING behavior also appends or updates an entry in
+`docs/owner-test-checklist.md` (the running list of what the owner
+still needs to validate by hand) in the same PR.
 
 ## Module Map
 

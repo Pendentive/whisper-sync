@@ -40,6 +40,12 @@ The stability rebuild's five-signal production validation checklist
 running app: clean exits, real meeting word counts, flat rss=NMB
 heartbeat, mic-array + dictation cap behavior, worker respawn recovery.
 
+The owner-facing side of that validation lives in
+[owner-test-checklist.md](owner-test-checklist.md) - a running,
+check-off list of every shipped feature awaiting hands-on validation
+(real mic, real calls, real GPU). PRs that change owner-facing
+behavior append to it in the same PR (rule in CLAUDE.md).
+
 ## Benchmarks
 
 README's model table was measured 2026-03 on an RTX 3090 (float16) and
