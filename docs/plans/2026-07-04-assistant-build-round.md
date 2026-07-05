@@ -333,3 +333,24 @@ training job with menu status/ETA + completion toast.
   Remaining: step 5 phrase manager (plan above), step 6 NPU backend
   (fresh session). Owner reminder still outstanding: the tray app
   needs ONE restart to pick up everything from #167 onward.
+
+- **2026-07-05 (owner intake + checklist, #192)**: owner asked for a
+  running list of everything shipped but not yet hand-tested, kept
+  current with development. docs/owner-test-checklist.md shipped with
+  concrete steps/expected results (tray restart gates all), and the
+  CLAUDE.md same-PR rule now requires owner-facing PRs to append or
+  update an entry. Standing instruction: keep developing.
+
+- **2026-07-05 (step 5 PR A)**: trainer environment + headless CLI
+  per the step 5 plan. Dataset sources, piper checkpoint, package
+  list, and the three-stage invocation verified VERBATIM against the
+  upstream automatic_model_training notebook. whisper_sync/
+  phrase_training.py owns the pure logic (workspace layout, config
+  generation as JSON-is-YAML, command construction - CI-tested, no
+  yaml/torch imports); training/setup_trainer.py builds the separate
+  trainer venv + downloads (idempotent, 12-18 GB size gate behind
+  --yes); training/train_phrase.py trains one phrase and drops the
+  .onnx into workspace/phrases/ (GPU gate behind --go per the
+  warn-owner protocol). EXECUTION STAGED: the dataset download and
+  the first supervised training run wait for an explicit owner go -
+  PROVISIONAL config values are validated by that first run.
