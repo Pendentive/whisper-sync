@@ -336,15 +336,16 @@ def phase_venv(root: Path, base_python: str, torch_index: str) -> None:
 
 
 def _patch_file(target: Path, old: str, new: str) -> None:
-    """Idempotent in-place patch: skip when the patch marker is already
-    present, fail loudly when the expected code is missing (the pinned
-    version drifted and the patch must be re-verified)."""
+    """Idempotent in-place patch: skip when THIS patch's replacement is
+    already present (a file can carry several patches), fail loudly
+    when the expected code is missing (the pinned version drifted and
+    the patch must be re-verified)."""
     if not target.exists():
         raise SystemExit(
             f"[setup] patch target missing: {target}; the pinned "
             "package layout changed - re-verify and update the patch.")
     text = target.read_text(encoding="utf-8")
-    if "Patched by setup_trainer.py" in text:
+    if new in text:
         log(f"already patched: {target.name}")
         return
     count = text.count(old)
@@ -403,6 +404,23 @@ def phase_package_patches(root: Path) -> None:
         "        else:\n"
         "            X_train = torch.utils.data.DataLoader(IterDataset(batch_generator),\n"
         "                                                  batch_size=None, num_workers=n_cpus, prefetch_factor=16)")
+    # The tflite chain (onnx_tf + tensorflow) is deliberately not
+    # installed - the listener loads onnx. train.py converts
+    # unconditionally after the onnx export; make it optional so a
+    # successful training run does not end in ModuleNotFoundError.
+    _patch_file(
+        site / "openwakeword" / "train.py",
+        "        # Convert the model from onnx to tflite format\n"
+        "        convert_onnx_to_tflite(os.path.join(config[\"output_dir\"], config[\"model_name\"] + \".onnx\"),\n"
+        "                               os.path.join(config[\"output_dir\"], config[\"model_name\"] + \".tflite\"))",
+        "        # Patched by setup_trainer.py: the tflite chain (onnx_tf +\n"
+        "        # tensorflow) is deliberately not installed; the .onnx above\n"
+        "        # is the product the listener loads.\n"
+        "        try:\n"
+        "            convert_onnx_to_tflite(os.path.join(config[\"output_dir\"], config[\"model_name\"] + \".onnx\"),\n"
+        "                                   os.path.join(config[\"output_dir\"], config[\"model_name\"] + \".tflite\"))\n"
+        "        except ImportError:\n"
+        "            logging.warning(\"tflite conversion skipped (tensorflow chain not installed; the .onnx is the product)\")")
 
 
 def _verify_sha256(path: Path, expected: str) -> None:

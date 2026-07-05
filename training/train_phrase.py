@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -98,7 +97,23 @@ def main() -> int:
     phrases_dir = root / "phrases"
     phrases_dir.mkdir(parents=True, exist_ok=True)
     final = phrases_dir / produced.name
-    shutil.copy2(produced, final)
+    # torch 2.x's onnx exporter can split weights into a sidecar
+    # <name>.onnx.data file; the listener expects one self-contained
+    # model. onnx.load resolves external data and onnx.save re-embeds
+    # it (a plain copy of the graph file alone would be broken).
+    consolidate = ("import onnx, sys; "
+                   "onnx.save(onnx.load(sys.argv[1]), sys.argv[2])")
+    result = subprocess.run(
+        [str(trainer_python), "-c", consolidate, str(produced),
+         str(final)], cwd=root, env=env, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"[train] onnx consolidation failed (exit "
+              f"{result.returncode}); the raw export stays in "
+              f"{produced.parent}")
+        detail = (result.stderr or result.stdout or "").strip()
+        if detail:
+            print(f"[train] consolidation error: {detail[-500:]}")
+        return result.returncode
     print(f"[train] done: {final}")
     print("[train] set it as wake_phrase_model or wake_outro_model "
           "(full path) and restart the listener toggle to load it.")
