@@ -992,8 +992,13 @@ class TrayMenu:
         """Flip a saved phrase's active flag and reload the listener
         (the model list is bound at thread start)."""
         cfg = self.app.cfg
-        phrases = dict(cfg.get("wake_phrases", {}) or {})
-        entry = dict(phrases.get(name) or {})
+        raw = cfg.get("wake_phrases", {})
+        # Same malformed-config tolerance as listener.py: a corrupted
+        # registry (non-dict, string entries) must never take down the
+        # tray menu.
+        phrases = dict(raw) if isinstance(raw, dict) else {}
+        raw_entry = phrases.get(name)
+        entry = dict(raw_entry) if isinstance(raw_entry, dict) else {}
         entry["active"] = not entry.get("active")
         phrases[name] = entry
         cfg["wake_phrases"] = phrases

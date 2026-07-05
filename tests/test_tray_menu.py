@@ -223,6 +223,21 @@ class MenuBuildTests(unittest.TestCase):
         self.app.wake_listener.start.assert_called_once()
         save.assert_called_once()
 
+    def test_toggle_saved_phrase_tolerates_malformed_registry(self):
+        # Review catch: a corrupted config (non-dict registry or a
+        # string entry) must never crash the tray toggle - it repairs
+        # the entry instead, same tolerance as listener.py.
+        self.app.wake_listener = types.SimpleNamespace(
+            stop=mock.Mock(), start=mock.Mock())
+        self.app.cfg["wake_phrases"] = ["not", "a", "dict"]
+        with mock.patch.object(config, "save"):
+            self.menu._toggle_saved_phrase("hey_hal")
+        self.assertTrue(self.app.cfg["wake_phrases"]["hey_hal"]["active"])
+        self.app.cfg["wake_phrases"] = {"hey_hal": "corrupted-string"}
+        with mock.patch.object(config, "save"):
+            self.menu._toggle_saved_phrase("hey_hal")
+        self.assertTrue(self.app.cfg["wake_phrases"]["hey_hal"]["active"])
+
     def test_menu_shows_meeting_auto_record_section(self):
         menu = self.menu.build()
         texts = " | ".join(_iter_texts(menu))
