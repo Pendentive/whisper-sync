@@ -17,7 +17,7 @@
 | 2 | Tier 0+1 always-on listener (VAD + openWakeWord, off by default) | Staged architecture, step 2 | POC IN PROGRESS (pretrained phrase) |
 | 3 | Tier 2 splice: wake -> ring-buffer-prefixed dictation + outro | Staged architecture, step 2 | QUEUED |
 | 4 | Per-app meeting auto-record (mic consent-store watch + app list) | Staged architecture, step 3 | MERGED (#183, #184) |
-| 5 | In-app wake-word trainer (verifier first, full training later) | Wake-word model landscape | QUEUED |
+| 5 | Self-serve phrase manager (typed phrases, background training, active checkmarks) | Owner decisions, fourth intake: the phrase manager | QUEUED |
 | 6 | NPU/OpenVINO backup-transcriber backend (committed scope) | NPU section | QUEUED |
 | - | Installer refresh (screens generated from docs/features/) | BACKLOG.md | QUEUED |
 
