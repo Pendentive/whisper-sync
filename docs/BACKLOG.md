@@ -53,6 +53,22 @@ same PR that defers them.
   different ASR architecture (streaming zipformer / whisper-streaming
   partial hypotheses + edit-in-place delivery), not a config flip on
   the batch pipeline (specs/2026-07-04-voice-assistant-direction.md).
+- **Phrase-training productization** (owner direction 2026-07-05,
+  document-only for now; shapes the Aperio integration). The app
+  ships with the pretrained default phrase working out of the box;
+  CUSTOM phrases become an OPTIONAL, user-initiated capability: a
+  menu entry ("Download custom phrase support..." or similar) opens
+  a confirmation popup stating the real cost (~20 GB one-time
+  download, GPU training runs), then a progress/loading surface
+  drives what training/setup_trainer.py does today, and only then do
+  the Set New Wake/Outro Phrase entries unlock. Alternative fulfilled
+  by the same seam: offload training to a REMOTE SERVICE (type
+  phrase -> API -> .onnx comes back), which fits Aperio's
+  API/services-based design - the local trainer stays as the
+  offline/private path. Related add-on: a "Personalize with my
+  voice..." verifier layer (openWakeWord custom_verifier_model: a
+  few real recordings, seconds of training, no GPU) on top of the
+  synthetic base model.
 
 ## Hygiene
 
