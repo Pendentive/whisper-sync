@@ -128,6 +128,11 @@ class PhraseTrainer:
         the job actually started."""
         from .phrase_training import sanitize_model_name
 
+        if role not in ("wake", "outro"):
+            # Anything else would register an entry the listener never
+            # loads (review catch) - refuse loudly instead.
+            notify("Phrase not started", f"Unknown phrase role {role!r}.")
+            return False
         try:
             name = sanitize_model_name(phrase)
         except ValueError:
@@ -196,9 +201,13 @@ class PhraseTrainer:
                                                         trainer_python)):
                     self._stage = stage
                     self.app._refresh_menu()
-                    result = subprocess.run(cmd, cwd=self.workspace,
-                                            stdout=log_file,
-                                            stderr=subprocess.STDOUT)
+                    result = subprocess.run(
+                        cmd, cwd=self.workspace, stdout=log_file,
+                        stderr=subprocess.STDOUT,
+                        # Tray context: trainer pythons must not pop
+                        # console windows (vram_probe precedent).
+                        creationflags=getattr(subprocess,
+                                              "CREATE_NO_WINDOW", 0))
                     if result.returncode != 0:
                         raise RuntimeError(
                             f"{stage} failed (exit {result.returncode}); "
@@ -228,10 +237,16 @@ class PhraseTrainer:
         """Add the trained phrase to wake_phrases, active, and reload
         the listener (same malformed-registry tolerance as the tray)."""
         cfg = self.app.cfg
-        raw = cfg.get("wake_phrases", {})
-        phrases = dict(raw) if isinstance(raw, dict) else {}
-        phrases[name] = {"path": str(path), "role": role, "active": True}
-        cfg["wake_phrases"] = phrases
+        # transaction(): the tray's Saved Phrases toggle does the same
+        # read-modify-write; without the lock held across it, whichever
+        # writer finished last would silently drop the other's change
+        # (review catch).
+        with cfg.transaction():
+            raw = cfg.get("wake_phrases", {})
+            phrases = dict(raw) if isinstance(raw, dict) else {}
+            phrases[name] = {"path": str(path), "role": role,
+                             "active": True}
+            cfg["wake_phrases"] = phrases
         config.save(cfg.snapshot())
         listener = getattr(self.app, "wake_listener", None)
         if listener is not None:

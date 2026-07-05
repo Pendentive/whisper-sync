@@ -1004,7 +1004,7 @@ class TrayMenu:
         phrases = self.app.cfg.get("wake_phrases", {}) or {}
         if not isinstance(phrases, dict) or not phrases:
             return [pystray.MenuItem(
-                "No saved phrases (train via training/train_phrase.py)",
+                'No saved phrases yet - use "Set New Wake Phrase..."',
                 None, enabled=False)]
         items = []
         for name in sorted(phrases):
@@ -1022,16 +1022,20 @@ class TrayMenu:
         """Flip a saved phrase's active flag and reload the listener
         (the model list is bound at thread start)."""
         cfg = self.app.cfg
-        raw = cfg.get("wake_phrases", {})
-        # Same malformed-config tolerance as listener.py: a corrupted
-        # registry (non-dict, string entries) must never take down the
-        # tray menu.
-        phrases = dict(raw) if isinstance(raw, dict) else {}
-        raw_entry = phrases.get(name)
-        entry = dict(raw_entry) if isinstance(raw_entry, dict) else {}
-        entry["active"] = not entry.get("active")
-        phrases[name] = entry
-        cfg["wake_phrases"] = phrases
+        # transaction(): the phrase trainer's auto-registration does
+        # the same read-modify-write from its worker thread; the lock
+        # keeps the two writers from dropping each other's changes.
+        with cfg.transaction():
+            raw = cfg.get("wake_phrases", {})
+            # Same malformed-config tolerance as listener.py: a
+            # corrupted registry (non-dict, string entries) must never
+            # take down the tray menu.
+            phrases = dict(raw) if isinstance(raw, dict) else {}
+            raw_entry = phrases.get(name)
+            entry = dict(raw_entry) if isinstance(raw_entry, dict) else {}
+            entry["active"] = not entry.get("active")
+            phrases[name] = entry
+            cfg["wake_phrases"] = phrases
         logger.info(f"Saved phrase '{name}': "
                     f"{'active' if entry['active'] else 'inactive'}")
         self.app.wake_listener.stop()

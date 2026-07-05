@@ -99,6 +99,13 @@ class ReadinessGateTests(_Harness):
         self.assertFalse(self.trainer.start("!!!", "wake"))
         self.assertIn("not usable", self.notify.call_args[0][0])
 
+    def test_refuses_an_unknown_role(self):
+        # Review catch: any other role would register an entry the
+        # listener never loads.
+        _provision(self.workspace)
+        self.assertFalse(self.trainer.start("hey hal", "command"))
+        self.assertIn("role", self.notify.call_args[0][1])
+
 
 class JobOutcomeTests(_Harness):
     def _fake_run(self, create_model=True):
