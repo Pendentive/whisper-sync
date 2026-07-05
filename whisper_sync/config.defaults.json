@@ -59,5 +59,7 @@
   "meeting_watch_toast_optout": true,
   "wake_listener": false,
   "wake_phrase_model": "hey_jarvis",
-  "wake_threshold": 0.5
+  "wake_threshold": 0.5,
+  "wake_outro_model": "",
+  "wake_silence_stop_s": 8
 }

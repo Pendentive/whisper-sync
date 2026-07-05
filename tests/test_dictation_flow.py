@@ -454,6 +454,16 @@ class WakeSpliceTests(_FlowHarness):
         self.assertEqual(self.paste.call_args[0][0],
                          "Take a note about the demo.")
 
+    def test_wake_session_strips_trailing_outro_when_configured(self):
+        self.app.cfg["wake_outro_model"] = "thats_all"
+        self.app.worker.transcribe_fast = (
+            lambda audio, model_override=None, timeout=None:
+            "Hey Jarvis, take a note about the demo. That's all.")
+        self.flow.begin_via_wake(None)
+        self.flow.toggle()
+        self.assertEqual(self.paste.call_args[0][0],
+                         "take a note about the demo.")
+
     def test_normal_dictation_never_strips(self):
         self.app.worker.transcribe_fast = (
             lambda audio, model_override=None, timeout=None:

@@ -40,14 +40,15 @@ class _FakeApp:
 class _FakeModel:
     """Stands in for the openWakeWord model in frame-handling tests."""
 
-    def __init__(self, score=0.0):
-        self.score = score
+    def __init__(self, scores=None, vad_score=1.0):
+        self.scores = scores if scores is not None else {"hey_jarvis": 0.0}
         self.resets = 0
         self.predicted = []
+        self.vad = types.SimpleNamespace(prediction_buffer=[vad_score])
 
     def predict(self, mono):
         self.predicted.append(mono)
-        return {"hey_jarvis": self.score}
+        return dict(self.scores)
 
     def reset(self):
         self.resets += 1
@@ -272,6 +273,160 @@ class WakeActionSpliceTests(unittest.TestCase):
         self.listener._default_wake_action()
         self.app.dictation.begin_via_wake.assert_called_once_with(None)
         self.assertEqual(len(self.listener._ring), 0)
+
+
+class WakeSessionTests(unittest.TestCase):
+    """During a wake-initiated dictation the listener keeps running and
+    watches for the outro phrase and sustained silence."""
+
+    def setUp(self):
+        self.app = _FakeApp()
+        self.app.dictation.toggle = mock.Mock()
+        self.listener = WakeListener(self.app)
+        self.app.state.emit("x", mode="dictation")
+        self.listener._wake_session_active = True
+        # Well past the grace window, voice heard just now.
+        self.listener._session_started = time.monotonic() - 10
+        self.listener._last_voice = time.monotonic()
+
+    def test_wake_action_arms_the_session(self):
+        listener = WakeListener(self.app)
+        with mock.patch.object(listener, "_assemble_prefix",
+                               return_value=None):
+            listener._default_wake_action()
+        self.assertTrue(listener._wake_session_active)
+
+    def test_refused_wake_does_not_arm_the_session(self):
+        self.app.dictation.begin_via_wake.return_value = False
+        listener = WakeListener(self.app)
+        with mock.patch.object(listener, "_assemble_prefix",
+                               return_value=None):
+            listener._default_wake_action()
+        self.assertFalse(listener._wake_session_active)
+
+    def test_outro_phrase_stops_the_dictation(self):
+        self.app.cfg["wake_outro_model"] = "thats_all"
+        model = _FakeModel(scores={"hey_jarvis": 0.0, "thats_all": 0.9})
+        self.listener.handle_frame("f", model)
+        self.app.dictation.toggle.assert_called_once()
+        self.assertFalse(self.listener._wake_session_active)
+        self.assertEqual(model.resets, 1)
+
+    def test_outro_within_grace_window_is_ignored(self):
+        # An outro model acoustically close to the wake phrase must not
+        # end the dictation on the same utterance that started it.
+        self.app.cfg["wake_outro_model"] = "thats_all"
+        self.listener._session_started = time.monotonic()
+        model = _FakeModel(scores={"thats_all": 0.9})
+        self.listener.handle_frame("f", model)
+        self.app.dictation.toggle.assert_not_called()
+        self.assertTrue(self.listener._wake_session_active)
+
+    def test_without_outro_config_high_foreign_score_is_ignored(self):
+        model = _FakeModel(scores={"thats_all": 0.9})
+        self.listener.handle_frame("f", model)
+        self.app.dictation.toggle.assert_not_called()
+
+    def test_silence_stops_after_the_configured_limit(self):
+        model = _FakeModel(vad_score=0.0)
+        self.listener._last_voice = time.monotonic() - 9  # default 8s
+        self.listener.handle_frame("f", model)
+        self.app.dictation.toggle.assert_called_once()
+        self.assertFalse(self.listener._wake_session_active)
+
+    def test_voice_refreshes_the_silence_clock(self):
+        model = _FakeModel(vad_score=0.9)
+        self.listener._last_voice = time.monotonic() - 9
+        self.listener.handle_frame("f", model)
+        self.app.dictation.toggle.assert_not_called()
+        self.assertTrue(self.listener._wake_session_active)
+
+    def test_silence_stop_disabled_by_zero(self):
+        self.app.cfg["wake_silence_stop_s"] = 0
+        model = _FakeModel(vad_score=0.0)
+        self.listener._last_voice = time.monotonic() - 100
+        self.listener.handle_frame("f", model)
+        self.app.dictation.toggle.assert_not_called()
+
+    def test_invalid_silence_config_falls_back_to_default_not_disabled(self):
+        # Review catch: `or 0` treated None/"" as an explicit disable.
+        # Only 0 disables; junk falls back to the 8s default.
+        for bad in (None, "", "soon"):
+            self.app.cfg["wake_silence_stop_s"] = bad
+            self.listener._wake_session_active = True
+            self.app.dictation.toggle.reset_mock()
+            model = _FakeModel(vad_score=0.0)
+            self.listener._last_voice = time.monotonic() - 9
+            self.listener.handle_frame("f", model)
+            self.app.dictation.toggle.assert_called_once()
+
+    def test_missing_vad_counts_as_voice_and_never_silence_stops(self):
+        model = _FakeModel(vad_score=0.0)
+        del model.vad
+        self.listener._last_voice = time.monotonic() - 100
+        self.listener.handle_frame("f", model)
+        self.app.dictation.toggle.assert_not_called()
+
+    def test_session_ends_when_the_dictation_ended_elsewhere(self):
+        # Hotkey stop, discard, or the max-minutes cap: back to normal
+        # listening without touching the (already ended) dictation.
+        self.app.state.emit("x", mode=None)
+        model = _FakeModel()
+        self.listener.handle_frame("f", model)
+        self.assertFalse(self.listener._wake_session_active)
+        self.assertEqual(model.resets, 1)
+        self.assertEqual(model.predicted, [],
+                         "no inference on the cleanup frame")
+        self.app.dictation.toggle.assert_not_called()
+
+    def test_incognito_ends_the_session_without_stopping_dictation(self):
+        self.app.cfg["incognito"] = True
+        self.listener.handle_frame("f", _FakeModel())
+        self.assertFalse(self.listener._wake_session_active)
+        self.app.dictation.toggle.assert_not_called()
+
+    def test_outro_key_never_fires_a_wake_when_idle(self):
+        # Saying the outro phrase while nothing is recording must not
+        # START a dictation.
+        self.app.cfg["wake_outro_model"] = "thats_all"
+        listener = WakeListener(self.app, on_wake=mock.Mock())
+        self.assertFalse(listener.process_scores({"thats_all": 0.9}))
+        self.assertTrue(listener.process_scores({"hey_jarvis": 0.9}))
+
+
+class StripTrailingPhraseTests(unittest.TestCase):
+    def test_strips_outro_and_trailing_punctuation(self):
+        from whisper_sync.listener import strip_trailing_phrase
+        self.assertEqual(
+            strip_trailing_phrase("Take a note. That's all.", "thats_all"),
+            "Take a note.")
+        self.assertEqual(
+            strip_trailing_phrase("Take a note, thats all", "thats_all"),
+            "Take a note,")
+
+    def test_outro_mid_sentence_is_preserved(self):
+        from whisper_sync.listener import strip_trailing_phrase
+        text = "That's all I know about the demo, plus one more thing"
+        self.assertEqual(strip_trailing_phrase(text, "thats_all"), text)
+
+    def test_only_the_last_occurrence_is_stripped(self):
+        from whisper_sync.listener import strip_trailing_phrase
+        self.assertEqual(
+            strip_trailing_phrase("That's all that matters. That's all.",
+                                  "thats_all"),
+            "That's all that matters.")
+
+    def test_no_match_returns_text_unchanged(self):
+        from whisper_sync.listener import strip_trailing_phrase
+        self.assertEqual(
+            strip_trailing_phrase("Take a note about the demo.",
+                                  "thats_all"),
+            "Take a note about the demo.")
+
+    def test_only_the_phrase_yields_empty_string(self):
+        from whisper_sync.listener import strip_trailing_phrase
+        self.assertEqual(strip_trailing_phrase("That's all.", "thats_all"),
+                         "")
 
 
 class StripLeadingPhraseTests(unittest.TestCase):

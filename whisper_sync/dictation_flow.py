@@ -446,11 +446,17 @@ class DictationFlow:
                 t2 = _time.perf_counter()
                 if was_wake and text:
                     # The ring-buffer prefix contains the spoken wake
-                    # phrase; without this the pasted text starts with
-                    # "Hey, Jarvis." (listener.py owns the strip logic).
-                    from .listener import strip_leading_phrase
+                    # phrase, and the dictation mic hears the outro
+                    # phrase before the listener can stop the session;
+                    # both are summons, not dictation (listener.py owns
+                    # the strip logic).
+                    from .listener import (strip_leading_phrase,
+                                           strip_trailing_phrase)
                     text = strip_leading_phrase(
                         text, app.cfg.get("wake_phrase_model", "hey_jarvis"))
+                    outro = app.cfg.get("wake_outro_model", "")
+                    if outro and text:
+                        text = strip_trailing_phrase(text, outro)
                 char_count = len(text) if text else 0
 
                 if is_feature:

@@ -49,11 +49,15 @@ Companion files: [shortcuts.md](shortcuts.md) (how to interact),
   the syllables spoken around the wake phrase are not lost; the spoken
   phrase itself is stripped from the transcribed text. A sleeping
   model is woken and recording proceeds while it loads; busy states
-  (dictation, meeting, saving) get a yellow flash instead. Stop with
-  the dictation hotkey (voice outro phrase and silence auto-stop are
-  the next step). Ships with the pretrained "hey jarvis" phrase until
-  custom phrases and the in-app trainer arrive. Pauses during whisper
-  mode and while recording. Needs `openwakeword` in the venv (in
+  (dictation, meeting, saving) get a yellow flash instead. The
+  dictation ends hands-free on the outro phrase (`wake_outro_model`, a
+  second openWakeWord model; also stripped from the text tail) or
+  after `wake_silence_stop_s` of silence (silero VAD; 0 disables) -
+  the dictation hotkey still works at any time. Ships with the
+  pretrained "hey jarvis" phrase until custom phrases and the in-app
+  trainer arrive. Pauses during whisper mode and while recording
+  (except during its own wake dictations, which it watches for the
+  stop signals). Needs `openwakeword` in the venv (in
   requirements.txt); without it the toggle simply reports unavailable.
 
 ## Model and VRAM lifecycle
