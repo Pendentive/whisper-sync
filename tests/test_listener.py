@@ -18,6 +18,8 @@ except ImportError:  # dependency-light system python (CI)
 
 from whisper_sync.listener import (
     WakeListener, strip_leading_phrase, RING_FRAMES,
+    wake_model_paths, outro_model_paths, wake_strip_names,
+    outro_strip_names,
 )
 from whisper_sync.state_manager import StateManager
 
@@ -392,6 +394,86 @@ class WakeSessionTests(unittest.TestCase):
         listener = WakeListener(self.app, on_wake=mock.Mock())
         self.assertFalse(listener.process_scores({"thats_all": 0.9}))
         self.assertTrue(listener.process_scores({"hey_jarvis": 0.9}))
+
+
+class PhraseRegistryTests(unittest.TestCase):
+    """wake_phrases registry -> model lists, routing, strip names."""
+
+    def setUp(self):
+        self.cfg = {"wake_phrase_model": "hey_jarvis",
+                    "wake_outro_model": "",
+                    "wake_phrases": {}}
+
+    def test_empty_registry_falls_back_to_pretrained(self):
+        self.assertEqual(wake_model_paths(self.cfg), ["hey_jarvis"])
+        self.assertEqual(outro_model_paths(self.cfg), [])
+
+    def test_active_wake_entries_replace_the_fallback(self):
+        self.cfg["wake_phrases"] = {
+            "hey_hal": {"path": "C:/p/hey_hal.onnx", "role": "wake",
+                        "active": True},
+            "take_note": {"path": "C:/p/take_note.onnx", "role": "wake",
+                          "active": False},
+        }
+        self.assertEqual(wake_model_paths(self.cfg),
+                         ["C:/p/hey_hal.onnx"],
+                         "inactive entries and the fallback stay out")
+
+    def test_outro_entries_plus_legacy_key(self):
+        self.cfg["wake_outro_model"] = "alexa"
+        self.cfg["wake_phrases"] = {
+            "thats_all": {"path": "C:/p/thats_all.onnx", "role": "outro",
+                          "active": True}}
+        self.assertEqual(outro_model_paths(self.cfg),
+                         ["C:/p/thats_all.onnx", "alexa"])
+
+    def test_malformed_entries_never_crash_and_are_skipped(self):
+        self.cfg["wake_phrases"] = {
+            "junk": "not-a-dict",
+            "no_path": {"role": "wake", "active": True},
+            "ok": {"path": "C:/p/ok.onnx", "role": "wake", "active": True},
+        }
+        self.assertEqual(wake_model_paths(self.cfg), ["C:/p/ok.onnx"])
+        self.cfg["wake_phrases"] = ["not", "a", "dict"]
+        self.assertEqual(wake_model_paths(self.cfg), ["hey_jarvis"])
+
+    def test_strip_name_candidates(self):
+        self.cfg["wake_phrases"] = {
+            "hey_hal": {"path": "C:/p/hey_hal.onnx", "role": "wake",
+                        "active": True},
+            "thats_all": {"path": "C:/p/t.onnx", "role": "outro",
+                          "active": True}}
+        self.assertEqual(wake_strip_names(self.cfg),
+                         ["hey_hal", "hey_jarvis"])
+        self.assertEqual(outro_strip_names(self.cfg), ["thats_all"])
+
+    def test_listener_model_list_dedups_preserving_order(self):
+        app = _FakeApp()
+        app.cfg["wake_phrases"] = {
+            "hey_hal": {"path": "hey_hal.onnx", "role": "wake",
+                        "active": True},
+            "same_file": {"path": "hey_hal.onnx", "role": "outro",
+                          "active": True}}
+        self.assertEqual(WakeListener(app)._model_list(),
+                         ["hey_hal.onnx"])
+
+    def test_registry_outro_stops_sessions_and_never_wakes(self):
+        app = _FakeApp()
+        app.dictation.toggle = mock.Mock()
+        app.cfg["wake_phrases"] = {
+            "thats_all": {"path": "C:/p/thats_all.onnx", "role": "outro",
+                          "active": True}}
+        listener = WakeListener(app)
+        # The custom outro's score key (openWakeWord stems the path)
+        # must not fire a wake while idle...
+        self.assertFalse(listener.process_scores({"thats_all": 0.9}))
+        # ...but must end a wake session.
+        app.state.emit("x", mode="dictation")
+        listener._wake_session_active = True
+        listener._session_started = time.monotonic() - 10
+        listener._last_voice = time.monotonic()
+        listener.handle_frame("f", _FakeModel(scores={"thats_all": 0.9}))
+        app.dictation.toggle.assert_called_once()
 
 
 class StripTrailingPhraseTests(unittest.TestCase):

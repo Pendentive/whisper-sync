@@ -449,14 +449,26 @@ class DictationFlow:
                     # phrase, and the dictation mic hears the outro
                     # phrase before the listener can stop the session;
                     # both are summons, not dictation (listener.py owns
-                    # the strip logic).
-                    from .listener import (strip_leading_phrase,
-                                           strip_trailing_phrase)
-                    text = strip_leading_phrase(
-                        text, app.cfg.get("wake_phrase_model", "hey_jarvis"))
-                    outro = app.cfg.get("wake_outro_model", "")
-                    if outro and text:
-                        text = strip_trailing_phrase(text, outro)
+                    # the strip logic). Which saved phrase fired is not
+                    # threaded through, so each candidate is tried; the
+                    # strips are conservative and only the spoken one
+                    # matches.
+                    from .listener import (
+                        strip_leading_phrase, strip_trailing_phrase,
+                        wake_strip_names, outro_strip_names,
+                    )
+                    for name in wake_strip_names(app.cfg):
+                        stripped = strip_leading_phrase(text, name)
+                        if stripped != text:
+                            text = stripped
+                            break
+                    for name in outro_strip_names(app.cfg):
+                        if not text:
+                            break
+                        stripped = strip_trailing_phrase(text, name)
+                        if stripped != text:
+                            text = stripped
+                            break
                 char_count = len(text) if text else 0
 
                 if is_feature:

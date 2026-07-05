@@ -464,6 +464,19 @@ class WakeSpliceTests(_FlowHarness):
         self.assertEqual(self.paste.call_args[0][0],
                          "take a note about the demo.")
 
+    def test_registry_phrase_names_drive_the_strips(self):
+        self.app.cfg["wake_phrases"] = {
+            "hey_hal": {"path": "C:/p/hey_hal.onnx", "role": "wake",
+                        "active": True},
+            "thats_all": {"path": "C:/p/thats_all.onnx", "role": "outro",
+                          "active": True}}
+        self.app.worker.transcribe_fast = (
+            lambda audio, model_override=None, timeout=None:
+            "Hey Hal, note the demo. That's all.")
+        self.flow.begin_via_wake(None)
+        self.flow.toggle()
+        self.assertEqual(self.paste.call_args[0][0], "note the demo.")
+
     def test_normal_dictation_never_strips(self):
         self.app.worker.transcribe_fast = (
             lambda audio, model_override=None, timeout=None:

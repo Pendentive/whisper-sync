@@ -354,3 +354,18 @@ training job with menu status/ETA + completion toast.
   warn-owner protocol). EXECUTION STAGED: the dataset download and
   the first supervised training run wait for an explicit owner go -
   PROVISIONAL config values are validated by that first run.
+
+- **2026-07-05 (step 5 PR B)**: saved-phrase registry. New config key
+  wake_phrases (name -> {path, role wake/outro, active}); the
+  listener loads ALL active models into one openWakeWord Model
+  (wake_model_paths falls back to the pretrained wake_phrase_model
+  when nothing is active, so the listener never goes deaf; outro
+  routing generalized from one key to the _outro_keys set, legacy
+  wake_outro_model still honored). Text strips try every active
+  phrase name plus the legacy keys - the strips are conservative, so
+  only the spoken one matches. Tray: Settings > Wake Word Listener >
+  Saved Phrases with active checkmarks; toggling bounces the listener
+  thread (model list binds at thread start). Malformed registry
+  entries are skipped, never crash. Remaining for step 5: PR C (Set
+  Phrase dialog + background training job + tray status/ETA +
+  registry auto-registration on training success).

@@ -520,6 +520,8 @@ class TrayMenu:
                         f"  Phrase: "
                         f"{self.app.cfg.get('wake_phrase_model', 'hey_jarvis')}",
                         None, enabled=False),
+                    pystray.MenuItem("Saved Phrases", pystray.Menu(
+                        *self._build_saved_phrase_items())),
                 )),
                 pystray.MenuItem(f"Diarization (Speaker Detection)\t{primary_label}",
                                  pystray.Menu(*diarize_sub_items)),
@@ -962,6 +964,48 @@ class TrayMenu:
         logger.info(
             f"Wake listener: {'on' if cfg['wake_listener'] else 'off'}")
         self.app.wake_listener.restart_if_toggled()
+        self._save_and_refresh()
+
+    def _build_saved_phrase_items(self):
+        """Saved-phrase entries (wake_phrases registry) with active
+        checkmarks. Until the PR C dialog exists, phrases arrive via
+        training/train_phrase.py plus a registry entry."""
+        import pystray  # lazy: not installed on the CI system python
+        phrases = self.app.cfg.get("wake_phrases", {}) or {}
+        if not isinstance(phrases, dict) or not phrases:
+            return [pystray.MenuItem(
+                "No saved phrases (train via training/train_phrase.py)",
+                None, enabled=False)]
+        items = []
+        for name in sorted(phrases):
+            entry = phrases[name] if isinstance(phrases[name], dict) else {}
+            items.append(pystray.MenuItem(
+                f"{name} ({entry.get('role', 'wake')})",
+                menu_callback(self._toggle_saved_phrase, name),
+                checked=lambda item, n=name: bool(
+                    ((self.app.cfg.get("wake_phrases", {}) or {})
+                     .get(n) or {}).get("active")),
+            ))
+        return items
+
+    def _toggle_saved_phrase(self, name):
+        """Flip a saved phrase's active flag and reload the listener
+        (the model list is bound at thread start)."""
+        cfg = self.app.cfg
+        raw = cfg.get("wake_phrases", {})
+        # Same malformed-config tolerance as listener.py: a corrupted
+        # registry (non-dict, string entries) must never take down the
+        # tray menu.
+        phrases = dict(raw) if isinstance(raw, dict) else {}
+        raw_entry = phrases.get(name)
+        entry = dict(raw_entry) if isinstance(raw_entry, dict) else {}
+        entry["active"] = not entry.get("active")
+        phrases[name] = entry
+        cfg["wake_phrases"] = phrases
+        logger.info(f"Saved phrase '{name}': "
+                    f"{'active' if entry['active'] else 'inactive'}")
+        self.app.wake_listener.stop()
+        self.app.wake_listener.start()
         self._save_and_refresh()
 
     def _toggle_always_available_dictation(self):

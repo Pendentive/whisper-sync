@@ -61,5 +61,6 @@
   "wake_phrase_model": "hey_jarvis",
   "wake_threshold": 0.5,
   "wake_outro_model": "",
-  "wake_silence_stop_s": 8
+  "wake_silence_stop_s": 8,
+  "wake_phrases": {}
 }
