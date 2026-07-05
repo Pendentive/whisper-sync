@@ -92,3 +92,18 @@ downloads the openWakeWord models - watch the log).
   tightening).
 - [ ] Clean exits, flat memory across meetings, `gpu-guard.jsonl`
   shows only expected events.
+
+## 7. Phrase training first run (step 5 PR A) - needs your go twice
+
+Both gates exist on purpose: the download is 12-18 GB of disk, and
+training occupies the dGPU for tens of minutes (do not start it while
+gaming).
+
+- [ ] `python training/setup_trainer.py --yes` completes (idempotent -
+  rerun after any interruption and it continues).
+- [ ] `python training/train_phrase.py "hey hal" --go` produces
+  `training/workspace/phrases/hey_hal.onnx` (this run also validates
+  the PROVISIONAL config values; a bad key fails fast and gets fixed).
+- [ ] Set `wake_phrase_model` to that .onnx path, toggle the listener
+  off/on - saying "hey hal" starts a dictation; "hey jarvis" no
+  longer does.

@@ -25,3 +25,6 @@ Thumbs.db
 
 # Local dev-machine marker, never shipped
 whisper_sync/.standalone
+
+# Phrase-training workspace (trainer venv + datasets, 12-18 GB)
+training/workspace/
