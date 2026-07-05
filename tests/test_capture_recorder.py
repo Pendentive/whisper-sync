@@ -80,6 +80,66 @@ class StartStreamingTransactionalTests(unittest.TestCase):
         self.assertIsNone(recorder._mic_writer)
 
 
+class WakeSplicePrefixTests(unittest.TestCase):
+    """Tier-2 splice: prefix audio must be ordered ahead of live capture
+    in BOTH sinks (RAM accumulator and crash-safety WAV), and a stale
+    disk-only flag from a previous meeting must not leak into a new
+    session (an incognito dictation after a disk-streamed meeting used
+    to capture nothing)."""
+
+    def test_start_seeds_ram_with_prefix(self):
+        recorder, capture = _make_recorder()
+        self.addCleanup(lambda: setattr(capture, "sd",
+                                        __import__("sounddevice")))
+        prefix = np.full((100, 1), 0.5, dtype=np.float32)
+        recorder.start(mic_device=7, prefix_audio=prefix)
+        self.assertEqual(len(recorder._mic_data), 1)
+        self.assertIs(recorder._mic_data[0], prefix)
+
+    def test_start_without_prefix_starts_empty(self):
+        recorder, capture = _make_recorder()
+        self.addCleanup(lambda: setattr(capture, "sd",
+                                        __import__("sounddevice")))
+        recorder.start(mic_device=7)
+        self.assertEqual(recorder._mic_data, [])
+
+    def test_start_resets_stale_disk_only_flag(self):
+        recorder, capture = _make_recorder()
+        self.addCleanup(lambda: setattr(capture, "sd",
+                                        __import__("sounddevice")))
+        recorder._disk_only = True  # left behind by a disk-streamed meeting
+        recorder.start(mic_device=7)
+        self.assertFalse(recorder._disk_only,
+                         "a session without a writer must accumulate RAM")
+
+    def test_streaming_prefix_is_written_before_writer_is_published(self):
+        recorder, capture = _make_recorder(install_fake_sd=False)
+        prefix = np.full((100, 1), 0.5, dtype=np.float32)
+        writer = mock.Mock()
+        published_at_write = []
+        writer.write.side_effect = (
+            lambda chunk: published_at_write.append(recorder._mic_writer))
+
+        with mock.patch.object(capture, "StreamingWavWriter",
+                               return_value=writer):
+            recorder.start_streaming(mic_path="/tmp/x.wav",
+                                     prefix_audio=prefix)
+
+        writer.write.assert_called_once()
+        self.assertIs(writer.write.call_args[0][0], prefix)
+        self.assertEqual(published_at_write, [None],
+                         "prefix must land before the callback can write")
+        self.assertIs(recorder._mic_writer, writer)
+
+    def test_streaming_without_prefix_writes_nothing_upfront(self):
+        recorder, capture = _make_recorder(install_fake_sd=False)
+        writer = mock.Mock()
+        with mock.patch.object(capture, "StreamingWavWriter",
+                               return_value=writer):
+            recorder.start_streaming(mic_path="/tmp/x.wav")
+        writer.write.assert_not_called()
+
+
 class MicCallbackNormalizationTests(unittest.TestCase):
     def test_int16_samples_are_scaled_to_minus_one_to_one(self):
         from whisper_sync.capture import AudioRecorder

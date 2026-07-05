@@ -11,21 +11,46 @@ import types
 import unittest
 from unittest import mock
 
-from whisper_sync import listener as listener_mod
-from whisper_sync.listener import WakeListener
-from whisper_sync.state_manager import StateManager, SLEEP_STARTED
+try:
+    import numpy as np
+except ImportError:  # dependency-light system python (CI)
+    np = None
+
+from whisper_sync.listener import (
+    WakeListener, strip_leading_phrase, RING_FRAMES,
+)
+from whisper_sync.state_manager import StateManager
 
 
 class _FakeApp:
     def __init__(self):
-        self.cfg = {"wake_listener": True, "wake_threshold": 0.5}
+        self.cfg = {"wake_listener": True, "wake_threshold": 0.5,
+                    "sample_rate": 16000}
         self.state = StateManager(None, {})
         self.recorder = types.SimpleNamespace(is_recording=False)
         self.auto_sleep = types.SimpleNamespace(wake=mock.Mock())
+        self.dictation = types.SimpleNamespace(
+            begin_via_wake=mock.Mock(return_value=True))
         self.flashes = 0
 
     def _yellow_flash(self):
         self.flashes += 1
+
+
+class _FakeModel:
+    """Stands in for the openWakeWord model in frame-handling tests."""
+
+    def __init__(self, score=0.0):
+        self.score = score
+        self.resets = 0
+        self.predicted = []
+
+    def predict(self, mono):
+        self.predicted.append(mono)
+        return {"hey_jarvis": self.score}
+
+    def reset(self):
+        self.resets += 1
 
 
 class WakeDecisionTests(unittest.TestCase):
@@ -156,19 +181,144 @@ class LifecycleTests(unittest.TestCase):
             self.listener._thread.join(timeout=2)
             self.assertFalse(self.listener._thread.is_alive())
 
-    def test_default_wake_action_wakes_a_sleeping_model(self):
-        self.app.state.emit(SLEEP_STARTED, sleeping=True)
-        with mock.patch.object(listener_mod, "notify"):
-            self.listener._default_wake_action()
-        self.app.auto_sleep.wake.assert_called_once()
-        self.assertEqual(self.app.flashes, 0,
-                         "wake() owns the flash when asleep")
+class FrameHandlingTests(unittest.TestCase):
+    """handle_frame drives the ring buffer and the pause latch."""
 
-    def test_default_wake_action_flashes_when_awake(self):
-        with mock.patch.object(listener_mod, "notify"):
+    def setUp(self):
+        self.app = _FakeApp()
+        self.listener = WakeListener(self.app, on_wake=lambda: None)
+        self.model = _FakeModel()
+
+    def test_frames_feed_ring_and_model(self):
+        self.listener.handle_frame("f1", self.model)
+        self.listener.handle_frame("f2", self.model)
+        self.assertEqual(list(self.listener._ring), ["f1", "f2"])
+        self.assertEqual(self.model.predicted, ["f1", "f2"])
+
+    def test_ring_is_bounded(self):
+        for i in range(RING_FRAMES + 5):
+            self.listener.handle_frame(i, self.model)
+        self.assertEqual(len(self.listener._ring), RING_FRAMES)
+        self.assertEqual(self.listener._ring[0], 5,
+                         "oldest frames must roll off")
+
+    def test_pause_resets_model_once_and_clears_ring(self):
+        self.listener.handle_frame("pre", self.model)
+        self.app.cfg["incognito"] = True
+        self.listener.handle_frame("p1", self.model)
+        self.listener.handle_frame("p2", self.model)
+        self.assertEqual(self.model.resets, 1,
+                         "reset fires once on pause ENTRY, not per frame")
+        self.assertEqual(len(self.listener._ring), 0,
+                         "pre-pause audio must not survive the pause")
+        self.assertEqual(self.model.predicted, ["pre"],
+                         "no inference while paused")
+
+    def test_resume_after_pause_feeds_again(self):
+        self.app.cfg["incognito"] = True
+        self.listener.handle_frame("p1", self.model)
+        self.app.cfg["incognito"] = False
+        self.listener.handle_frame("f1", self.model)
+        self.assertEqual(list(self.listener._ring), ["f1"])
+        self.assertEqual(self.model.predicted, ["f1"])
+
+
+@unittest.skipIf(np is None, "numpy not installed (CI system python)")
+class AssemblePrefixTests(unittest.TestCase):
+    def setUp(self):
+        self.listener = WakeListener(_FakeApp(), on_wake=lambda: None)
+
+    def test_int16_frames_become_float32_column(self):
+        frame = np.full(1280, 16384, dtype=np.int16)
+        self.listener._ring.append(frame)
+        self.listener._ring.append(frame)
+        prefix = self.listener._assemble_prefix()
+        self.assertEqual(prefix.shape, (2560, 1))
+        self.assertEqual(prefix.dtype, np.float32)
+        self.assertAlmostEqual(float(prefix[0][0]), 0.5, places=3)
+        self.assertEqual(len(self.listener._ring), 0,
+                         "assembly consumes the ring")
+
+    def test_empty_ring_returns_none(self):
+        self.assertIsNone(self.listener._assemble_prefix())
+
+
+class WakeActionSpliceTests(unittest.TestCase):
+    """The default wake action is the tier-2 splice now."""
+
+    def setUp(self):
+        self.app = _FakeApp()
+        self.listener = WakeListener(self.app)
+
+    def test_wake_hands_prefix_to_dictation(self):
+        with mock.patch.object(self.listener, "_assemble_prefix",
+                               return_value="PREFIX"):
+            self.listener._default_wake_action()
+        self.app.dictation.begin_via_wake.assert_called_once_with("PREFIX")
+        self.assertEqual(self.app.flashes, 0)
+
+    def test_busy_dictation_flashes(self):
+        self.app.dictation.begin_via_wake.return_value = False
+        with mock.patch.object(self.listener, "_assemble_prefix",
+                               return_value=None):
             self.listener._default_wake_action()
         self.assertEqual(self.app.flashes, 1)
-        self.app.auto_sleep.wake.assert_not_called()
+
+    def test_foreign_sample_rate_skips_prefix_and_clears_ring(self):
+        # The ring is 16 kHz; splicing it into a recorder configured for
+        # another rate would time-stretch the prefix audio.
+        self.app.cfg["sample_rate"] = 48000
+        self.listener._ring.append("stale")
+        self.listener._default_wake_action()
+        self.app.dictation.begin_via_wake.assert_called_once_with(None)
+        self.assertEqual(len(self.listener._ring), 0)
+
+
+class StripLeadingPhraseTests(unittest.TestCase):
+    def test_strips_phrase_and_punctuation(self):
+        self.assertEqual(
+            strip_leading_phrase("Hey, Jarvis. Take a note.", "hey_jarvis"),
+            "Take a note.")
+        self.assertEqual(
+            strip_leading_phrase("Hey Jarvis take a note", "hey_jarvis"),
+            "take a note")
+
+    def test_strips_room_audio_lead_in_before_the_phrase(self):
+        # The 2.5s ring can start mid-sentence of ambient speech; the
+        # summons and everything before it belong to the wake, not the
+        # dictation.
+        self.assertEqual(
+            strip_leading_phrase("so anyway hey jarvis note this",
+                                 "hey_jarvis"),
+            "note this")
+
+    def test_no_phrase_returns_text_unchanged(self):
+        self.assertEqual(
+            strip_leading_phrase("Take a note about the demo.",
+                                 "hey_jarvis"),
+            "Take a note about the demo.")
+
+    def test_phrase_beyond_search_window_is_preserved(self):
+        text = ("The quick brown fox jumps over the lazy sleeping dog "
+                "and then says hey jarvis at the end")
+        self.assertEqual(strip_leading_phrase(text, "hey_jarvis"), text)
+
+    def test_only_the_phrase_yields_empty_string(self):
+        self.assertEqual(strip_leading_phrase("Hey Jarvis.", "hey_jarvis"),
+                         "")
+
+    def test_versioned_model_name_tokens(self):
+        self.assertEqual(
+            strip_leading_phrase("Hey Jarvis, okay.", "hey_jarvis_v0.1"),
+            "okay.")
+
+    def test_single_token_phrase_respects_word_boundaries(self):
+        self.assertEqual(
+            strip_leading_phrase("Alexander wrote this down.", "alexa"),
+            "Alexander wrote this down.")
+
+    def test_empty_text_is_safe(self):
+        self.assertEqual(strip_leading_phrase("", "hey_jarvis"), "")
 
 
 if __name__ == "__main__":

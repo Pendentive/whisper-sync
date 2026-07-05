@@ -75,6 +75,11 @@ class DictationFlow:
         self._cap_handle = None
         self._history = dictation_log.load_recent(HISTORY_LIMIT)
         self._history_lock = threading.Lock()
+        # True while the CURRENT dictation was started by the wake
+        # listener (tier-2 splice). Mutated only under app._lock; the
+        # stop path captures-and-clears it exactly like feature intent
+        # and uses it to strip the spoken wake phrase from the result.
+        self._wake_session = False
 
     # -- Public API (hotkeys, clicks, menu, startup recovery) ---------------
 
@@ -149,6 +154,40 @@ class DictationFlow:
             elif self.app._can_record():
                 self._start(feature=True)
 
+    def begin_via_wake(self, prefix_audio=None) -> bool:
+        """Start a normal dictation on behalf of the wake listener.
+
+        Tier-2 splice entry point: ``prefix_audio`` is the listener's
+        ring buffer (mono float32 at the recorder's sample rate), seeded
+        ahead of the live capture so the syllables spoken around the
+        wake phrase are not lost. Mirrors toggle()'s start arm: a
+        sleeping model is woken and recording proceeds disk-first while
+        it loads. Busy states (dictation, meeting, saving, overlay,
+        meeting transcription) refuse instead of queueing - the wake
+        splice never interrupts other work. Returns True when a
+        dictation recording actually started.
+        """
+        with self.app._lock:
+            current = self.app.state.current if self.app.state else None
+            if current and (current.dictation_overlay
+                            or current.meeting_transcribing):
+                # The overlay path (separate recorder + backup model)
+                # is not spliced yet; refuse rather than start a normal
+                # dictation that would queue behind the meeting job.
+                return False
+            mode = current.mode if current else None
+            if mode == "dictation" or not self.app._can_record():
+                return False
+            if current and current.sleeping:
+                self.app.auto_sleep.wake(reason="wake_word")
+            self._start(feature=False, prefix_audio=prefix_audio)
+            # _start can fail before DICTATION_STARTED sticks (mic open
+            # failure emits IDLE); report what actually happened.
+            started = ((self.app.state.current.mode
+                        if self.app.state else None) == "dictation")
+            self._wake_session = started
+            return started
+
     def discard(self):
         """Discard current dictation - stop recording, throw away audio, return to idle."""
         with self.app._lock:
@@ -168,6 +207,7 @@ class DictationFlow:
 
             if (self.app.state.current.mode if self.app.state else None) != "dictation":
                 return
+            self._wake_session = False
             self.app.recorder.stop()  # stop recording, discard the audio
             self.app.recorder.stop_streaming()
             if self._wav_path and self._wav_path.exists():
@@ -203,13 +243,18 @@ class DictationFlow:
                         "(always_available_dictation disabled)", extra={"secondary": True})
             notify(f"{label} unavailable", "Enable always-available dictation in settings")
 
-    def _start(self, feature: bool):
+    def _start(self, feature: bool, prefix_audio=None):
         # Lazy: capture/backup_worker import numpy; keep this module
         # importable on the dependency-light system python (CI suite).
         from .backup_worker import BackupTranscriber
         from .capture import get_default_devices
 
         app = self.app
+        # Any fresh start is a normal session until begin_via_wake says
+        # otherwise (it sets the flag AFTER a successful start). Keeps a
+        # discarded or failed wake session from leaking its strip
+        # behavior into the next hotkey dictation.
+        self._wake_session = False
         _meeting_tx = app.state.current.meeting_transcribing if app.state else False
         if not app.worker.is_ready():
             has_backup = _meeting_tx and BackupTranscriber.is_enabled(app.cfg)
@@ -241,7 +286,7 @@ class DictationFlow:
             # device and often rejects float32 @ 16 kHz with MME error 32.
             mic = get_default_devices().get("input")
         try:
-            app.recorder.start(mic_device=mic)
+            app.recorder.start(mic_device=mic, prefix_audio=prefix_audio)
         except Exception as e:
             logger.error("Failed to start mic for dictation: %s", e, exc_info=True)
             notify("Dictation unavailable", f"Mic could not be opened: {e}")
@@ -257,7 +302,8 @@ class DictationFlow:
             prefix = "feature_" if feature else ""
             self._wav_path = log_dir / f"{prefix}{ts}.wav"
             try:
-                app.recorder.start_streaming(self._wav_path)
+                app.recorder.start_streaming(self._wav_path,
+                                             prefix_audio=prefix_audio)
             except Exception as e:
                 logger.warning("Dictation disk streaming disabled: %s", e)
                 self._wav_path = None
@@ -331,8 +377,11 @@ class DictationFlow:
         # transition that leaves dictation mode. All mutators of
         # feature_suggest run under app._lock (which every caller of _stop
         # holds), so the read-then-emit pair is atomic exactly like the old
-        # locked flag capture.
+        # locked flag capture. Wake-session intent follows the same
+        # discipline: captured here, consumed by the strip below.
         is_feature = app.state.current.feature_suggest
+        was_wake = self._wake_session
+        self._wake_session = False
         app.state.emit(TRANSCRIPTION_STARTED, mode="transcribing", feature_suggest=False)
 
         dictation_model = app._gpu_guard.effective_model(
@@ -395,6 +444,13 @@ class DictationFlow:
                     t1 = _time.perf_counter()
                     logger.debug(f"transcribe_fast: {t1 - t0:.2f}s")
                 t2 = _time.perf_counter()
+                if was_wake and text:
+                    # The ring-buffer prefix contains the spoken wake
+                    # phrase; without this the pasted text starts with
+                    # "Hey, Jarvis." (listener.py owns the strip logic).
+                    from .listener import strip_leading_phrase
+                    text = strip_leading_phrase(
+                        text, app.cfg.get("wake_phrase_model", "hey_jarvis"))
                 char_count = len(text) if text else 0
 
                 if is_feature:
