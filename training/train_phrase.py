@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -75,9 +76,14 @@ def main() -> int:
               "rerun with --go.")
         return 1
 
+    # PYTHONUTF8=1: torch's onnx exporter prints emoji progress marks;
+    # without UTF-8 mode the cp1252 console raises UnicodeEncodeError
+    # and kills the export after an otherwise successful run (observed
+    # live 2026-07-05).
+    env = {**os.environ, "PYTHONUTF8": "1"}
     for cmd in training_commands(config_path, trainer_python):
         print("[train] run: " + " ".join(cmd), flush=True)
-        result = subprocess.run(cmd, cwd=root)
+        result = subprocess.run(cmd, cwd=root, env=env)
         if result.returncode != 0:
             print(f"[train] step failed (exit {result.returncode}); "
                   "artifacts kept for inspection in "
