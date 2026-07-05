@@ -133,8 +133,9 @@ so the owner never has to speak or hand over phrase strings:
   display in the menu.
 - Saved phrases list with per-phrase ACTIVE checkmarks; reset/delete.
   Multiple simultaneous phrases are cheap - openWakeWord runs several
-  models in parallel on the same frame stream (the POC's score dict is
-  already multi-model).
+  models in parallel on the same frame stream, and predict() already
+  returns a per-model score dict (the POC loads a single model today;
+  the decision logic iterates the dict, so adding models is additive).
 - Different outcomes per phrase later ("hey Jarvis" -> dictation,
   "take note" -> something else): the phrase -> action routing rides
   the same score dict; design it with the tier-2 splice's command
