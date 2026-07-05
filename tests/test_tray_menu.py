@@ -114,6 +114,9 @@ class _FakeApp:
             recover_meeting_speakers=lambda d: None)
         self.github = _FakeGitHub()
         self.auto_sleep = types.SimpleNamespace(toggle=lambda: None)
+        self.phrase_trainer = types.SimpleNamespace(
+            status_line=lambda: None,
+            ask_new_phrase=lambda role: None)
         self._cpu_name = "FakeCPU"
         self._dialog_dispatcher = None
         self.saved = 0
@@ -191,6 +194,28 @@ class MenuBuildTests(unittest.TestCase):
         self.assertTrue(self.app.cfg["wake_listener"])
         self.app.wake_listener.restart_if_toggled.assert_called_once()
         save.assert_called_once()
+
+    def test_wake_listener_menu_has_the_full_phrase_manager(self):
+        # Fourth intake: not a POC - set new wake/outro phrase, saved
+        # phrases, active summary. Status line appears while training.
+        items = self.menu._build_wake_listener_items()
+        texts = " | ".join(_iter_texts(_Menu(*items)))
+        self.assertIn("Set New Wake Phrase...", texts)
+        self.assertIn("Set New Outro Phrase...", texts)
+        self.assertIn("Saved Phrases", texts)
+        self.assertIn("Wake: hey_jarvis", texts)
+        self.assertNotIn("POC", texts)
+
+        self.app.phrase_trainer.status_line = (
+            lambda: "Training 'hey hal': training, 5 min")
+        items = self.menu._build_wake_listener_items()
+        texts = " | ".join(_iter_texts(_Menu(*items)))
+        self.assertIn("Training 'hey hal'", texts)
+
+    def test_full_menu_has_no_poc_label(self):
+        texts = " | ".join(_iter_texts(self.menu.build()))
+        self.assertIn("Wake Word Listener", texts)
+        self.assertNotIn("(POC)", texts)
 
     def test_saved_phrases_empty_registry_shows_info_line(self):
         items = self.menu._build_saved_phrase_items()

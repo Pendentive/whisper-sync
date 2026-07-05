@@ -140,3 +140,15 @@ gaming).
   Word Listener > Saved Phrases - saying "hey hal" starts a
   dictation; "hey jarvis" no longer does (custom phrases replace the
   pretrained fallback while any is active).
+
+## 8. In-app phrase manager (step 5 PR C) - the no-CLI path
+
+- [ ] Settings > Wake Word Listener > "Set New Wake Phrase...", type
+  a phrase, Start Training - toast confirms, the menu shows a live
+  status line (stage + minutes), and after 20-40 min a "Phrase
+  ready" toast fires with the phrase ACTIVE in Saved Phrases.
+- [ ] Saying the new phrase starts a dictation without any manual
+  registry edit or listener toggle.
+- [ ] While a job is running, starting a second one refuses politely;
+  starting one while the model is asleep (gaming) refuses with a
+  clear message and touches nothing.

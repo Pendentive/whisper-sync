@@ -509,20 +509,8 @@ class TrayMenu:
                                 "meeting_watch_toast_optout", True)),
                     )),
                 )),
-                pystray.MenuItem("Wake Word Listener (POC)", pystray.Menu(
-                    pystray.MenuItem(
-                        "Enabled",
-                        lambda: self._toggle_wake_listener(),
-                        checked=lambda item: self.app.cfg.get(
-                            "wake_listener", False),
-                    ),
-                    pystray.MenuItem(
-                        f"  Phrase: "
-                        f"{self.app.cfg.get('wake_phrase_model', 'hey_jarvis')}",
-                        None, enabled=False),
-                    pystray.MenuItem("Saved Phrases", pystray.Menu(
-                        *self._build_saved_phrase_items())),
-                )),
+                pystray.MenuItem("Wake Word Listener", pystray.Menu(
+                    *self._build_wake_listener_items())),
                 pystray.MenuItem(f"Diarization (Speaker Detection)\t{primary_label}",
                                  pystray.Menu(*diarize_sub_items)),
                 pystray.Menu.SEPARATOR,
@@ -965,6 +953,48 @@ class TrayMenu:
             f"Wake listener: {'on' if cfg['wake_listener'] else 'off'}")
         self.app.wake_listener.restart_if_toggled()
         self._save_and_refresh()
+
+    def _build_wake_listener_items(self):
+        """The full wake-listener settings surface (fourth intake):
+        enable, set new wake/outro phrase (typed -> background
+        training), saved phrases with active checkmarks, live
+        training status."""
+        import pystray  # lazy: not installed on the CI system python
+        from .listener import wake_model_paths, outro_model_paths, _model_stem
+
+        cfg = self.app.cfg
+        wake_stems = ", ".join(_model_stem(p) for p in wake_model_paths(cfg))
+        outro_paths = outro_model_paths(cfg)
+        items = [
+            pystray.MenuItem(
+                "Enabled",
+                lambda: self._toggle_wake_listener(),
+                checked=lambda item: self.app.cfg.get(
+                    "wake_listener", False),
+            ),
+            pystray.MenuItem(f"  Wake: {wake_stems}", None, enabled=False),
+        ]
+        if outro_paths:
+            outro_stems = ", ".join(_model_stem(p) for p in outro_paths)
+            items.append(pystray.MenuItem(f"  Outro: {outro_stems}",
+                                          None, enabled=False))
+        items.extend([
+            pystray.MenuItem(
+                "Set New Wake Phrase...",
+                menu_callback(self.app.phrase_trainer.ask_new_phrase,
+                              "wake")),
+            pystray.MenuItem(
+                "Set New Outro Phrase...",
+                menu_callback(self.app.phrase_trainer.ask_new_phrase,
+                              "outro")),
+            pystray.MenuItem("Saved Phrases", pystray.Menu(
+                *self._build_saved_phrase_items())),
+        ])
+        status = self.app.phrase_trainer.status_line()
+        if status:
+            items.append(pystray.MenuItem(f"  {status}", None,
+                                          enabled=False))
+        return items
 
     def _build_saved_phrase_items(self):
         """Saved-phrase entries (wake_phrases registry) with active

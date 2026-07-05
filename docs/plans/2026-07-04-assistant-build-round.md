@@ -17,7 +17,7 @@
 | 2 | Tier 0+1 always-on listener (VAD + openWakeWord, off by default) | Staged architecture, step 2 | POC MERGED (#187, pretrained phrase) |
 | 3 | Tier 2 splice: wake -> ring-buffer-prefixed dictation + outro | Staged architecture, step 2 | MERGED (#189, #190) |
 | 4 | Per-app meeting auto-record (mic consent-store watch + app list) | Staged architecture, step 3 | MERGED (#183, #184) |
-| 5 | Self-serve phrase manager (typed phrases, background training, active checkmarks) | Owner decisions, fourth intake: the phrase manager | QUEUED |
+| 5 | Self-serve phrase manager (typed phrases, background training, active checkmarks) | Owner decisions, fourth intake: the phrase manager | PR A #193 + PR B #194 MERGED; PR C (dialog + background job) IN REVIEW |
 | 6 | NPU/OpenVINO backup-transcriber backend (committed scope) | NPU section | QUEUED |
 | - | Installer refresh (screens generated from docs/features/) | BACKLOG.md | QUEUED |
 
@@ -419,3 +419,21 @@ training job with menu status/ETA + completion toast.
   entries are skipped, never crash. Remaining for step 5: PR C (Set
   Phrase dialog + background training job + tray status/ETA +
   registry auto-registration on training success).
+
+- **2026-07-05 (step 5 PR C)**: the full phrase manager per the
+  fourth intake - no more POC. whisper_sync/phrase_trainer.py owns
+  the typed-phrase dialog (dialog-dispatcher pattern, reuses the
+  meeting_dialogs styling helpers) and the background training job:
+  three trainer stages as subprocesses in a daemon thread with stage
+  + elapsed-minutes status in the tray menu, output to a per-phrase
+  training.log, and on success the .onnx copies to workspace/phrases,
+  auto-registers ACTIVE in wake_phrases, and the listener reloads.
+  Readiness gates: trainer env present, model not asleep (gaming
+  signal), app not busy, one job at a time - each refusal is a
+  truthful toast. Tray: "Wake Word Listener" (POC label dropped) with
+  Set New Wake Phrase... / Set New Outro Phrase..., active wake/outro
+  summary lines, Saved Phrases, and the live status line. Known
+  limitation recorded in the module docstring: a training subprocess
+  is not killed on app exit; the finished model is picked up by the
+  next run. The FIRST real training run still awaits the owner's GPU
+  go (he is gaming; all GPU use asks first).

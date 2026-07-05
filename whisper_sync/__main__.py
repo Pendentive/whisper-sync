@@ -175,10 +175,14 @@ class WhisperSync:
         # store polling; auto-starts/stops recordings for watched apps.
         from .meeting_watch import MeetingWatch
         self.meeting_watch = MeetingWatch(self)
-        # Always-on wake-word listener POC (listener.py): inert unless
+        # Always-on wake-word listener (listener.py): inert unless
         # wake_listener is on AND openwakeword is installed in the venv.
         from .listener import WakeListener
         self.wake_listener = WakeListener(self)
+        # Self-serve phrase training (phrase_trainer.py): typed-phrase
+        # dialog + background dGPU job + auto-registration.
+        from .phrase_trainer import PhraseTrainer
+        self.phrase_trainer = PhraseTrainer(self)
 
     @staticmethod
     def _migrate_data():
