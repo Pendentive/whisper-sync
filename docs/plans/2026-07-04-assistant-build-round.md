@@ -165,12 +165,15 @@ Training pipeline findings (2026-07-04, verified against the
 installed openwakeword package):
 
 - openwakeword ships the official trainer:
-  `python -m openwakeword.train --training_config <yaml>
-  --generate_clips --augment_clips --train_model`. The YAML carries
-  target_phrase, model_name, n_samples, piper_sample_generator_path,
-  rir_paths, background_paths, feature_data_files,
-  false_positive_validation_data_path, steps, output_dir (full key
-  list read from train.py).
+
+  ```
+  python -m openwakeword.train --training_config <yaml> --generate_clips --augment_clips --train_model
+  ```
+
+  The YAML carries target_phrase, model_name, n_samples,
+  piper_sample_generator_path, rir_paths, background_paths,
+  feature_data_files, false_positive_validation_data_path, steps,
+  output_dir (full key list read from train.py).
 - Its dependency stack is NOT in whisper-env and must stay out of it:
   torch (CUDA), torchinfo, torchmetrics, plus a piper-sample-generator
   checkout with its libritts TTS checkpoint. Plan: a separate trainer
