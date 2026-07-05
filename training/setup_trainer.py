@@ -174,8 +174,10 @@ else:
         print(f"skipped {skipped} undecodable clips")
     if n == start:
         # Nothing decoded = wholly bad source; the caller must see a
-        # failure, not an empty success.
-        sys.exit(f"no clips decoded from {source}")
+        # failure, not an empty success. config carries the directory
+        # for local sources and the dataset config for HF sources.
+        sys.exit(f"no clips decoded from {source} "
+                 f"(config={config}, split={split})")
 print(f"wrote {n - start} wavs to {out_dir} ({n} total)")
 """
 
