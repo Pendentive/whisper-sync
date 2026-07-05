@@ -326,7 +326,12 @@ class WakeListener:
     def _run(self, stop_event: threading.Event) -> None:
         try:
             model = self._load_model()
-        except ImportError as exc:
+        except ModuleNotFoundError as exc:
+            # ONLY a genuinely missing package gets the install hint.
+            # A DLL-init ImportError (the 2026-07-05 owner report:
+            # onnxruntime loaded too late in the process) used to land
+            # here and lie about the cause; it now falls through to the
+            # generic branch with the real traceback.
             logger.warning(
                 f"Wake listener unavailable: openwakeword is not "
                 f"installed ({exc}) - pip install openwakeword in "

@@ -53,10 +53,11 @@ except ImportError:
     np = None
     _HAS_NUMPY = False
 
-# onnxruntime must initialize BEFORE scipy/torch/portaudio DLLs enter
-# the process: loaded later (as the wake tests would, mid-suite) its
-# pybind11 DLL init fails on Windows. Import here at collection time;
+# onnxruntime must initialize BEFORE windows_toasts' WinRT bindings
+# enter the process (bisected 2026-07-05): loaded later, its pybind11
+# DLL init fails on Windows. Import here at collection time;
 # openwakeword picks up the already-loaded module. Harmless if absent.
+# The app applies the same preload at the top of __main__.py.
 try:
     import onnxruntime
     _ORT_PRELOADED = bool(onnxruntime)

@@ -24,6 +24,19 @@ warnings.filterwarnings("ignore", message="std\\(\\): degrees of freedom is <= 0
 logging.getLogger("lightning.pytorch.utilities.migration.utils").setLevel(logging.ERROR)
 logging.getLogger("whisperx.vads.pyannote").setLevel(logging.WARNING)
 logging.getLogger("whisperx.diarize").setLevel(logging.WARNING)
+
+# onnxruntime (the wake listener's inference engine) must initialize
+# BEFORE windows_toasts: with the WinRT bindings loaded first, its
+# pybind11 DLL init fails and the listener reports itself unavailable
+# (owner-reported 2026-07-05; bisected to windows_toasts specifically,
+# reproduced and fixed the same way in the live test suite). ~50ms and
+# a few MB when present; a harmless no-op when the package is absent.
+try:
+    import onnxruntime as _ort_dll_preload
+    del _ort_dll_preload
+except Exception:
+    pass
+
 from pathlib import Path
 
 import keyboard

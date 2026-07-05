@@ -72,6 +72,8 @@ TRAINER_PACKAGES = [
     "acoustics==0.2.6",
     "pronouncing==0.2.0",
     "datasets==2.14.6",
+    # datasets 2.14 uses pa.PyExtensionType, removed in pyarrow 17
+    "pyarrow<17",
     "deep-phonemizer==0.0.19",
 ]
 

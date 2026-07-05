@@ -355,6 +355,25 @@ training job with menu status/ETA + completion toast.
   the first supervised training run wait for an explicit owner go -
   PROVISIONAL config values are validated by that first run.
 
+- **2026-07-05 (owner-reported listener failure, root-caused +
+  fixed)**: the owner enabled the wake listener and "nothing
+  happened". The app log showed the listener reporting "openwakeword
+  is not installed" - it IS installed; the real failure was
+  onnxruntime's pybind11 DLL init, which fails when windows_toasts'
+  WinRT bindings load first (bisected across the app's import set;
+  scipy/portaudio/pystray/PIL/keyboard/whisperx are all innocent).
+  Fix: onnxruntime preload at the top of __main__.py before any app
+  import, plus an honest error split in the listener
+  (ModuleNotFoundError = install hint; any other ImportError = real
+  traceback + "could not load" toast, regression-tested). Reproduced
+  and proven in-process: without preload the import fails after
+  windows_toasts; with it the model loads and predicts. Also: owner
+  gaming - the app was STOPPED to free VRAM (stronger than sleep;
+  one start.ps1 relaunch brings it back on the fixed code), and all
+  GPU/model use now ASKS FIRST until further notice. Trainer setup:
+  the 17.5 GB feature downloads completed; datasets 2.14.6 needed
+  pyarrow<17 (PyExtensionType removal); conversion resumed.
+
 - **2026-07-05 (owner directives: automate validation, real-meeting
   fixture, hardware freed)**: the owner asked that nothing require his
   hand-testing, that a real 5-10 minute multi-speaker meeting be
