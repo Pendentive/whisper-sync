@@ -46,8 +46,12 @@ FEATURE_FILES = [
     "validation_set_features.npy",
 ]
 
-AUDIOSET_TAR = ("https://huggingface.co/datasets/agkphysics/AudioSet/"
-                "resolve/main/data/bal_train09.tar")
+# The notebook's bal_train09.tar 404s: agkphysics/AudioSet was
+# restructured (2026) into parquet shards under data/bal_train/. One
+# ~700 MB shard carries the same balanced-train audio volume the
+# notebook's tar did.
+AUDIOSET_PARQUET = ("https://huggingface.co/datasets/agkphysics/AudioSet/"
+                    "resolve/main/data/bal_train/09.parquet")
 
 # Training deps per the upstream notebook, minus the tensorflow/tflite
 # export chain (the listener loads onnx; train.py's import scan shows
@@ -96,6 +100,8 @@ if source == "local":
     files = [str(p) for p in Path(config).glob("**/*")
              if p.suffix.lower() in (".flac", ".wav", ".mp3", ".ogg")]
     ds = Dataset.from_dict({"audio": files}).cast_column("audio", Audio())
+elif source == "parquet":
+    ds = load_dataset("parquet", data_files=config, split="train")
 else:
     ds = load_dataset(source, config if config != "-" else None,
                       split=split, streaming=False)
@@ -117,17 +123,6 @@ def log(msg: str) -> None:
 def run(cmd: list, **kw) -> None:
     log("run: " + " ".join(str(c) for c in cmd))
     subprocess.run([str(c) for c in cmd], check=True, **kw)
-
-
-def safe_extract(tar, dest: Path) -> None:
-    """extractall with member-path validation (remote tarballs can
-    carry traversal paths; every member must resolve under dest)."""
-    dest = dest.resolve()
-    for member in tar.getmembers():
-        target = (dest / member.name).resolve()
-        if not target.is_relative_to(dest):
-            raise RuntimeError(f"unsafe tar member: {member.name}")
-    tar.extractall(dest)
 
 
 def download(url: str, dest: Path) -> None:
@@ -215,15 +210,9 @@ def phase_datasets(root: Path) -> None:
 
     audioset = data / "audioset_16k"
     if not audioset.exists():
-        tar = data / "bal_train09.tar"
-        download(AUDIOSET_TAR, tar)
-        extracted = data / "audioset_raw"
-        if not extracted.exists():
-            import tarfile
-            log(f"extracting {tar.name}")
-            with tarfile.open(tar) as tf:
-                safe_extract(tf, extracted)
-        run([py, snippet, "local", extracted, "-", audioset])
+        parquet = data / "audioset_bal_train_09.parquet"
+        download(AUDIOSET_PARQUET, parquet)
+        run([py, snippet, "parquet", parquet, "-", audioset])
     else:
         log("audioset_16k exists, skipping")
 
