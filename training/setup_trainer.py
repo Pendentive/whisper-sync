@@ -107,6 +107,7 @@ out_dir.mkdir(parents=True, exist_ok=True)
 # Continue numbering after existing wavs so multiple source shards
 # can feed one directory without overwriting each other.
 n = len(list(out_dir.glob("*.wav")))
+start = n
 
 
 def write_16k(arr, rate):
@@ -126,14 +127,25 @@ def write_16k(arr, rate):
 if source == "parquet":
     import pyarrow.parquet as pq
     import soundfile as sf
-    table = pq.read_table(config, columns=["audio"])
-    for item in table.column("audio").to_pylist():
-        try:
-            arr, rate = sf.read(io.BytesIO(item["bytes"]),
-                                dtype="float32")
-        except Exception:
-            continue  # skip undecodable clips, keep the batch going
-        write_16k(arr, rate)
+    skipped = 0
+    # Batched read: a whole ~700MB shard materialized at once doubles
+    # peak memory for no benefit.
+    pf = pq.ParquetFile(config)
+    for batch in pf.iter_batches(columns=["audio"], batch_size=32):
+        for item in batch.column("audio").to_pylist():
+            try:
+                arr, rate = sf.read(io.BytesIO(item["bytes"]),
+                                    dtype="float32")
+            except Exception:
+                skipped += 1  # one bad clip must not kill the batch
+                continue
+            write_16k(arr, rate)
+    if skipped:
+        print(f"skipped {skipped} undecodable clips")
+    if n == 0:
+        # Nothing decoded = schema mismatch or wholly bad shard; the
+        # caller must see a failure, not an empty success.
+        sys.exit(f"no clips decoded from {config}")
 else:
     from datasets import load_dataset, Audio, Dataset
     if source == "local":
@@ -147,7 +159,7 @@ else:
     ds = ds.cast_column("audio", Audio(sampling_rate=16000))
     for row in ds:
         write_16k(np.asarray(row["audio"]["array"]), 16000)
-print(f"wrote {n} wavs to {out_dir}")
+print(f"wrote {n - start} wavs to {out_dir} ({n} total)")
 """
 
 
@@ -247,7 +259,7 @@ def phase_datasets(root: Path) -> None:
              "davidscripka/MIT_environmental_impulse_responses", "-",
              "train", rirs])
     else:
-        log("mit_rirs exists, skipping")
+        log("mit_rirs already converted, skipping")
 
     audioset = data / "audioset_16k"
     if not _has_wavs(audioset):
@@ -257,13 +269,13 @@ def phase_datasets(root: Path) -> None:
             download(url, parquet)
             run([py, snippet, "parquet", parquet, "train", audioset])
     else:
-        log("audioset_16k exists, skipping")
+        log("audioset_16k already converted, skipping")
 
     fma = data / "fma"
     if not _has_wavs(fma):
         run([py, snippet, "rudraml/fma", "small", "train", fma])
     else:
-        log("fma exists, skipping")
+        log("fma already converted, skipping")
 
 
 def main() -> int:
