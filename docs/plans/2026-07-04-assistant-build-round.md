@@ -14,8 +14,8 @@
 | # | Step | Spec anchor | Status |
 |---|------|-------------|--------|
 | 1 | GPU power-state failover (guard-owned, cpu_fallback_model) | GPU power-state resilience | MERGED (#180-#182) |
-| 2 | Tier 0+1 always-on listener (VAD + openWakeWord, off by default) | Staged architecture, step 2 | POC IN PROGRESS (pretrained phrase) |
-| 3 | Tier 2 splice: wake -> ring-buffer-prefixed dictation + outro | Staged architecture, step 2 | QUEUED |
+| 2 | Tier 0+1 always-on listener (VAD + openWakeWord, off by default) | Staged architecture, step 2 | POC MERGED (#187, pretrained phrase) |
+| 3 | Tier 2 splice: wake -> ring-buffer-prefixed dictation + outro | Staged architecture, step 2 | IN PROGRESS (PR 1: splice core) |
 | 4 | Per-app meeting auto-record (mic consent-store watch + app list) | Staged architecture, step 3 | MERGED (#183, #184) |
 | 5 | Self-serve phrase manager (typed phrases, background training, active checkmarks) | Owner decisions, fourth intake: the phrase manager | QUEUED |
 | 6 | NPU/OpenVINO backup-transcriber backend (committed scope) | NPU section | QUEUED |
@@ -119,6 +119,39 @@ PRs:
   listener's voice command ("record the meeting") or a window-title
   heuristic later.
 
+## Step 3 plan - tier-2 splice
+
+Requirement (spec + handoff design anchors): a wake detection must
+become a hands-free dictation with no syllables lost, ended by an
+outro phrase or silence.
+
+- **PR 1 - splice core**: the listener keeps a rolling ~2.5s ring
+  buffer of int16 frames (fed only while inference runs; cleared on
+  pause entry so recordings and whisper-mode speech never cross into
+  it). On wake it hands the assembled float32 prefix to
+  DictationFlow.begin_via_wake, which starts a NORMAL disk-first
+  dictation with the prefix seeded ahead of live capture in both sinks
+  (RAM accumulator and crash-safety WAV - both seams are ordered
+  before the callback can write, so no locking against the audio
+  thread). The spoken wake phrase rides along in the prefix;
+  strip_leading_phrase removes it (and any ring lead-in before it)
+  from the transcription. Busy states refuse with a yellow flash; a
+  sleeping model is woken and recording proceeds while it loads.
+  Opportunistic fix: AudioRecorder.start() now resets a stale
+  _disk_only flag left by a disk-streamed meeting (an incognito
+  dictation after such a meeting used to capture nothing).
+- **PR 2 - outro + silence stop**: keep listening during a
+  wake-initiated dictation; end it on an outro phrase (second
+  openWakeWord model in the same score dict) or a sustained-silence
+  fallback, whichever is configured.
+
+Known POC gaps (deliberate): audio between detection and the dictation
+mic opening (~0.1-0.3s, usually the natural pause after the phrase) is
+not captured - a seamless handoff needs a listener-to-recorder stream
+handover and is not worth it before the custom-phrase trainer. The
+overlay path (dictation during meeting recording/transcription) is not
+spliced; wakes during meetings refuse politely.
+
 ## Progress log
 
 - **2026-07-04 (round start)**: Handoff consumed; #178 verified merged;
@@ -218,3 +251,13 @@ PRs:
   Verified live in the venv: model download + load + predict on the
   dev machine. Config: wake_listener (off), wake_phrase_model,
   wake_threshold; tray toggle under Settings.
+
+- **2026-07-04 (step 3 PR 1)**: tier-2 splice core per the step 3 plan.
+  A wake now starts a real dictation: ring-buffer prefix into both
+  recorder sinks, wake-phrase strip on the stop path (window-bounded,
+  wake sessions only - a mid-sentence mention of the phrase in a
+  normal dictation is never touched), begin_via_wake busy/sleep
+  semantics mirroring the hotkey toggle, and the stale _disk_only fix
+  with regression tests. The listener frame loop was refactored into
+  handle_frame() so ring gating and pause-latch behavior are
+  unit-tested without audio.

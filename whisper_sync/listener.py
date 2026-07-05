@@ -1,12 +1,20 @@
-"""Always-on wake-word listener - assistant build round, step 2 (POC).
+"""Always-on wake-word listener - assistant build round, steps 2+3.
 
 Tier 0+1 of the voice-assistant architecture (direction spec): a
 shared, non-exclusive mic stream feeds 80ms frames into an openWakeWord
-model on the CPU. This POC ships with a PRETRAINED phrase as a
-placeholder (default "hey jarvis") - the owner's custom wake/outro
-phrases and the in-app trainer come later. On detection the POC wakes
-the transcription model (auto_sleep.wake) and toasts; the tier-2
-splice into a ring-buffer-prefixed dictation is the next step.
+model on the CPU, with a PRETRAINED phrase as a placeholder (default
+"hey jarvis") until the owner's custom wake/outro phrases and the
+in-app trainer arrive (step 5).
+
+Tier 2 splice (step 3): the listener keeps a rolling RAM ring buffer of
+the last ~2.5s of frames. On detection it hands that buffer to a normal
+disk-first dictation start (DictationFlow.begin_via_wake), so the
+syllables spoken around the wake phrase are not lost while the
+dictation mic opens. The spoken wake phrase rides along in the prefix
+audio; the stop path strips it from the transcription text
+(strip_leading_phrase). Known POC gap, recorded in the plan doc: audio
+between detection and the dictation mic opening (~0.1-0.3s, usually
+the natural pause after the phrase) is not captured.
 
 Power and privacy posture (spec + owner decisions):
 - OFF by default (``wake_listener``); tray toggle under Settings.
@@ -33,8 +41,10 @@ disabled.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
+from collections import deque
 
 from .logger import logger
 from .notifications import notify
@@ -48,18 +58,76 @@ FRAME_SAMPLES = 1280
 # spoken wake phrase must fire exactly one wake.
 REFRACTORY_S = 3.0
 
+# Rolling pre-wake buffer handed to the dictation splice. Long enough
+# to cover the spoken wake phrase plus lead-in; short enough that the
+# transcriber barely notices the prefix. RAM cost: ~80 KB of int16.
+RING_SECONDS = 2.5
+RING_FRAMES = int(RING_SECONDS * SAMPLE_RATE / FRAME_SAMPLES)
+
+# strip_leading_phrase only strips when the wake phrase appears within
+# this many characters of the start of the transcription: the ring is
+# ~2.5s, so a genuine spoken phrase always lands early. Anything later
+# is the user SAYING the phrase mid-sentence and must be preserved.
+STRIP_SEARCH_CHARS = 48
+
+
+def _phrase_tokens(phrase_name: str) -> list[str]:
+    """Model name -> spoken words ("hey_jarvis_v0.1" -> ["hey", "jarvis"]).
+
+    Drops path components, the file extension, and bare version tokens
+    (v0, v1, ...) that appear in openWakeWord model file names.
+    """
+    stem = re.split(r"[\\/]", phrase_name)[-1]
+    stem = stem.split(".", 1)[0]
+    tokens = [t for t in re.split(r"[_\-\s]+", stem.lower()) if t]
+    return [t for t in tokens if not re.fullmatch(r"v\d+", t)]
+
+
+def strip_leading_phrase(text: str, phrase_name: str) -> str:
+    """Remove the spoken wake phrase (and any lead-in before it) from
+    the head of a wake-spliced transcription.
+
+    The ring-buffer prefix contains the wake phrase and up to ~1.5s of
+    room audio before it; both belong to the summons, not the
+    dictation. Conservative: when the phrase is not found near the
+    start, the text is returned unchanged.
+    """
+    if not text:
+        return text
+    tokens = _phrase_tokens(phrase_name)
+    if not tokens:
+        return text
+    # Whisper renders "hey jarvis" as "Hey, Jarvis." and friends -
+    # allow punctuation and whitespace between and after the tokens.
+    # Word boundaries keep single-token phrases from matching inside a
+    # longer word ("alexa" must not strip through "Alexander").
+    sep = r"[\s,.!?;:-]+"
+    pattern = (r"\b" + sep.join(re.escape(t) for t in tokens)
+               + r"\b[\s,.!?;:-]*")
+    match = re.search(pattern, text, re.IGNORECASE)
+    if match is None or match.start() > STRIP_SEARCH_CHARS:
+        return text
+    return text[match.end():].lstrip()
+
 
 class WakeListener:
     """Owns the always-on listening loop; services via ``app``."""
 
     def __init__(self, app, on_wake=None):
         self.app = app
-        # Seam for step 3: the splice replaces this default action.
+        # The step-3 seam: the default action IS the tier-2 splice now;
+        # tests (and future command routing) can still inject on_wake.
         self._on_wake = on_wake or self._default_wake_action
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._last_fire = 0.0
         self._lock = threading.Lock()
+        # Rolling pre-wake audio (int16 mono frames). Only fed while
+        # inference runs: paused periods (whisper mode, recordings)
+        # leave nothing behind, and the buffer is cleared on pause
+        # entry so pre-pause audio never crosses a privacy boundary.
+        self._ring: deque = deque(maxlen=RING_FRAMES)
+        self._was_paused = False
 
     # -- Config ----------------------------------------------------------------
 
@@ -143,26 +211,14 @@ class WakeListener:
         logger.info(
             f"Wake listener active: phrase model '{self._phrase()}', "
             f"threshold {self._threshold():.2f}")
-        was_paused = False
+        self._was_paused = False
+        self._ring.clear()
         try:
             with sd.InputStream(samplerate=SAMPLE_RATE, channels=1,
                                 dtype="int16", blocksize=FRAME_SAMPLES) as stream:
                 while not stop_event.is_set():
                     frame, _overflowed = stream.read(FRAME_SAMPLES)
-                    if self._paused():
-                        # Keep draining the stream (cheap) but skip
-                        # inference. Reset ONCE on entering the pause
-                        # (review catch: not per 80ms frame) - clears
-                        # pre-pause audio so it cannot fire on resume;
-                        # nothing accumulates during the pause because
-                        # paused frames are never fed to the model.
-                        if not was_paused:
-                            model.reset()
-                            was_paused = True
-                        continue
-                    was_paused = False
-                    scores = model.predict(np.squeeze(frame))
-                    self.process_scores(scores)
+                    self.handle_frame(np.squeeze(frame), model)
         except Exception:
             logger.warning("Wake listener stopped on stream error",
                            exc_info=True)
@@ -186,6 +242,43 @@ class WakeListener:
                          vad_threshold=0.5)
 
     # -- Decision logic (unit-tested without audio) --------------------------------
+
+    def handle_frame(self, mono, model) -> None:
+        """One frame's worth of decisions (unit-tested without audio).
+
+        ``mono`` is one 80ms int16 frame (already squeezed to 1-D by the
+        loop); ``model`` is the loaded openWakeWord model. While paused,
+        inference is skipped and the model is reset ONCE on entering the
+        pause (review catch on the POC: not per 80ms frame) - it clears
+        pre-pause audio so it cannot fire on resume, and the ring buffer
+        is cleared for the same reason (paused audio is someone's
+        recording or whisper-mode speech; the splice must never inherit
+        it).
+        """
+        if self._paused():
+            if not self._was_paused:
+                model.reset()
+                self._ring.clear()
+                self._was_paused = True
+            return
+        self._was_paused = False
+        self._ring.append(mono)
+        self.process_scores(model.predict(mono))
+
+    def _assemble_prefix(self):
+        """Ring frames -> the mono float32 column the recorder expects.
+
+        Consumes (and clears) the ring. Returns None when the ring is
+        empty. numpy is imported lazily: this only runs on the wake
+        path, where the audio stack is present by definition.
+        """
+        if not self._ring:
+            return None
+        import numpy as np
+        frames = list(self._ring)
+        self._ring.clear()
+        audio = np.concatenate(frames).astype(np.float32) / 32768.0
+        return audio.reshape(-1, 1)
 
     def _paused(self) -> bool:
         """True while inference should not run.
@@ -224,13 +317,28 @@ class WakeListener:
         return True
 
     def _default_wake_action(self) -> None:
-        """POC action: wake the model + announce. The tier-2 splice
-        (ring-buffer-prefixed dictation + outro phrase) replaces this."""
-        logger.info("Wake word detected")
-        state = self.app.state
-        if state is not None and state.current.sleeping:
-            self.app.auto_sleep.wake(reason="wake_word")
+        """Tier-2 splice: hand the ring buffer to a dictation start.
+
+        begin_via_wake owns the busy checks and wakes a sleeping model
+        itself (recording is disk-first, so it starts immediately and
+        transcription waits for the load). The prefix is skipped when
+        the recorder runs at a non-16k sample rate: the ring is 16k and
+        must not be spliced into a stream at another rate.
+        """
+        logger.info("Wake word detected - starting dictation")
+        prefix = None
+        try:
+            recorder_rate = int(self.app.cfg.get("sample_rate", SAMPLE_RATE))
+        except (TypeError, ValueError):
+            recorder_rate = SAMPLE_RATE
+        if recorder_rate == SAMPLE_RATE:
+            prefix = self._assemble_prefix()
         else:
+            self._ring.clear()
+            logger.debug("wake prefix skipped: recorder sample_rate is "
+                         f"{recorder_rate}, ring is {SAMPLE_RATE}")
+        started = self.app.dictation.begin_via_wake(prefix)
+        if not started:
+            logger.info("Wake word heard but dictation could not start "
+                        "(another workflow is active)")
             self.app._yellow_flash()
-        notify("Wake word heard",
-               "POC: dictation splice arrives in the next step.")

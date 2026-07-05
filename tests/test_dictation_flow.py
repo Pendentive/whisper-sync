@@ -29,14 +29,18 @@ class _FakeRecorder:
         self.audio = {"mic": "AUDIO"}
         self.stop_streaming_calls = 0
         self.fail_start = False
+        self.start_prefix = None
+        self.streaming_prefix = None
 
-    def start(self, mic_device=None):
+    def start(self, mic_device=None, prefix_audio=None):
         if self.fail_start:
             raise RuntimeError("no mic")
+        self.start_prefix = prefix_audio
         self.is_recording = True
 
-    def start_streaming(self, path):
+    def start_streaming(self, path, prefix_audio=None):
         self.streaming_path = path
+        self.streaming_prefix = prefix_audio
 
     def stop(self):
         self.is_recording = False
@@ -426,6 +430,92 @@ class OverlayDictationTests(_FlowHarness):
         self.assertFalse(self.flow.overlay_active)
         self.assertFalse(self.app.state.current.feature_suggest)
         self.paste.assert_not_called()
+
+
+class WakeSpliceTests(_FlowHarness):
+    """Tier-2 splice entry point: begin_via_wake starts a NORMAL
+    disk-first dictation with the listener's ring buffer as an audio
+    prefix, and the stop path strips the spoken wake phrase."""
+
+    def test_begin_via_wake_threads_prefix_to_ram_and_disk(self):
+        self.assertTrue(self.flow.begin_via_wake("PREFIX"))
+        self.assertEqual(self.app.state.current.mode, "dictation")
+        self.assertEqual(self.app.recorder.start_prefix, "PREFIX")
+        self.assertEqual(self.app.recorder.streaming_prefix, "PREFIX",
+                         "crash-safety WAV must contain the prefix too")
+
+    def test_wake_session_strips_leading_phrase_on_stop(self):
+        self.app.worker.transcribe_fast = (
+            lambda audio, model_override=None, timeout=None:
+            "Hey, Jarvis. Take a note about the demo.")
+        self.assertTrue(self.flow.begin_via_wake(None))
+        self.flow.toggle()
+        self.paste.assert_called_once()
+        self.assertEqual(self.paste.call_args[0][0],
+                         "Take a note about the demo.")
+
+    def test_normal_dictation_never_strips(self):
+        self.app.worker.transcribe_fast = (
+            lambda audio, model_override=None, timeout=None:
+            "Hey, Jarvis. Take a note.")
+        self.flow.toggle()
+        self.flow.toggle()
+        self.assertEqual(self.paste.call_args[0][0],
+                         "Hey, Jarvis. Take a note.")
+
+    def test_wake_session_with_only_the_phrase_pastes_nothing(self):
+        self.app.worker.transcribe_fast = (
+            lambda audio, model_override=None, timeout=None: "Hey Jarvis.")
+        self.flow.begin_via_wake(None)
+        self.flow.toggle()
+        self.paste.assert_not_called()
+        self.assertEqual(self.app.state.current.mode, "done")
+
+    def test_discarded_wake_session_does_not_strip_the_next_dictation(self):
+        self.app.worker.transcribe_fast = (
+            lambda audio, model_override=None, timeout=None:
+            "Hey Jarvis is my wake phrase.")
+        self.flow.begin_via_wake(None)
+        self.flow.discard()
+        self.flow.toggle()
+        self.flow.toggle()
+        self.assertEqual(self.paste.call_args[0][0],
+                         "Hey Jarvis is my wake phrase.")
+
+    def test_refuses_while_a_dictation_is_running(self):
+        self.flow.toggle()
+        self.assertFalse(self.flow.begin_via_wake(None))
+        self.assertEqual(self.app.state.current.mode, "dictation",
+                         "running dictation must be untouched")
+
+    def test_refuses_during_meeting_and_saving(self):
+        self.app.state.emit(MEETING_STARTED, mode="meeting")
+        self.assertFalse(self.flow.begin_via_wake(None))
+        self.app.state.emit("x", mode="saving")
+        self.assertFalse(self.flow.begin_via_wake(None))
+
+    def test_refuses_during_overlay_and_meeting_transcription(self):
+        self.app.state.emit("x", dictation_overlay=True)
+        self.assertFalse(self.flow.begin_via_wake(None))
+        self.app.state.emit("x", dictation_overlay=False,
+                            meeting_transcribing=True)
+        self.assertFalse(self.flow.begin_via_wake(None),
+                         "overlay path is not spliced; must refuse")
+
+    def test_wakes_a_sleeping_model_and_records_disk_first(self):
+        from whisper_sync.state_manager import SLEEP_STARTED
+        self.app.auto_sleep = mock.Mock()
+        self.app.worker.ready = False
+        self.app.state.emit(SLEEP_STARTED, sleeping=True)
+        self.assertTrue(self.flow.begin_via_wake(None))
+        self.app.auto_sleep.wake.assert_called_once_with(reason="wake_word")
+        self.assertTrue(self.app.recorder.is_recording)
+
+    def test_mic_failure_reports_false_and_clears_wake_intent(self):
+        self.app.recorder.fail_start = True
+        self.assertFalse(self.flow.begin_via_wake(None))
+        self.assertIsNone(self.app.state.current.mode)
+        self.assertFalse(self.flow._wake_session)
 
 
 class HistoryTests(_FlowHarness):

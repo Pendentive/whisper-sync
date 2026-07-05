@@ -303,12 +303,28 @@ class AudioRecorder:
                 self._speaker_error_logged = True
                 logger.warning(f"speaker callback error (suppressed): {e}")
 
-    def start(self, mic_device: int | None = None, speaker_device: int | None = None):
+    def start(self, mic_device: int | None = None, speaker_device: int | None = None,
+              prefix_audio: np.ndarray | None = None):
         with self._lock:
             self._mic_data = []
             self._speaker_data = []
             self._mic_error_logged = False
             self._speaker_error_logged = False
+            # Wake-splice prefix (tier-2): mono float32 audio the wake
+            # listener ring-buffered BEFORE this recorder existed, at
+            # self.sample_rate. Seeded before the stream opens, so it is
+            # ordered ahead of every callback buffer without any locking
+            # against the callback thread. The disk writer gets the same
+            # prefix in start_streaming() (RAM and disk are parallel
+            # sinks; each needs its own copy).
+            if prefix_audio is not None and len(prefix_audio):
+                self._mic_data.append(prefix_audio)
+            # Disk-only is a per-session property of start_streaming().
+            # A previous disk-streamed meeting must not leave the
+            # RAM-skipping flag armed for a session that never opens a
+            # writer: an incognito dictation after such a meeting used to
+            # capture NOTHING (callback skipped RAM and had no writer).
+            self._disk_only = False
 
             # Transactional: the recorder only becomes "recording" AFTER
             # the mic stream is fully open and started. On any failure we
@@ -552,7 +568,8 @@ class AudioRecorder:
             return None
         return _monotonic() - last
 
-    def start_streaming(self, mic_path, speaker_path=None, disk_only=False):
+    def start_streaming(self, mic_path, speaker_path=None, disk_only=False,
+                        prefix_audio=None):
         """Open streaming WAV writers for crash safety during meeting recording.
 
         Args:
@@ -562,12 +579,19 @@ class AudioRecorder:
                 the loopback stream is active and ``disk_only`` is set.
             disk_only: If True, skip RAM accumulation -- audio lives only on disk.
                 Use for long meetings to prevent MemoryError.
+            prefix_audio: Optional mono float32 audio (wake-splice ring
+                buffer) written ahead of the live capture.
 
         Transactional: if ``StreamingWavWriter`` raises (e.g. unwritable
         disk), the ``_disk_only`` flag is NOT flipped, so the callback
         continues to accumulate into RAM and the meeting is still usable.
         """
         writer = StreamingWavWriter(mic_path, channels=1, rate=self.sample_rate)
+        # The prefix is written BEFORE the writer is published to the
+        # callback thread, so it lands ahead of every live buffer in the
+        # WAV without locking.
+        if prefix_audio is not None and len(prefix_audio):
+            writer.write(prefix_audio)
         # Only commit state after the writer is successfully opened. The
         # old ordering flipped _disk_only first; a writer-open failure
         # then left the callback skipping BOTH RAM and disk and the
