@@ -15,7 +15,7 @@
 |---|------|-------------|--------|
 | 1 | GPU power-state failover (guard-owned, cpu_fallback_model) | GPU power-state resilience | MERGED (#180-#182) |
 | 2 | Tier 0+1 always-on listener (VAD + openWakeWord, off by default) | Staged architecture, step 2 | POC MERGED (#187, pretrained phrase) |
-| 3 | Tier 2 splice: wake -> ring-buffer-prefixed dictation + outro | Staged architecture, step 2 | IN PROGRESS (PR 1: splice core) |
+| 3 | Tier 2 splice: wake -> ring-buffer-prefixed dictation + outro | Staged architecture, step 2 | MERGED (#189, #190) |
 | 4 | Per-app meeting auto-record (mic consent-store watch + app list) | Staged architecture, step 3 | MERGED (#183, #184) |
 | 5 | Self-serve phrase manager (typed phrases, background training, active checkmarks) | Owner decisions, fourth intake: the phrase manager | QUEUED |
 | 6 | NPU/OpenVINO backup-transcriber backend (committed scope) | NPU section | QUEUED |
@@ -23,10 +23,12 @@
 
 Standing authorization (owner, 2026-07-03/04): proceed step to step
 without asking unless a large unforeseen blocker. Third intake
-(2026-07-04): the listener POC is GO with a pretrained phrase; the
-owner still owes the CUSTOM wake + outro phrase choices, the final
-whisper-mode decision (POC default: listener off in whisper mode),
-and the command allowlist shape.
+(2026-07-04): the listener POC is GO with a pretrained phrase. Fourth
+intake: custom wake/outro phrase strings arrive as TYPED text through
+the step 5 phrase manager (never ask the owner to speak or pre-pick
+them); still open are the final whisper-mode decision (default until
+then: listener off in whisper mode) and the command allowlist shape
+(tier-2 command routing, later round).
 
 ## Step 1 plan - GPU power-state failover
 
@@ -152,6 +154,47 @@ handover and is not worth it before the custom-phrase trainer. The
 overlay path (dictation during meeting recording/transcription) is not
 spliced; wakes during meetings refuse politely.
 
+## Step 5 plan - self-serve phrase manager
+
+Requirement (spec, fourth intake): typed phrase strings, background
+dGPU training with menu status/ETA, saved phrases with active
+checkmarks, multiple phrases at once, reset - never ask the owner to
+say anything out loud.
+
+Training pipeline findings (2026-07-04, verified against the
+installed openwakeword package):
+
+- openwakeword ships the official trainer:
+  `python -m openwakeword.train --training_config <yaml>
+  --generate_clips --augment_clips --train_model`. The YAML carries
+  target_phrase, model_name, n_samples, piper_sample_generator_path,
+  rir_paths, background_paths, feature_data_files,
+  false_positive_validation_data_path, steps, output_dir (full key
+  list read from train.py).
+- Its dependency stack is NOT in whisper-env and must stay out of it:
+  torch (CUDA), torchinfo, torchmetrics, plus a piper-sample-generator
+  checkout with its libritts TTS checkpoint. Plan: a separate trainer
+  venv created by a one-time guided setup step.
+- One-time dataset downloads on the order of 10-20 GB (room impulse
+  responses, background noise, precomputed negative features,
+  false-positive validation corpus). The setup step needs an explicit
+  size warning and a resumable downloader.
+- Training runs tens of minutes on the dGPU. It must be a background
+  job with tray status/ETA, and it must respect the GPU protocols:
+  refuse to start while the app is busy or asleep-for-gaming, and warn
+  the owner before any run (feedback_warn-before-gpu-heavy-tests).
+- Output: a .onnx per phrase in a phrases directory + a saved-phrase
+  registry in config (name -> model path + active flag + role
+  wake/outro). The listener already routes a multi-model score dict
+  (#190), so activating N phrases is just loading N models.
+
+PR sketch: **PR A** trainer venv + dataset setup script and a headless
+CLI that trains ONE phrase end to end on the dev machine (validates
+the whole pipeline before any UI exists). **PR B** phrase registry +
+listener loading of all active phrase models + tray Saved Phrases
+surface (checkmarks, roles). **PR C** Set Phrase dialog + background
+training job with menu status/ETA + completion toast.
+
 ## Progress log
 
 - **2026-07-04 (round start)**: Handoff consumed; #178 verified merged;
@@ -275,3 +318,15 @@ spliced; wakes during meetings refuse politely.
   anchored to the end so a mid-sentence outro is preserved). Hotkey
   stop, discard, the minutes cap, and incognito all hand the listener
   back to normal listening cleanly.
+
+- **2026-07-05 (step 3 complete, #189 + #190 merged)**: #189 took a
+  clean Copilot review (second of the round); #190 had one catch
+  (invalid wake_silence_stop_s values silently disabled the silence
+  stop instead of falling back to the default), fixed with a
+  regression sweep. Multi-model score keys and the silero VAD buffer
+  were verified live in the venv before #190 shipped. Suite 418.
+  Step 5 plan section added from training-pipeline research (official
+  openwakeword trainer contract read from the installed package).
+  Remaining: step 5 phrase manager (plan above), step 6 NPU backend
+  (fresh session). Owner reminder still outstanding: the tray app
+  needs ONE restart to pick up everything from #167 onward.
