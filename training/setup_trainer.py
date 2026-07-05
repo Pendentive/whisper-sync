@@ -88,6 +88,9 @@ TRAINER_PACKAGES = [
     # datasets 2.14 uses pa.PyExtensionType, removed in pyarrow 17
     "pyarrow<17",
     "deep-phonemizer==0.0.19",
+    # torch 2.x's torch.onnx.export requires onnxscript (the final
+    # model-export step; observed live 2026-07-05)
+    "onnxscript",
 ]
 
 # torchaudio 2.2 removed the long-deprecated set/get_audio_backend
