@@ -315,12 +315,22 @@ class TrayMenu:
         # Device (compute) selection
         # Build per-option labels with GPU name from worker (avoids torch import in main process)
         device_options = []
-        gpu_name = self.app.worker.gpu_name if self.app.worker else None
+        # worker.gpu_name only exists after a CUDA worker has loaded;
+        # while the model sleeps (or runs on cpu) it is None and this
+        # menu used to claim "no GPU detected" on a machine with a
+        # perfectly good GPU (owner report 2026-07-05). Fall back to
+        # the hardware name probed once at startup.
+        gpu_name = ((self.app.worker.gpu_name if self.app.worker else None)
+                    or getattr(self.app, "_gpu_hw_name", None))
         auto_suffix = f"\t{gpu_name}" if gpu_name else "\tCPU -- no GPU detected"
         device_options.append(("auto", f"Auto{auto_suffix}"))
         gpu_suffix = f"\t{gpu_name}" if gpu_name else "\tnot available"
         device_options.append(("gpu", f"GPU{gpu_suffix}"))
-        device_options.append(("cpu", "CPU"))
+        # The CPU entry shows WHICH cpu, same as the GPU rows (owner
+        # report: "CPU is not being recognized" - it was never named).
+        cpu_name = getattr(self.app, "_cpu_name", "") or ""
+        cpu_suffix = f"\t{cpu_name}" if cpu_name else ""
+        device_options.append(("cpu", f"CPU{cpu_suffix}"))
         device_items = [
             pystray.MenuItem(
                 label,
@@ -430,6 +440,16 @@ class TrayMenu:
                 "Wake Model" if _sleeping else "Sleep Model\tdouble-click",
                 menu_callback(self.app.auto_sleep.toggle),
             ),
+            # H1 quick toggle (owner request 2026-07-05): Always-On
+            # Listening is reachable without opening Settings. The
+            # detailed surface (phrases, training) stays at the H2
+            # level under Settings > Always-On Listening.
+            pystray.MenuItem(
+                "Always-On Listening",
+                lambda: self._toggle_wake_listener(),
+                checked=lambda item: self.app.cfg.get("wake_listener",
+                                                      False),
+            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Mic Input\tsystem", None, enabled=False)
             if use_sys else
@@ -468,7 +488,7 @@ class TrayMenu:
                                  pystray.Menu(*meeting_model_items)),
                 pystray.MenuItem(f"Device\t{self._get_device_label()}",
                                  pystray.Menu(*device_items)),
-                pystray.MenuItem("Always Available Dictation", pystray.Menu(
+                pystray.MenuItem("Always-On Dictation", pystray.Menu(
                     pystray.MenuItem(
                         "Enabled",
                         lambda: self._toggle_always_available_dictation(),
@@ -509,7 +529,7 @@ class TrayMenu:
                                 "meeting_watch_toast_optout", True)),
                     )),
                 )),
-                pystray.MenuItem("Wake Word Listener", pystray.Menu(
+                pystray.MenuItem("Always-On Listening", pystray.Menu(
                     *self._build_wake_listener_items())),
                 pystray.MenuItem(f"Diarization (Speaker Detection)\t{primary_label}",
                                  pystray.Menu(*diarize_sub_items)),
