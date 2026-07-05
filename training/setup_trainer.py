@@ -101,7 +101,7 @@ if source == "local":
              if p.suffix.lower() in (".flac", ".wav", ".mp3", ".ogg")]
     ds = Dataset.from_dict({"audio": files}).cast_column("audio", Audio())
 elif source == "parquet":
-    ds = load_dataset("parquet", data_files=config, split="train")
+    ds = load_dataset("parquet", data_files=config, split=split)
 else:
     ds = load_dataset(source, config if config != "-" else None,
                       split=split, streaming=False)
@@ -212,7 +212,7 @@ def phase_datasets(root: Path) -> None:
     if not audioset.exists():
         parquet = data / "audioset_bal_train_09.parquet"
         download(AUDIOSET_PARQUET, parquet)
-        run([py, snippet, "parquet", parquet, "-", audioset])
+        run([py, snippet, "parquet", parquet, "train", audioset])
     else:
         log("audioset_16k exists, skipping")
 
