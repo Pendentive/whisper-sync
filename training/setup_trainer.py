@@ -62,7 +62,9 @@ AUDIOSET_PARQUETS = [
 # no unconditional tensorflow import). torch is installed separately
 # with the CUDA index.
 TRAINER_PACKAGES = [
-    "openwakeword",
+    # pinned because phase_package_patches edits its files in place;
+    # a version bump must re-verify the patch anchors
+    "openwakeword==0.6.0",
     # upstream piper-phonemize ships no Windows wheels at all; the
     # -fix rebuild provides the same piper_phonemize module (verified
     # importable on py3.11 2026-07-05)
@@ -78,12 +80,71 @@ TRAINER_PACKAGES = [
     "audiomentations==0.33.0",
     "torch-audiomentations==0.11.0",
     "acoustics==0.2.6",
+    # acoustics 0.2.6 imports scipy.special.sph_harm, removed in
+    # scipy 1.17 (observed live 2026-07-05)
+    "scipy<1.17",
     "pronouncing==0.2.0",
     "datasets==2.14.6",
     # datasets 2.14 uses pa.PyExtensionType, removed in pyarrow 17
     "pyarrow<17",
     "deep-phonemizer==0.0.19",
 ]
+
+# torchaudio 2.2 removed the long-deprecated set/get_audio_backend
+# no-ops (backend dispatch is automatic in 2.x), but the pinned
+# notebook stack (speechbrain 0.5.14, torch-audiomentations 0.11.0)
+# still calls them at import time on Windows. Restoring them as no-ops
+# via sitecustomize keeps the notebook pins verbatim; newer package
+# majors (speechbrain 1.x) change APIs the notebook was verified
+# against. The eager torch import cost is irrelevant in a venv that
+# exists only for training stages.
+SITECUSTOMIZE_SHIM = '''\
+"""Trainer-env compatibility shim (written by setup_trainer.py).
+
+Adapts the pinned openwakeword-notebook stack (speechbrain 0.5.14,
+torch-audiomentations 0.11.0, openwakeword 0.6.0) to torch 2.x, which
+the RTX 5070 Ti (sm_120, cu128 wheels) forces:
+
+- torchaudio 2.2 removed the deprecated set/get_audio_backend no-ops
+  that speechbrain/torch-audiomentations call at import time on
+  Windows; restore them as no-ops.
+- torchaudio 2.9+ delegates load/info to TorchCodec, which needs
+  shared FFmpeg DLLs (fragile on Windows). Every training input here
+  is a plain WAV, so route load/info through soundfile instead.
+  soundfile errors subclass RuntimeError, matching the except clauses
+  in openwakeword.data.
+"""
+try:
+    import torchaudio
+
+    if not hasattr(torchaudio, "set_audio_backend"):
+        torchaudio.set_audio_backend = lambda *args, **kwargs: None
+    if not hasattr(torchaudio, "get_audio_backend"):
+        torchaudio.get_audio_backend = lambda: None
+
+    def _sf_load(filepath, *args, **kwargs):
+        import soundfile as sf
+        import torch
+
+        data, sr = sf.read(str(filepath), dtype="float32", always_2d=True)
+        return torch.from_numpy(data.T).contiguous(), sr
+
+    class _SfInfo:
+        def __init__(self, path):
+            import soundfile as sf
+
+            info = sf.info(str(path))
+            self.sample_rate = int(info.samplerate)
+            self.num_frames = int(info.frames)
+            self.num_channels = int(info.channels)
+            self.bits_per_sample = 16
+            self.encoding = "PCM_S"
+
+    torchaudio.load = _sf_load
+    torchaudio.info = lambda filepath, *args, **kwargs: _SfInfo(filepath)
+except Exception:  # torch not installed yet mid-setup
+    pass
+'''
 
 # Runs inside the trainer venv: materialize audio as 16 kHz mono int16
 # wavs, the layout train.py expects.
@@ -244,6 +305,86 @@ def phase_venv(root: Path, base_python: str, torch_index: str) -> None:
     run([py, "-m", "pip", "install", "torch",
          "--index-url", torch_index])
     run([py, "-m", "pip", "install"] + TRAINER_PACKAGES)
+    shim = root / "trainer-env" / "Lib" / "site-packages" / "sitecustomize.py"
+    if not shim.exists() or shim.read_text(encoding="utf-8") != SITECUSTOMIZE_SHIM:
+        shim.write_text(SITECUSTOMIZE_SHIM, encoding="utf-8")
+        log(f"wrote compat shim: {shim.name}")
+    else:
+        log("compat shim current, skipping")
+    # openwakeword ships WITHOUT its feature-extractor models; the
+    # augment stage needs melspectrogram.onnx + embedding_model.onnx
+    # from download_models() (notebook step; observed live 2026-07-05).
+    resources = (root / "trainer-env" / "Lib" / "site-packages" /
+                 "openwakeword" / "resources" / "models")
+    if not (resources / "melspectrogram.onnx").exists():
+        run([py, "-c",
+             "import openwakeword.utils as u; u.download_models()"])
+    else:
+        log("openwakeword feature models present, skipping download")
+
+
+def _patch_file(target: Path, old: str, new: str) -> None:
+    """Idempotent in-place patch: skip when the patch marker is already
+    present, fail loudly when the expected code is missing (the pinned
+    version drifted and the patch must be re-verified)."""
+    text = target.read_text(encoding="utf-8")
+    if "Patched by setup_trainer.py" in text:
+        log(f"already patched: {target.name}")
+        return
+    if old not in text:
+        raise SystemExit(
+            f"[setup] expected code not found in {target}; the pinned "
+            "version changed - re-verify and update the patch.")
+    target.write_text(text.replace(old, new), encoding="utf-8")
+    log(f"patched: {target.name}")
+
+
+def phase_package_patches(root: Path) -> None:
+    """Windows fixes for the pinned training stack, applied in place
+    (observed live 2026-07-05; the upstream notebook runs on Linux
+    where none of this bites). Idempotent via _patch_file."""
+    site = root / "trainer-env" / "Lib" / "site-packages"
+    # openwakeword's post-feature memmap trim removes/renames files
+    # while numpy memmap handles are still open - fine on POSIX, a
+    # PermissionError (WinError 32) on Windows. Close handles first.
+    _patch_file(
+        site / "openwakeword" / "utils.py",
+        "    # Trip empty rows from the mmapped array\n"
+        "    trim_mmap(output_file)",
+        "    # Patched by setup_trainer.py: close the writer memmap first -\n"
+        "    # Windows cannot remove/rename a file with an open handle.\n"
+        "    del fp\n"
+        "\n"
+        "    # Trip empty rows from the mmapped array\n"
+        "    trim_mmap(output_file)")
+    _patch_file(
+        site / "openwakeword" / "data.py",
+        "    # Remove old mmaped file\n"
+        "    os.remove(mmap_path)",
+        "    # Patched by setup_trainer.py: close both memmaps first - Windows\n"
+        "    # cannot remove/rename a file with an open handle.\n"
+        "    del mmap_file1\n"
+        "    mmap_file2.flush()\n"
+        "    del mmap_file2\n"
+        "\n"
+        "    # Remove old mmaped file\n"
+        "    os.remove(mmap_path)")
+    # Windows DataLoader workers spawn (not fork) and cannot pickle the
+    # lambdas/closures train.py feeds the batch generator; stream
+    # in-process instead (train.py already imports sys).
+    _patch_file(
+        site / "openwakeword" / "train.py",
+        "        X_train = torch.utils.data.DataLoader(IterDataset(batch_generator),\n"
+        "                                              batch_size=None, num_workers=n_cpus, prefetch_factor=16)",
+        "        # Patched by setup_trainer.py: Windows DataLoader workers spawn\n"
+        "        # (not fork) and cannot pickle the lambdas/closures inside the\n"
+        "        # batch generator; stream in-process instead.\n"
+        "        if sys.platform == \"win32\":\n"
+        "            X_train = torch.utils.data.DataLoader(IterDataset(batch_generator),\n"
+        "                                                  batch_size=None, num_workers=0)\n"
+        "        else:\n"
+        "            X_train = torch.utils.data.DataLoader(IterDataset(batch_generator),\n"
+        "                                                  batch_size=None, num_workers=n_cpus, prefetch_factor=16)")
 
 
 def phase_piper(root: Path) -> None:
@@ -254,6 +395,17 @@ def phase_piper(root: Path) -> None:
     else:
         log("piper-sample-generator exists, skipping clone")
     download(PIPER_CHECKPOINT, piper / "models" / "en_US-libritts_r-medium.pt")
+    # torch 2.6 flipped torch.load's default to weights_only=True; the
+    # pinned v2.0.0 libritts checkpoint is a full pickled model (a
+    # trusted release artifact downloaded above), so the generator's
+    # plain torch.load fails to unpickle without the override.
+    _patch_file(
+        piper / "generate_samples.py",
+        "    model = torch.load(model_path)",
+        "    # Patched by setup_trainer.py: torch 2.6 defaults\n"
+        "    # weights_only=True, but this checkpoint is a full pickled\n"
+        "    # model from the pinned rhasspy release (trusted source).\n"
+        "    model = torch.load(model_path, weights_only=False)")
 
 
 def phase_datasets(root: Path) -> None:
@@ -317,6 +469,7 @@ def main() -> int:
     root = args.root.resolve()
     log(f"workspace: {root}")
     phase_venv(root, args.python, args.torch_index)
+    phase_package_patches(root)
     phase_piper(root)
     if args.skip_datasets:
         log("datasets skipped (--skip-datasets)")

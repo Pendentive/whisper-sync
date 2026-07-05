@@ -190,5 +190,54 @@ class StatusAndRegistryTests(_Harness):
             "set_phrase")
 
 
+def _load_setup_trainer():
+    """setup_trainer.py is a script under training/, not a package
+    module; load it by path. Its top level imports only stdlib, so
+    this stays CI-safe (no torch)."""
+    import importlib.util
+    path = (Path(__file__).resolve().parent.parent / "training" /
+            "setup_trainer.py")
+    spec = importlib.util.spec_from_file_location("setup_trainer", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class PatchFileTests(unittest.TestCase):
+    """_patch_file backs the Windows/torch-2.x compat patches applied
+    to the pinned training stack (first supervised run, 2026-07-05):
+    it must apply once, skip when already applied, and fail loudly
+    when the pinned code drifts from the patch anchor."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.target = Path(self._tmp.name) / "mod.py"
+        self.st = _load_setup_trainer()
+
+    def test_applies_the_patch(self):
+        self.target.write_text("a = 1\nb = 2\n", encoding="utf-8")
+        self.st._patch_file(
+            self.target, "b = 2",
+            "# Patched by setup_trainer.py\nb = 3")
+        self.assertIn("b = 3", self.target.read_text(encoding="utf-8"))
+
+    def test_skips_when_already_patched(self):
+        content = "# Patched by setup_trainer.py\nb = 3\n"
+        self.target.write_text(content, encoding="utf-8")
+        self.st._patch_file(self.target, "b = 2", "never applied")
+        self.assertEqual(
+            self.target.read_text(encoding="utf-8"), content)
+
+    def test_fails_loudly_when_the_anchor_drifted(self):
+        self.target.write_text("something else entirely\n",
+                               encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            self.st._patch_file(self.target, "b = 2", "b = 3")
+
+    def test_shim_constant_compiles(self):
+        compile(self.st.SITECUSTOMIZE_SHIM, "sitecustomize.py", "exec")
+
+
 if __name__ == "__main__":
     unittest.main()
