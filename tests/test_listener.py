@@ -297,8 +297,18 @@ class LoadFailureMessageTests(unittest.TestCase):
 
     def test_missing_package_gets_the_install_hint(self):
         notify = self._run_with(
-            ModuleNotFoundError("No module named 'openwakeword'"))
+            ModuleNotFoundError("No module named 'openwakeword'",
+                                name="openwakeword"))
         self.assertIn("not installed", notify.call_args[0][1])
+
+    def test_missing_transitive_dep_reports_honestly(self):
+        # Review catch: a dependency missing INSIDE openwakeword must
+        # not claim openwakeword itself is absent.
+        notify = self._run_with(
+            ModuleNotFoundError("No module named 'tflite_runtime'",
+                                name="tflite_runtime"))
+        self.assertNotIn("not installed", notify.call_args[0][1])
+        self.assertIn("could not load", notify.call_args[0][1])
 
     def test_dll_init_failure_reports_the_load_failure_honestly(self):
         notify = self._run_with(ImportError(

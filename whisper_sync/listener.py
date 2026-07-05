@@ -327,17 +327,23 @@ class WakeListener:
         try:
             model = self._load_model()
         except ModuleNotFoundError as exc:
-            # ONLY a genuinely missing package gets the install hint.
-            # A DLL-init ImportError (the 2026-07-05 owner report:
-            # onnxruntime loaded too late in the process) used to land
-            # here and lie about the cause; it now falls through to the
-            # generic branch with the real traceback.
-            logger.warning(
-                f"Wake listener unavailable: openwakeword is not "
-                f"installed ({exc}) - pip install openwakeword in "
-                "whisper-env to enable it")
-            notify("Wake listener unavailable",
-                   "openwakeword is not installed; see the log.")
+            # ONLY a genuinely missing openwakeword gets the install
+            # hint. A DLL-init ImportError (the 2026-07-05 owner
+            # report) or a missing TRANSITIVE dependency (review
+            # catch: exc.name says which module is actually absent)
+            # gets the truthful failure instead.
+            if (exc.name or "").split(".")[0] == "openwakeword":
+                logger.warning(
+                    f"Wake listener unavailable: openwakeword is not "
+                    f"installed ({exc}) - pip install openwakeword in "
+                    "whisper-env to enable it")
+                notify("Wake listener unavailable",
+                       "openwakeword is not installed; see the log.")
+                return
+            logger.warning("Wake listener failed to load its model",
+                           exc_info=True)
+            notify("Wake listener failed",
+                   "Wake model could not load; see the log.")
             return
         except Exception:
             # Distinct from the missing dependency (review catch):
