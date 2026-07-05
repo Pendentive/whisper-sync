@@ -11,6 +11,7 @@ page disagree, fix the other doc.
 | Venv suite | 36 tests: audio capture (open ladder, downmix, speaker streaming) + real-data harness | Local only (needs numpy/scipy in whisper-env) | see development.md |
 | Real-data harness | `flatten()` reproduced byte-for-byte against real shipped meetings | Local only; discovers via `WS_MEETINGS_DIR`, skips cleanly when absent. **Private audio never enters this repo.** | part of the venv suite |
 | End-to-end | Production worker subprocess on the smallest real recording (~1 min) | Local, opt-in (`WS_E2E=1`); run after worker-protocol or pipeline changes | see development.md |
+| Live validation | Real hardware, no human: shared mic streams, consent store, openWakeWord on synthesized speech, GPU probe + CPU failover with a real worker, full pipeline on the pinned real-meeting fixture (tests/fixtures/) | Local, opt-in (`WS_LIVE=1`); automates the owner-test-checklist items a machine can measure | `WS_LIVE=1 python -m pytest tests/test_live_validation.py` (app venv) |
 | Manual checklist | Hardware-in-the-loop checks no automated test covers (real mic, hotkeys, tray, GPU) | Local, before releases and after audio/tray changes | [.claude/rules/testing.md](../.claude/rules/testing.md) |
 
 ## Test-run isolation

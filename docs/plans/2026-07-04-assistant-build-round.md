@@ -355,6 +355,36 @@ training job with menu status/ETA + completion toast.
   the first supervised training run wait for an explicit owner go -
   PROVISIONAL config values are validated by that first run.
 
+- **2026-07-05 (owner directives: automate validation, real-meeting
+  fixture, hardware freed)**: the owner asked that nothing require his
+  hand-testing, that a real 5-10 minute multi-speaker meeting be
+  pinned into the test folder as a standing fixture, and freed the
+  GPU/machine for real testing until further notice. Shipped
+  tests/test_live_validation.py (WS_LIVE=1): shared-mic coexistence +
+  prefix ordering on the real mic, consent-store read, synthesized
+  "hey jarvis" through the real model + decision loop (one wake, >1s
+  prefix, negative control silent, VAD speech/silence split), GPU
+  probe healthy + dead-probe -> CPU-pinned real worker transcribing
+  correctly, and the FULL production pipeline on the pinned fixture
+  (tests/fixtures/real-meeting/, gitignored - private audio never
+  enters the public repo) judged against its reference transcript.
+  9/9 green on the dev machine 2026-07-05. Findings fixed along the
+  way: onnxruntime DLL-init order conflict (preload at collection),
+  live guard tests polluting the production gpu-guard.jsonl
+  (event_path pinned to temp). Trainer-env execution findings (PR A
+  scaffold validated by running it): torch must come from the cu128
+  index (Blackwell sm_120 + the proven whisper-env build), the
+  piper-sample-generator clone must pin v2.0.0 (v3 broke train.py's
+  generate_samples import), piper-phonemize -> piper-phonemize-fix
+  and webrtcvad -> webrtcvad-wheels (upstream ships no Windows
+  wheels), and the trainer venv must be Python 3.11. Machine note:
+  a crash-reboot occurred 20:59 local while the machine was idle of
+  session workloads (HYPERVISOR_ERROR bugcheck + WHEA fatal hardware
+  error; this laptop has a documented chronic GPU-driver instability
+  history); the full GPU pipeline test ran clean immediately after
+  reboot. The tray app was found not running and was started fresh
+  from the checkout (post-#194 code) - the restart gate is cleared.
+
 - **2026-07-05 (step 5 PR B)**: saved-phrase registry. New config key
   wake_phrases (name -> {path, role wake/outro, active}); the
   listener loads ALL active models into one openWakeWord Model

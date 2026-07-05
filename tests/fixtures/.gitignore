@@ -1,0 +1,5 @@
+# Private audio never enters the public repo (test fixtures are
+# machine-local; see README.md for what belongs here).
+*
+!.gitignore
+!README.md
